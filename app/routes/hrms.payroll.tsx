@@ -2,7 +2,7 @@ import HRMSLayout from "../components/HRMSLayout";
 import { useState } from "react";
 
 const payrollData = [
-  { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 2,80,000, hra: 1,12,000, gross: 3,50,000, deductions: 42,000, net: 3,08,000, status: "Processed" },
+  { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, gross: 350000, deductions: 42000, net: 308000, status: "Processed" },
   { name: "Aarav Shah", id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667, gross: 233333, deductions: 28000, net: 205333, status: "Processed" },
   { name: "Priya Nair", id: "EMP002", dept: "Design", basic: 146667, hra: 58667, gross: 183333, deductions: 22000, net: 161333, status: "Processed" },
   { name: "Rohan Mehta", id: "EMP003", dept: "Analytics", basic: 120000, hra: 48000, gross: 150000, deductions: 18000, net: 132000, status: "Pending" },
