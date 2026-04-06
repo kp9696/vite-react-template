@@ -8,8 +8,8 @@
 		{
 			"binding": "HRMS",
 			"database_name": "email",
-			"database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE",
-			"preview_database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE",
+			"database_id": "b793f49e-6d30-4d57-aebd-631443bd8778",
+			"preview_database_id": "b793f49e-6d30-4d57-aebd-631443bd8778",
 			"migrations_dir": "migrations"
 		}
 	],
