@@ -7,7 +7,6 @@ export function isWorkEmail(email: string): boolean {
   if (!normalized.includes("@")) return false;
 
   const blockedDomains = new Set([
-    "gmail.com",
     "yahoo.com",
     "hotmail.com",
     "outlook.com",

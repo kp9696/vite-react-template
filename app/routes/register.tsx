@@ -37,11 +37,11 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   if (intent === "request-otp") {
     if (!email || !organizationName || !adminName) {
-      return { error: "Organization name, admin name, and work email are required." } satisfies ActionData;
+      return { error: "Organization name, admin name, and email are required." } satisfies ActionData;
     }
 
     if (!isWorkEmail(email)) {
-      return { error: "Please register with your company email address." } satisfies ActionData;
+      return { error: "Please register with a Gmail or company email address." } satisfies ActionData;
     }
 
     try {
@@ -118,7 +118,7 @@ export default function Register({ loaderData }: Route.ComponentProps) {
         <div style={{ marginBottom: 24 }}>
           <div style={{ fontSize: 30, fontWeight: 800, color: "#111827", marginBottom: 8 }}>Create account</div>
           <div style={{ fontSize: 14, color: "#6b7280", lineHeight: 1.7 }}>
-            Register your company workspace, receive an OTP on email, and verify before the admin account is created.
+            Register your workspace, receive an OTP on email, and verify before the admin account is created.
           </div>
         </div>
 
@@ -139,8 +139,8 @@ export default function Register({ loaderData }: Route.ComponentProps) {
                 <input name="adminName" defaultValue={actionData?.adminName} placeholder="Kiran Pandit" style={fieldStyle} />
               </div>
               <div>
-                <label style={labelStyle}>Work Email</label>
-                <input name="email" type="email" defaultValue={actionData?.email || loaderData.email} placeholder="admin@company.com" style={fieldStyle} />
+                <label style={labelStyle}>Email</label>
+                <input name="email" type="email" defaultValue={actionData?.email || loaderData.email} placeholder="admin@gmail.com or admin@company.com" style={fieldStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Department</label>

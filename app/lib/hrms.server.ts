@@ -387,7 +387,7 @@ export async function registerOrganization(
   const domain = normalizeDomain(email);
 
   if (!isWorkEmail(email)) {
-    throw new Error("Please use your work email address.");
+    throw new Error("Please use a Gmail or company email address.");
   }
 
   const existingUser = await getUserByEmail(db, email);

@@ -35,11 +35,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     const email = String(formData.get("workEmail") || "").trim().toLowerCase();
 
     if (!email) {
-      return { error: "Please enter your work email address." } satisfies ActionData;
+      return { error: "Please enter your email address." } satisfies ActionData;
     }
 
     if (!isWorkEmail(email)) {
-      return { error: "Google SSO is available only for work email accounts in this demo." } satisfies ActionData;
+      return { error: "Please use a Gmail or company email address." } satisfies ActionData;
     }
 
     const user = await getUserByEmail(context.cloudflare.env.HRMS, email);
@@ -80,7 +80,7 @@ export default function Login() {
 
           <div className="left-headline">
             <h1>People-first.<br /><span className="accent-text">HR simplified.</span></h1>
-            <p className="left-sub">Existing work-email users go straight into their dashboard. New companies can self-register and create an admin workspace with employee invite controls.</p>
+            <p className="left-sub">Existing users go straight into their dashboard. New companies and Gmail users can self-register and create an admin workspace with employee invite controls.</p>
           </div>
 
           <div className="feature-pills">
@@ -110,13 +110,13 @@ export default function Login() {
         <div className="form-wrapper">
           <div className="form-header">
             <h2>Sign in</h2>
-            <p>Use Google SSO with your work email, or use the demo account for walkthroughs.</p>
+            <p>Use your Gmail or company email, or use the demo account for walkthroughs.</p>
           </div>
 
           <Form method="post">
             <input type="hidden" name="intent" value="google-sso" />
             <div className="field-group">
-              <label className="field-label">Work Email for Google SSO</label>
+              <label className="field-label">Email</label>
               <div className="field-wrap">
                 <span className="field-icon">
                   <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
@@ -124,7 +124,7 @@ export default function Login() {
                 <input
                   name="workEmail"
                   type="email"
-                  placeholder="you@company.com"
+                  placeholder="you@gmail.com or you@company.com"
                   className="field-input"
                   autoComplete="email"
                 />
@@ -143,13 +143,13 @@ export default function Login() {
           </Form>
 
           <div className="helper-card">
-            Existing work-email users:
+            Existing users:
             <br />
             Admins go directly to the user management dashboard.
             <br />
             Employees go to the HRMS dashboard.
             <br />
-            New work-email users are redirected to company registration with OTP verification.
+            New Gmail and company-email users are redirected to account registration with OTP verification.
           </div>
 
           <a href="/register" className="create-account-link">Create account</a>
