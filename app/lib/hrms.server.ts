@@ -1,5 +1,6 @@
-export type UserStatus = "Active" | "Invited" | "Pending";
 import { isAdminRole, isWorkEmail, normalizeDomain } from "./hrms.shared";
+
+export type UserStatus = "Active" | "Invited" | "Pending";
 
 export interface Organization {
   id: string;
@@ -37,6 +38,29 @@ export interface RegisterOrganizationInput {
   adminName: string;
   email: string;
   department: string;
+}
+
+let supportsOrganizationsCache: boolean | null = null;
+
+async function supportsOrganizations(db: D1Database): Promise<boolean> {
+  if (supportsOrganizationsCache !== null) {
+    return supportsOrganizationsCache;
+  }
+
+  try {
+    const orgTable = await db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'organizations'`)
+      .first<{ name: string }>();
+    const orgColumn = await db
+      .prepare(`SELECT 1 AS exists_flag FROM pragma_table_info('users') WHERE name = 'org_id' LIMIT 1`)
+      .first<{ exists_flag: number }>();
+
+    supportsOrganizationsCache = Boolean(orgTable?.name && orgColumn?.exists_flag);
+  } catch {
+    supportsOrganizationsCache = false;
+  }
+
+  return supportsOrganizationsCache;
 }
 
 function normalizeMonthYear(value: string | null | undefined): string {
@@ -79,7 +103,23 @@ function mapOrganization(row: Record<string, unknown>): Organization {
   };
 }
 
+async function listUsersLegacy(db: D1Database): Promise<HRMSUser[]> {
+  const result = await db
+    .prepare(
+      `SELECT id, NULL AS org_id, NULL AS organization_name, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+       FROM users
+       ORDER BY datetime(created_at) DESC, name ASC`,
+    )
+    .all<Record<string, unknown>>();
+
+  return result.results.map(mapUser);
+}
+
 export async function listUsers(db: D1Database, orgId?: string): Promise<HRMSUser[]> {
+  if (!(await supportsOrganizations(db))) {
+    return listUsersLegacy(db);
+  }
+
   const statement = orgId
     ? db.prepare(
         `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
@@ -100,6 +140,20 @@ export async function listUsers(db: D1Database, orgId?: string): Promise<HRMSUse
 }
 
 export async function getUserByEmail(db: D1Database, email: string): Promise<HRMSUser | null> {
+  if (!(await supportsOrganizations(db))) {
+    const legacyResult = await db
+      .prepare(
+        `SELECT id, NULL AS org_id, NULL AS organization_name, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+         FROM users
+         WHERE lower(email) = lower(?)
+         LIMIT 1`,
+      )
+      .bind(email.trim())
+      .first<Record<string, unknown>>();
+
+    return legacyResult ? mapUser(legacyResult) : null;
+  }
+
   const result = await db
     .prepare(
       `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
@@ -115,6 +169,20 @@ export async function getUserByEmail(db: D1Database, email: string): Promise<HRM
 }
 
 export async function getUserById(db: D1Database, id: string): Promise<HRMSUser | null> {
+  if (!(await supportsOrganizations(db))) {
+    const legacyResult = await db
+      .prepare(
+        `SELECT id, NULL AS org_id, NULL AS organization_name, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+         FROM users
+         WHERE id = ?
+         LIMIT 1`,
+      )
+      .bind(id)
+      .first<Record<string, unknown>>();
+
+    return legacyResult ? mapUser(legacyResult) : null;
+  }
+
   const result = await db
     .prepare(
       `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
@@ -130,6 +198,10 @@ export async function getUserById(db: D1Database, id: string): Promise<HRMSUser 
 }
 
 export async function getOrganizationById(db: D1Database, id: string): Promise<Organization | null> {
+  if (!(await supportsOrganizations(db))) {
+    return null;
+  }
+
   const result = await db
     .prepare(`SELECT id, name, domain, invite_limit, created_at FROM organizations WHERE id = ? LIMIT 1`)
     .bind(id)
@@ -139,6 +211,10 @@ export async function getOrganizationById(db: D1Database, id: string): Promise<O
 }
 
 export async function getOrganizationByDomain(db: D1Database, domain: string): Promise<Organization | null> {
+  if (!(await supportsOrganizations(db))) {
+    return null;
+  }
+
   const result = await db
     .prepare(`SELECT id, name, domain, invite_limit, created_at FROM organizations WHERE lower(domain) = lower(?) LIMIT 1`)
     .bind(domain)
@@ -148,6 +224,11 @@ export async function getOrganizationByDomain(db: D1Database, domain: string): P
 }
 
 export async function getOrganizationMemberUsage(db: D1Database, orgId: string): Promise<number> {
+  if (!(await supportsOrganizations(db))) {
+    const users = await listUsersLegacy(db);
+    return users.filter((user) => !isAdminRole(user.role)).length;
+  }
+
   const result = await db
     .prepare(
       `SELECT COUNT(*) AS count
@@ -165,6 +246,10 @@ export async function createOrUpdateInvitedUser(
   db: D1Database,
   input: InviteUserInput,
 ): Promise<HRMSUser> {
+  if (!(await supportsOrganizations(db))) {
+    throw new Error("Please apply the latest D1 migrations before inviting users.");
+  }
+
   const email = input.email.trim().toLowerCase();
   const now = new Date().toISOString();
   const existing = await getUserByEmail(db, email);
@@ -208,6 +293,10 @@ export async function registerOrganization(
   db: D1Database,
   input: RegisterOrganizationInput,
 ): Promise<{ organization: Organization; adminUser: HRMSUser }> {
+  if (!(await supportsOrganizations(db))) {
+    throw new Error("Please apply the latest D1 migrations before registering a company.");
+  }
+
   const email = input.email.trim().toLowerCase();
   const domain = normalizeDomain(email);
 
@@ -264,14 +353,17 @@ export async function markInviteSent(db: D1Database, id: string): Promise<void> 
 }
 
 export async function getDashboardData(db: D1Database, orgId?: string) {
+  const orgSupport = await supportsOrganizations(db);
   const users = await listUsers(db, orgId);
-  const organization = orgId ? await getOrganizationById(db, orgId) : null;
+  const organization = orgSupport && orgId ? await getOrganizationById(db, orgId) : null;
 
   const totalUsers = users.length;
   const activeUsers = users.filter((user) => user.status === "Active").length;
   const invitedUsers = users.filter((user) => user.status === "Invited").length;
   const adminUsers = users.filter((user) => isAdminRole(user.role)).length;
-  const memberUsage = orgId ? await getOrganizationMemberUsage(db, orgId) : users.filter((user) => !isAdminRole(user.role)).length;
+  const memberUsage = orgSupport && orgId
+    ? await getOrganizationMemberUsage(db, orgId)
+    : users.filter((user) => !isAdminRole(user.role)).length;
   const inviteLimit = organization?.inviteLimit ?? 0;
 
   const recentUsers = users.slice(0, 5);
@@ -310,7 +402,7 @@ export async function getDashboardData(db: D1Database, orgId?: string) {
       { label: "Total Users", value: String(totalUsers), delta: `${activeUsers} active`, tone: "positive" as const },
       { label: "Active Employees", value: String(activeUsers), delta: `${invitedUsers} invited`, tone: "positive" as const },
       { label: "Pending Invites", value: String(invitedUsers), delta: invitedUsers === 0 ? "All caught up" : "Awaiting setup", tone: invitedUsers === 0 ? "positive" as const : "warning" as const },
-      { label: "Invite Capacity", value: inviteLimit ? `${memberUsage}/${inviteLimit}` : String(memberUsage), delta: inviteLimit ? `${Math.max(inviteLimit - memberUsage, 0)} seats left` : "No org limit set", tone: "neutral" as const },
+      { label: "Invite Capacity", value: inviteLimit ? `${memberUsage}/${inviteLimit}` : String(memberUsage), delta: inviteLimit ? `${Math.max(inviteLimit - memberUsage, 0)} seats left` : "Apply org migration to unlock invite limits", tone: "neutral" as const },
       { label: "Admins", value: String(adminUsers), delta: "Users with elevated access", tone: "neutral" as const },
     ],
     recentUsers,
