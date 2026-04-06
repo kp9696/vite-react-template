@@ -1,8 +1,7 @@
 import { Form, redirect, useActionData, useNavigation } from "react-router";
 import type { Route } from "./+types/login";
 import { createSessionCookie } from "../lib/session.server";
-import { DEMO_EMAIL, getUserByEmail } from "../lib/hrms.server";
-import { isAdminRole, isWorkEmail } from "../lib/hrms.shared";
+import { DEMO_EMAIL } from "../lib/hrms.server";
 
 type ActionData = {
   error?: string;
@@ -32,27 +31,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   if (intent === "google-sso") {
-    const email = String(formData.get("workEmail") || "").trim().toLowerCase();
-
-    if (!email) {
-      return { error: "Please enter your email address." } satisfies ActionData;
-    }
-
-    if (!isWorkEmail(email)) {
-      return { error: "Please use a Gmail or company email address." } satisfies ActionData;
-    }
-
-    const user = await getUserByEmail(context.cloudflare.env.HRMS, email);
-
-    if (user) {
-      return redirect(isAdminRole(user.role) ? "/hrms/users" : "/hrms", {
-        headers: {
-          "Set-Cookie": createSessionCookie(email),
-        },
-      });
-    }
-
-    return redirect(`/register?email=${encodeURIComponent(email)}`);
+    return redirect("/register");
   }
 
   return { error: "Unsupported login action." } satisfies ActionData;
@@ -80,11 +59,11 @@ export default function Login() {
 
           <div className="left-headline">
             <h1>People-first.<br /><span className="accent-text">HR simplified.</span></h1>
-            <p className="left-sub">Existing users go straight into their dashboard. New companies and Gmail users can self-register and create an admin workspace with employee invite controls.</p>
+            <p className="left-sub">Create your workspace with OTP verification, then manage your team from a clean admin dashboard. Demo access stays available for walkthroughs.</p>
           </div>
 
           <div className="feature-pills">
-            {["Google SSO", "Invite Controls", "Admin Roles", "Employee Workspace", "Live D1 Data"].map((item) => (
+            {["OTP Signup", "Invite Controls", "Admin Roles", "Employee Workspace", "Live D1 Data"].map((item) => (
               <span key={item} className="pill">{item}</span>
             ))}
           </div>
@@ -109,50 +88,21 @@ export default function Login() {
       <div className="login-right">
         <div className="form-wrapper">
           <div className="form-header">
-            <h2>Sign in</h2>
-            <p>Use your Gmail or company email, or use the demo account for walkthroughs.</p>
+            <h2>Welcome</h2>
+            <p>Create an account with email OTP, or use the demo account for walkthroughs.</p>
           </div>
-
-          <Form method="post">
-            <input type="hidden" name="intent" value="google-sso" />
-            <div className="field-group">
-              <label className="field-label">Email</label>
-              <div className="field-wrap">
-                <span className="field-icon">
-                  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                </span>
-                <input
-                  name="workEmail"
-                  type="email"
-                  placeholder="you@gmail.com or you@company.com"
-                  className="field-input"
-                  autoComplete="email"
-                />
-              </div>
-            </div>
-
-            <button className="sso-btn" type="submit" disabled={submitting}>
-              <svg width="18" height="18" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
-                <path fill="#4285F4" d="M44.5 20H24v8.5h11.8C34.7 33.9 29.8 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 5.1 29.6 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c10.5 0 20-7.5 20-21 0-1.4-.1-2.7-.4-4z"/>
-                <path fill="#34A853" d="M6.3 14.7l7 5.1C15 16.1 19.2 13 24 13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 5.1 29.6 3 24 3c-7.7 0-14.3 4.5-17.7 11.7z"/>
-                <path fill="#FBBC05" d="M24 45c5.5 0 10.5-1.9 14.4-5l-6.7-5.5C29.6 36 26.9 37 24 37c-5.7 0-10.6-3.1-11.7-8.4l-7 5.4C8 40.5 15.4 45 24 45z"/>
-                <path fill="#EA4335" d="M44.5 20H24v8.5h11.8c-1.1 3-3.4 5.4-6.3 7l6.7 5.5C40.6 37 44.5 31 44.5 24c0-1.4-.1-2.7-.5-4z"/>
-              </svg>
-              Continue with Google SSO
-            </button>
-          </Form>
 
           <div className="helper-card">
-            Existing users:
+            Account access:
             <br />
-            Admins go directly to the user management dashboard.
+            Create your workspace with OTP verification.
             <br />
-            Employees go to the HRMS dashboard.
+            Admins land in the user management dashboard after setup.
             <br />
-            New Gmail and company-email users are redirected to account registration with OTP verification.
+            Team members can be invited from inside the admin panel.
           </div>
 
-          <a href="/register" className="create-account-link">Create account</a>
+          <a href="/register" className="create-account-link">Create account with OTP</a>
 
           <div className="divider"><span>or use demo login</span></div>
 
