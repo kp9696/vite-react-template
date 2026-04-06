@@ -1,7 +1,7 @@
 import HRMSLayout from "../components/HRMSLayout";
 import { Link, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms";
-import { getDashboardData } from "../lib/hrms.server";
+import { DEMO_USER, getDashboardData, getDemoDashboardData } from "../lib/hrms.server";
 import { isAdminRole } from "../lib/hrms.shared";
 import { requireSignedInUser } from "../lib/session.server";
 
@@ -13,7 +13,9 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  const dashboard = await getDashboardData(context.cloudflare.env.HRMS, currentUser.orgId ?? undefined);
+  const dashboard = currentUser.id === DEMO_USER.id
+    ? getDemoDashboardData()
+    : await getDashboardData(context.cloudflare.env.HRMS, currentUser.orgId ?? undefined);
 
   return {
     currentUser,

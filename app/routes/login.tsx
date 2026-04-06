@@ -1,7 +1,7 @@
 import { Form, redirect, useActionData, useNavigation } from "react-router";
 import type { Route } from "./+types/login";
 import { createSessionCookie } from "../lib/session.server";
-import { getUserByEmail } from "../lib/hrms.server";
+import { DEMO_EMAIL, getUserByEmail } from "../lib/hrms.server";
 import { isAdminRole, isWorkEmail } from "../lib/hrms.shared";
 
 type ActionData = {
@@ -26,7 +26,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     return redirect("/hrms", {
       headers: {
-        "Set-Cookie": createSessionCookie("deepa@jwithkp.in"),
+        "Set-Cookie": createSessionCookie(DEMO_EMAIL),
       },
     });
   }

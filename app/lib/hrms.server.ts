@@ -40,6 +40,92 @@ export interface RegisterOrganizationInput {
   department: string;
 }
 
+export const DEMO_ORG_ID = "ORGDEMOUI";
+export const DEMO_EMAIL = "__demo__";
+
+export const DEMO_USER: HRMSUser = {
+  id: "USRDEMO01",
+  orgId: DEMO_ORG_ID,
+  organizationName: "JWithKP Demo Workspace",
+  name: "Demo Admin",
+  email: "demo@jwithkp.demo",
+  role: "HR Admin",
+  department: "Operations",
+  status: "Active",
+  joinedOn: "Apr 2026",
+  inviteSentAt: null,
+  createdAt: "2026-04-01T09:00:00.000Z",
+  updatedAt: "2026-04-01T09:00:00.000Z",
+};
+
+export const DEMO_ORGANIZATION: Organization = {
+  id: DEMO_ORG_ID,
+  name: "JWithKP Demo Workspace",
+  domain: "jwithkp.demo",
+  inviteLimit: 5,
+  createdAt: "2026-04-01T09:00:00.000Z",
+};
+
+export const DEMO_USERS: HRMSUser[] = [
+  DEMO_USER,
+  {
+    id: "USRDEMO02",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Aarav Shah",
+    email: "aarav@jwithkp.demo",
+    role: "Employee",
+    department: "Engineering",
+    status: "Active",
+    joinedOn: "Apr 2026",
+    inviteSentAt: null,
+    createdAt: "2026-04-02T09:00:00.000Z",
+    updatedAt: "2026-04-02T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO03",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Priya Nair",
+    email: "priya@jwithkp.demo",
+    role: "Manager",
+    department: "Design",
+    status: "Active",
+    joinedOn: "Apr 2026",
+    inviteSentAt: null,
+    createdAt: "2026-04-03T09:00:00.000Z",
+    updatedAt: "2026-04-03T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO04",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Rohan Mehta",
+    email: "rohan@jwithkp.demo",
+    role: "Employee",
+    department: "Analytics",
+    status: "Invited",
+    joinedOn: "Apr 2026",
+    inviteSentAt: "2026-04-04T09:00:00.000Z",
+    createdAt: "2026-04-04T09:00:00.000Z",
+    updatedAt: "2026-04-04T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO05",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Sneha Pillai",
+    email: "sneha@jwithkp.demo",
+    role: "HR Manager",
+    department: "People Ops",
+    status: "Active",
+    joinedOn: "Apr 2026",
+    inviteSentAt: null,
+    createdAt: "2026-04-05T09:00:00.000Z",
+    updatedAt: "2026-04-05T09:00:00.000Z",
+  },
+];
+
 let supportsOrganizationsCache: boolean | null = null;
 
 async function supportsOrganizations(db: D1Database): Promise<boolean> {
@@ -408,5 +494,43 @@ export async function getDashboardData(db: D1Database, orgId?: string) {
     recentUsers,
     pendingInvites,
     departmentData,
+  };
+}
+
+export function getDemoDashboardData() {
+  const users = DEMO_USERS;
+  const totalUsers = users.length;
+  const activeUsers = users.filter((user) => user.status === "Active").length;
+  const invitedUsers = users.filter((user) => user.status === "Invited").length;
+  const adminUsers = users.filter((user) => isAdminRole(user.role)).length;
+  const memberUsage = users.filter((user) => !isAdminRole(user.role)).length;
+
+  const departmentCounts = new Map<string, number>();
+  for (const user of users) {
+    departmentCounts.set(user.department, (departmentCounts.get(user.department) ?? 0) + 1);
+  }
+
+  return {
+    organization: DEMO_ORGANIZATION,
+    stats: [
+      { label: "Total Users", value: String(totalUsers), delta: `${activeUsers} active`, tone: "positive" as const },
+      { label: "Active Employees", value: String(activeUsers), delta: `${invitedUsers} invited`, tone: "positive" as const },
+      { label: "Pending Invites", value: String(invitedUsers), delta: "Awaiting setup", tone: "warning" as const },
+      { label: "Invite Capacity", value: `${memberUsage}/${DEMO_ORGANIZATION.inviteLimit}`, delta: `${Math.max(DEMO_ORGANIZATION.inviteLimit - memberUsage, 0)} seats left`, tone: "neutral" as const },
+      { label: "Admins", value: String(adminUsers), delta: "Users with elevated access", tone: "neutral" as const },
+    ],
+    recentUsers: users.slice(0, 5),
+    pendingInvites: users.filter((user) => user.status === "Invited").map((user) => ({
+      id: user.id,
+      name: user.name,
+      role: user.role,
+      department: user.department,
+      detail: "Invite sent 4 Apr",
+    })),
+    departmentData: Array.from(departmentCounts.entries()).map(([department, count]) => ({
+      department,
+      count,
+      percent: Math.round((count / totalUsers) * 100),
+    })),
   };
 }

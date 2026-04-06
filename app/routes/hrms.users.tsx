@@ -7,6 +7,9 @@ import {
 import type { Route } from "./+types/hrms.users";
 import HRMSLayout from "../components/HRMSLayout";
 import {
+  DEMO_ORGANIZATION,
+  DEMO_USER,
+  DEMO_USERS,
   createOrUpdateInvitedUser,
   getOrganizationById,
   getOrganizationMemberUsage,
@@ -31,6 +34,11 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  if (currentUser.id === DEMO_USER.id) {
+    const memberUsage = DEMO_USERS.filter((user) => !isAdminRole(user.role)).length;
+    return { currentUser, organization: DEMO_ORGANIZATION, users: DEMO_USERS, memberUsage };
+  }
+
   if (!currentUser.orgId) {
     throw redirect("/hrms");
   }
@@ -48,6 +56,10 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  if (currentUser.id === DEMO_USER.id) {
+    return { ok: false, type: "error", message: "Demo workspace actions are read-only." };
+  }
+
   if (!currentUser.orgId || !isAdminRole(currentUser.role)) {
     return { ok: false, type: "error", message: "Only admins can manage users." };
   }

@@ -1,5 +1,5 @@
 import { redirect } from "react-router";
-import { getUserByEmail } from "./hrms.server";
+import { DEMO_EMAIL, DEMO_USER, getUserByEmail } from "./hrms.server";
 
 const SESSION_COOKIE = "hrms_demo_session";
 
@@ -37,6 +37,10 @@ export async function requireSignedInUser(request: Request, db: D1Database) {
   const email = getSessionEmail(request);
   if (!email) {
     throw redirect("/login");
+  }
+
+  if (email === DEMO_EMAIL) {
+    return DEMO_USER;
   }
 
   const user = await getUserByEmail(db, email);
