@@ -1,113 +1,147 @@
+import { useEffect, useState } from "react";
+import {
+  useFetcher,
+  useLoaderData,
+} from "react-router";
+import type { Route } from "./+types/hrms.users";
 import HRMSLayout from "../components/HRMSLayout";
-import { useState } from "react";
-
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  dept: string;
-  status: "Active" | "Invited" | "Pending";
-  joinedOn: string;
-}
-
-const existingUsers: User[] = [
-  { id: "USR001", name: "Deepa Krishnan", email: "deepa@jwithkp.in", role: "HR Admin", dept: "Engineering", status: "Active", joinedOn: "Jan 2025" },
-  { id: "USR002", name: "Aarav Shah", email: "aarav@jwithkp.in", role: "Employee", dept: "Engineering", status: "Active", joinedOn: "Apr 2025" },
-  { id: "USR003", name: "Priya Nair", email: "priya@jwithkp.in", role: "Manager", dept: "Design", status: "Active", joinedOn: "Mar 2025" },
-  { id: "USR004", name: "Rohan Mehta", email: "rohan@jwithkp.in", role: "Employee", dept: "Analytics", status: "Invited", joinedOn: "Mar 2025" },
-  { id: "USR005", name: "Sneha Pillai", email: "sneha@jwithkp.in", role: "HR Manager", dept: "People Ops", status: "Active", joinedOn: "Feb 2025" },
-];
+import {
+  createOrUpdateInvitedUser,
+  listUsers,
+} from "../lib/hrms.server";
+import { sendInviteEmail } from "../lib/invite-email.server";
 
 const roles = ["Employee", "Manager", "HR Manager", "HR Admin", "Finance", "Payroll Manager"];
-const depts = ["Engineering", "Design", "Analytics", "Sales", "People Ops", "Marketing", "Finance", "Operations"];
+const departments = ["Engineering", "Design", "Analytics", "Sales", "People Ops", "Marketing", "Finance", "Operations"];
+
+type ActionResult = {
+  ok: boolean;
+  message: string;
+  type: "success" | "error";
+};
 
 export function meta() {
-  return [{ title: "JWithKP HRMS · User Management" }];
+  return [{ title: "JWithKP HRMS - User Management" }];
+}
+
+export async function loader({ context }: Route.LoaderArgs) {
+  const users = await listUsers(context.cloudflare.env.HRMS);
+  return { users };
+}
+
+export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+  const db = context.cloudflare.env.HRMS;
+
+  try {
+    if (intent === "invite") {
+      const payload = {
+        name: String(formData.get("name") || "").trim(),
+        email: String(formData.get("email") || "").trim(),
+        role: String(formData.get("role") || "Employee"),
+        department: String(formData.get("department") || "Engineering"),
+      };
+
+      if (!payload.name || !payload.email) {
+        return { ok: false, type: "error", message: "Name and work email are required." };
+      }
+
+      const user = await createOrUpdateInvitedUser(db, payload);
+      const mailResult = await sendInviteEmail(context.cloudflare.env, db, user.id, payload, request.url);
+
+      return {
+        ok: true,
+        type: mailResult.delivered ? "success" : "error",
+        message: mailResult.delivered
+          ? mailResult.message
+          : `${mailResult.message} The user record is still saved in D1.`,
+      };
+    }
+
+    if (intent === "resend") {
+      const payload = {
+        userId: String(formData.get("userId") || ""),
+        name: String(formData.get("name") || "").trim(),
+        email: String(formData.get("email") || "").trim(),
+        role: String(formData.get("role") || "Employee"),
+        department: String(formData.get("department") || "Engineering"),
+      };
+
+      if (!payload.userId || !payload.email) {
+        return { ok: false, type: "error", message: "User details were incomplete for resend." };
+      }
+
+      const mailResult = await sendInviteEmail(
+        context.cloudflare.env,
+        db,
+        payload.userId,
+        {
+          name: payload.name,
+          email: payload.email,
+          role: payload.role,
+          department: payload.department,
+        },
+        request.url,
+      );
+
+      return {
+        ok: mailResult.delivered,
+        type: mailResult.delivered ? "success" : "error",
+        message: mailResult.message,
+      };
+    }
+
+    return { ok: false, type: "error", message: "Unsupported action." };
+  } catch (error) {
+    return {
+      ok: false,
+      type: "error",
+      message: error instanceof Error ? error.message : "Something went wrong while processing the request.",
+    };
+  }
 }
 
 export default function AdminUsers() {
-  const [users, setUsers] = useState<User[]>(existingUsers);
+  const { users } = useLoaderData<typeof loader>();
+  const inviteFetcher = useFetcher<ActionResult>();
+  const resendFetcher = useFetcher<ActionResult>();
   const [showForm, setShowForm] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
-
+  const [toast, setToast] = useState<ActionResult | null>(null);
   const [form, setForm] = useState({
     name: "",
     email: "",
     role: "Employee",
-    dept: "Engineering",
+    department: "Engineering",
   });
 
-  const showToast = (msg: string, type: "success" | "error") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
-  const handleInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.name || !form.email) return;
-
-    setSending(true);
-    try {
-      const res = await fetch("/api/send-invite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: form.name,
-          email: form.email,
-          role: form.role,
-          dept: form.dept,
-        }),
-      });
-
-      const data = await res.json() as { success: boolean; error?: string };
-
-      if (data.success) {
-        const newUser: User = {
-          id: `USR${String(users.length + 1).padStart(3, "0")}`,
-          name: form.name,
-          email: form.email,
-          role: form.role,
-          dept: form.dept,
-          status: "Invited",
-          joinedOn: new Date().toLocaleDateString("en-IN", { month: "short", year: "numeric" }),
-        };
-        setUsers(prev => [newUser, ...prev]);
-        setForm({ name: "", email: "", role: "Employee", dept: "Engineering" });
+  useEffect(() => {
+    if (inviteFetcher.data) {
+      setToast(inviteFetcher.data);
+      if (inviteFetcher.data.ok) {
+        setForm({ name: "", email: "", role: "Employee", department: "Engineering" });
         setShowForm(false);
-        showToast(`Invite sent to ${form.email} ✓`, "success");
-      } else {
-        showToast(data.error || "Failed to send invite", "error");
       }
-    } catch {
-      showToast("Network error. Please try again.", "error");
-    } finally {
-      setSending(false);
     }
-  };
+  }, [inviteFetcher.data]);
 
-  const resendInvite = async (user: User) => {
-    setSending(true);
-    try {
-      const res = await fetch("/api/send-invite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: user.name, email: user.email, role: user.role, dept: user.dept }),
-      });
-      const data = await res.json() as { success: boolean };
-      if (data.success) showToast(`Invite resent to ${user.email}`, "success");
-      else showToast("Failed to resend invite", "error");
-    } catch {
-      showToast("Network error.", "error");
-    } finally {
-      setSending(false);
+  useEffect(() => {
+    if (resendFetcher.data) {
+      setToast(resendFetcher.data);
     }
-  };
+  }, [resendFetcher.data]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timeout = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  const sendingInvite = inviteFetcher.state !== "idle";
+  const sendingResend = resendFetcher.state !== "idle";
 
   return (
     <HRMSLayout>
-      {/* Toast */}
       {toast && (
         <div style={{
           position: "fixed", top: 20, right: 20, zIndex: 9999,
@@ -117,30 +151,31 @@ export default function AdminUsers() {
           display: "flex", alignItems: "center", gap: 8,
           animation: "slideIn 0.3s ease",
         }}>
-          {toast.type === "success" ? "✓" : "✕"} {toast.msg}
+          {toast.type === "success" ? "✓" : "✕"} {toast.message}
         </div>
       )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">User Management</div>
-          <div className="page-sub">Invite employees and manage their access to JWithKP HRMS.</div>
+          <div className="page-sub">Invite employees and manage their access with D1-backed records.</div>
         </div>
         <button className="btn btn-primary" onClick={() => setShowForm(!showForm)}>
           {showForm ? "✕ Cancel" : "+ Invite User"}
         </button>
       </div>
 
-      {/* Invite Form */}
       {showForm && (
-        <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--accent)" }}>
+        <inviteFetcher.Form method="post" className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--accent)" }}>
+          <input type="hidden" name="intent" value="invite" />
           <div className="card-title">Send Invitation Email</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)", display: "block", marginBottom: 6 }}>Full Name *</label>
               <input
+                name="name"
                 value={form.name}
-                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
                 placeholder="e.g. Kiran Pandit"
                 style={{ width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, outline: "none" }}
               />
@@ -148,9 +183,10 @@ export default function AdminUsers() {
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)", display: "block", marginBottom: 6 }}>Work Email *</label>
               <input
+                name="email"
                 type="email"
                 value={form.email}
-                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
                 placeholder="kiran@company.com"
                 style={{ width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, outline: "none" }}
               />
@@ -158,67 +194,66 @@ export default function AdminUsers() {
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)", display: "block", marginBottom: 6 }}>Role</label>
               <select
+                name="role"
                 value={form.role}
-                onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
+                onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}
                 style={{ width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}
               >
-                {roles.map(r => <option key={r}>{r}</option>)}
+                {roles.map((role) => <option key={role}>{role}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-3)", display: "block", marginBottom: 6 }}>Department</label>
               <select
-                value={form.dept}
-                onChange={e => setForm(f => ({ ...f, dept: e.target.value }))}
+                name="department"
+                value={form.department}
+                onChange={(event) => setForm((current) => ({ ...current, department: event.target.value }))}
                 style={{ width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" }}
               >
-                {depts.map(d => <option key={d}>{d}</option>)}
+                {departments.map((department) => <option key={department}>{department}</option>)}
               </select>
             </div>
           </div>
 
-          {/* Email preview */}
           <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: 16, marginBottom: 16 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>Email Preview</div>
             <div style={{ fontSize: 13, lineHeight: 1.7, color: "var(--ink-2)" }}>
               <strong>To:</strong> {form.email || "employee@company.com"}<br />
-              <strong>Subject:</strong> You're invited to JWithKP HRMS 🎉<br /><br />
+              <strong>Subject:</strong> You're invited to JWithKP HRMS<br /><br />
               Hi <strong>{form.name || "Team Member"}</strong>,<br />
-              You've been invited to join <strong>JWithKP HRMS</strong> as <strong>{form.role}</strong> in <strong>{form.dept}</strong>.<br />
-              Click the link below to set up your account and get started.
+              You've been invited to join <strong>JWithKP HRMS</strong> as <strong>{form.role}</strong> in <strong>{form.department}</strong>.<br />
+              The record will be stored in D1 and the invite email will be sent if Gmail variables are configured.
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 10 }}>
             <button
+              type="submit"
               className="btn btn-primary"
-              onClick={handleInvite}
-              disabled={sending || !form.name || !form.email}
-              style={{ opacity: sending || !form.name || !form.email ? 0.6 : 1 }}
+              disabled={sendingInvite || !form.name || !form.email}
+              style={{ opacity: sendingInvite || !form.name || !form.email ? 0.6 : 1 }}
             >
-              {sending ? "Sending..." : "📧 Send Invite"}
+              {sendingInvite ? "Sending..." : "Send Invite"}
             </button>
-            <button className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
+            <button type="button" className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
-        </div>
+        </inviteFetcher.Form>
       )}
 
-      {/* Stats */}
       <div className="stat-grid">
         {[
           { label: "Total Users", value: users.length, color: "var(--accent)" },
-          { label: "Active", value: users.filter(u => u.status === "Active").length, color: "var(--green)" },
-          { label: "Invited (Pending)", value: users.filter(u => u.status === "Invited").length, color: "var(--amber)" },
-          { label: "Admins", value: users.filter(u => u.role.includes("Admin")).length, color: "var(--red)" },
-        ].map(s => (
-          <div className="stat-card" key={s.label} style={{ borderLeft: `4px solid ${s.color}` }}>
-            <div className="stat-label">{s.label}</div>
-            <div className="stat-value" style={{ color: s.color, fontSize: 28 }}>{s.value}</div>
+          { label: "Active", value: users.filter((user) => user.status === "Active").length, color: "var(--green)" },
+          { label: "Invited", value: users.filter((user) => user.status === "Invited").length, color: "var(--amber)" },
+          { label: "Admins", value: users.filter((user) => user.role.includes("Admin")).length, color: "var(--red)" },
+        ].map((stat) => (
+          <div className="stat-card" key={stat.label} style={{ borderLeft: `4px solid ${stat.color}` }}>
+            <div className="stat-label">{stat.label}</div>
+            <div className="stat-value" style={{ color: stat.color, fontSize: 28 }}>{stat.value}</div>
           </div>
         ))}
       </div>
 
-      {/* Users Table */}
       <div className="card">
         <div className="card-title">All Users</div>
         <table className="table">
@@ -226,56 +261,64 @@ export default function AdminUsers() {
             <tr><th>User</th><th>Email</th><th>Role</th><th>Department</th><th>Since</th><th>Status</th><th>Actions</th></tr>
           </thead>
           <tbody>
-            {users.map(u => (
-              <tr key={u.id}>
-                <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{
-                      width: 34, height: 34, borderRadius: "50%",
-                      background: u.status === "Active" ? "var(--accent-light)" : "var(--amber-light)",
-                      color: u.status === "Active" ? "var(--accent)" : "var(--amber)",
-                      display: "grid", placeItems: "center",
-                      fontWeight: 700, fontSize: 12, flexShrink: 0,
-                    }}>
-                      {u.name.split(" ").map(n => n[0]).join("").slice(0, 2)}
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 600, color: "var(--ink)", fontSize: 13 }}>{u.name}</div>
-                      <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{u.id}</div>
-                    </div>
-                  </div>
-                </td>
-                <td style={{ fontSize: 13 }}>{u.email}</td>
-                <td style={{ fontSize: 13 }}>{u.role}</td>
-                <td style={{ fontSize: 13 }}>{u.dept}</td>
-                <td style={{ fontSize: 12, color: "var(--ink-3)" }}>{u.joinedOn}</td>
-                <td>
-                  <span className={`badge ${u.status === "Active" ? "badge-green" : "badge-amber"}`}>
-                    {u.status}
-                  </span>
-                </td>
-                <td>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {u.status === "Invited" && (
-                      <button
-                        className="btn btn-outline"
-                        style={{ padding: "4px 10px", fontSize: 11 }}
-                        onClick={() => resendInvite(u)}
-                        disabled={sending}
-                      >
-                        Resend
-                      </button>
-                    )}
-                    <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }}>Edit</button>
-                    {u.status === "Active" && (
-                      <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11, color: "var(--red)", borderColor: "var(--red)" }}>
-                        Revoke
-                      </button>
-                    )}
-                  </div>
-                </td>
+            {users.length === 0 ? (
+              <tr>
+                <td colSpan={7} style={{ color: "var(--ink-3)" }}>No users have been inserted into D1 yet.</td>
               </tr>
-            ))}
+            ) : (
+              users.map((user) => (
+                <tr key={user.id}>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{
+                        width: 34, height: 34, borderRadius: "50%",
+                        background: user.status === "Active" ? "var(--accent-light)" : "var(--amber-light)",
+                        color: user.status === "Active" ? "var(--accent)" : "var(--amber)",
+                        display: "grid", placeItems: "center",
+                        fontWeight: 700, fontSize: 12, flexShrink: 0,
+                      }}>
+                        {user.name.split(" ").map((name) => name[0]).join("").slice(0, 2)}
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 600, color: "var(--ink)", fontSize: 13 }}>{user.name}</div>
+                        <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{user.id}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{ fontSize: 13 }}>{user.email}</td>
+                  <td style={{ fontSize: 13 }}>{user.role}</td>
+                  <td style={{ fontSize: 13 }}>{user.department}</td>
+                  <td style={{ fontSize: 12, color: "var(--ink-3)" }}>{user.joinedOn}</td>
+                  <td>
+                    <span className={`badge ${user.status === "Active" ? "badge-green" : "badge-amber"}`}>
+                      {user.status}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {user.status === "Invited" && (
+                        <resendFetcher.Form method="post">
+                          <input type="hidden" name="intent" value="resend" />
+                          <input type="hidden" name="userId" value={user.id} />
+                          <input type="hidden" name="name" value={user.name} />
+                          <input type="hidden" name="email" value={user.email} />
+                          <input type="hidden" name="role" value={user.role} />
+                          <input type="hidden" name="department" value={user.department} />
+                          <button
+                            type="submit"
+                            className="btn btn-outline"
+                            style={{ padding: "4px 10px", fontSize: 11 }}
+                            disabled={sendingResend}
+                          >
+                            Resend
+                          </button>
+                        </resendFetcher.Form>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

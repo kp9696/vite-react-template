@@ -4,11 +4,20 @@
 	"main": "./workers/app.ts",
 	"compatibility_date": "2025-10-08",
 	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "HRMS",
+			"database_name": "email",
+			"database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE",
+			"preview_database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE",
+			"migrations_dir": "migrations"
+		}
+	],
 	"observability": {
 		"enabled": true
 	},
 	"upload_source_maps": true,
 	"vars": {
-		"VALUE_FROM_CLOUDFLARE": "Hello from Cloudflare"
+		"HRMS_BASE_URL": "https://vite-react-template.keshavpandit9696.workers.dev"
 	}
 }

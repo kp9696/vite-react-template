@@ -1,109 +1,67 @@
-# Welcome to React Router + Cloudflare Workers!
+# JWithKP HRMS on Cloudflare Workers
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/react-router-starter-template)
+This project is now set up as a React Router 7 app running on Cloudflare Workers with a D1-backed HRMS user module.
 
-![React Router Starter Template Preview](https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/bfdc2f85-e5c9-4c92-128b-3a6711249800/public)
+## What is wired up
 
-<!-- dash-content-start -->
+- Cloudflare Worker entry in [workers/app.ts](/C:/Users/Admin/Documents/vite-react-template/workers/app.ts)
+- D1 schema and seed migration in [migrations/0001_initial.sql](/C:/Users/Admin/Documents/vite-react-template/migrations/0001_initial.sql)
+- Shared D1 helpers in [app/lib/hrms.server.ts](/C:/Users/Admin/Documents/vite-react-template/app/lib/hrms.server.ts)
+- Invite mail helper in [app/lib/invite-email.server.ts](/C:/Users/Admin/Documents/vite-react-template/app/lib/invite-email.server.ts)
+- Live D1 dashboard in [app/routes/hrms.tsx](/C:/Users/Admin/Documents/vite-react-template/app/routes/hrms.tsx)
+- Live D1 user management in [app/routes/hrms.users.tsx](/C:/Users/Admin/Documents/vite-react-template/app/routes/hrms.users.tsx)
 
-A modern, production-ready template for building full-stack React applications using [React Router](https://reactrouter.com/) and the [Cloudflare Vite plugin](https://developers.cloudflare.com/workers/vite-plugin/).
+## Before deploy
 
-## Features
-
-- 🚀 Server-side rendering
-- ⚡️ Hot Module Replacement (HMR)
-- 📦 Asset bundling and optimization
-- 🔄 Data loading and mutations
-- 🔒 TypeScript by default
-- 🎉 TailwindCSS for styling
-- 📖 [React Router docs](https://reactrouter.com/)
-- 🔎 Built-in Observability to monitor your Worker
-<!-- dash-content-end -->
-
-## Getting Started
-
-Outside of this repo, you can start a new project with this template using [C3](https://developers.cloudflare.com/pages/get-started/c3/) (the `create-cloudflare` CLI):
-
-```bash
-npm create cloudflare@latest -- --template=cloudflare/templates/react-router-starter-template
-```
-
-A live public deployment of this template is available at [https://react-router-starter-template.templates.workers.dev](https://react-router-starter-template.templates.workers.dev)
-
-### Installation
-
-Install the dependencies:
+1. Install dependencies:
 
 ```bash
 npm install
 ```
 
-### Development
+2. Open [wrangler.json](/C:/Users/Admin/Documents/vite-react-template/wrangler.json) and replace:
 
-Start the development server with HMR:
+- `PASTE_YOUR_D1_DATABASE_ID_HERE`
+
+You can get that value from the Cloudflare dashboard or:
+
+```bash
+npx wrangler d1 list
+```
+
+3. Apply the D1 migration:
+
+```bash
+npx wrangler d1 migrations apply HRMS
+```
+
+4. Add these Worker variables in Cloudflare if you want invite emails to send:
+
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_FROM_EMAIL`
+- `HRMS_BASE_URL`
+
+Without Gmail variables, user records still save to D1 but invite delivery is skipped.
+
+## Local commands
 
 ```bash
 npm run dev
-```
-
-Your application will be available at `http://localhost:5173`.
-
-## Typegen
-
-Generate types for your Cloudflare bindings in `wrangler.json`:
-
-```sh
-npm run typegen
-```
-
-## Building for Production
-
-Create a production build:
-
-```bash
+npm run typecheck
 npm run build
 ```
 
-## Previewing the Production Build
-
-Preview the production build locally:
+## Deploy
 
 ```bash
-npm run preview
-```
-
-## Deployment
-
-If you don't have a Cloudflare account, [create one here](https://dash.cloudflare.com/sign-up)! Go to your [Workers dashboard](https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fworkers-and-pages) to see your [free custom Cloudflare Workers subdomain](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/) on `*.workers.dev`.
-
-Once that's done, you can build your app:
-
-```sh
-npm run build
-```
-
-And deploy it:
-
-```sh
 npm run deploy
 ```
 
-To deploy a preview URL:
+## Recommended Cloudflare flow
 
-```sh
-npx wrangler versions upload
-```
-
-You can then promote a version to production after verification or roll it out progressively.
-
-```sh
-npx wrangler versions deploy
-```
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
-
----
-
-Built with ❤️ using React Router.
+1. Bind the D1 database named `HRMS` to this Worker.
+2. Apply the migration.
+3. Deploy the Worker.
+4. Verify `/hrms` and `/hrms/users` on your production URL.

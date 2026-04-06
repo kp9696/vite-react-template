@@ -1,123 +1,116 @@
 import HRMSLayout from "../components/HRMSLayout";
-import { Link } from "react-router";
+import { Link, useLoaderData } from "react-router";
+import type { Route } from "./+types/hrms";
+import { getDashboardData } from "../lib/hrms.server";
 
-const stats = [
-  { label: "Total Employees", value: "1,284", delta: "+12 this month", up: true },
-  { label: "Open Positions", value: "38", delta: "6 urgent", up: false },
-  { label: "On Leave Today", value: "47", delta: "3.6% of workforce", up: true },
-  { label: "Avg. Tenure", value: "3.2y", delta: "+0.4 vs last yr", up: true },
-];
-
-const recentHires = [
-  { name: "Aarav Shah", role: "Senior Engineer", dept: "Engineering", date: "Apr 2", status: "Active" },
-  { name: "Priya Nair", role: "Product Designer", dept: "Design", date: "Apr 1", status: "Active" },
-  { name: "Rohan Mehta", role: "Data Analyst", dept: "Analytics", date: "Mar 28", status: "Onboarding" },
-  { name: "Sneha Pillai", role: "HR Generalist", dept: "People Ops", date: "Mar 25", status: "Active" },
-  { name: "Arjun Gupta", role: "Sales Executive", dept: "Sales", date: "Mar 22", status: "Active" },
-];
-
-const pendingApprovals = [
-  { name: "Deepa Krishnan", type: "Leave Request", detail: "3 days · Apr 10–12", priority: "Normal" },
-  { name: "Vikram Joshi", type: "Expense Claim", detail: "₹18,400 · Travel", priority: "High" },
-  { name: "Meera Iyer", type: "WFH Request", detail: "Apr 8–9", priority: "Normal" },
-  { name: "Sanjay Rao", type: "Overtime Approval", detail: "12 hrs · Mar Week 4", priority: "High" },
-];
-
-const deptData = [
-  { dept: "Engineering", count: 412, pct: 32 },
-  { dept: "Sales", count: 278, pct: 22 },
-  { dept: "Operations", count: 215, pct: 17 },
-  { dept: "Design", count: 142, pct: 11 },
-  { dept: "HR & Finance", count: 237, pct: 18 },
-];
-
-const colors = ["#4f46e5","#10b981","#f59e0b","#ef4444","#8b5cf6"];
+const colors = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9"];
 
 export function meta() {
-  return [{ title: "PeopleOS · Dashboard" }];
+  return [{ title: "PeopleOS - Dashboard" }];
+}
+
+export async function loader({ context }: Route.LoaderArgs) {
+  return getDashboardData(context.cloudflare.env.HRMS);
 }
 
 export default function HRMSDashboard() {
+  const data = useLoaderData<typeof loader>();
+
   return (
     <HRMSLayout>
-      <div className="page-title">Good morning, Kiran 👋</div>
-      <div className="page-sub">Here's what's happening across your workforce today.</div>
+      <div className="page-title">Good morning, Kiran</div>
+      <div className="page-sub">Your dashboard is now powered by live D1 data from Cloudflare.</div>
 
-      {/* Stats */}
       <div className="stat-grid">
-        {stats.map((s) => (
-          <div className="stat-card" key={s.label}>
-            <div className="stat-label">{s.label}</div>
-            <div className="stat-value">{s.value}</div>
-            <div className={`stat-delta ${s.up ? "delta-up" : "delta-down"}`}>
-              {s.up ? "↑" : "↓"} {s.delta}
+        {data.stats.map((stat) => (
+          <div className="stat-card" key={stat.label}>
+            <div className="stat-label">{stat.label}</div>
+            <div className="stat-value">{stat.value}</div>
+            <div
+              className={`stat-delta ${
+                stat.tone === "warning"
+                  ? "delta-down"
+                  : stat.tone === "neutral"
+                    ? ""
+                    : "delta-up"
+              }`}
+            >
+              {stat.tone === "warning" ? "↓" : "↑"} {stat.delta}
             </div>
           </div>
         ))}
       </div>
 
       <div className="two-col">
-        {/* Recent Hires */}
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div className="card-title" style={{ margin: 0 }}>Recent Hires</div>
-            <Link to="/hrms/employees" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}>View all →</Link>
+            <div className="card-title" style={{ margin: 0 }}>Latest Users</div>
+            <Link to="/hrms/users" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}>Manage users →</Link>
           </div>
           <table className="table">
             <thead>
               <tr><th>Name</th><th>Role</th><th>Joined</th><th>Status</th></tr>
             </thead>
             <tbody>
-              {recentHires.map((e) => (
-                <tr key={e.name}>
-                  <td>
-                    <div style={{ fontWeight: 600, color: "var(--ink)" }}>{e.name}</div>
-                    <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{e.dept}</div>
-                  </td>
-                  <td>{e.role}</td>
-                  <td>{e.date}</td>
-                  <td><span className={`badge ${e.status === "Active" ? "badge-green" : "badge-amber"}`}>{e.status}</span></td>
+              {data.recentUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={4} style={{ color: "var(--ink-3)" }}>No users found in D1 yet.</td>
                 </tr>
-              ))}
+              ) : (
+                data.recentUsers.map((user) => (
+                  <tr key={user.id}>
+                    <td>
+                      <div style={{ fontWeight: 600, color: "var(--ink)" }}>{user.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{user.department}</div>
+                    </td>
+                    <td>{user.role}</td>
+                    <td>{user.joinedOn}</td>
+                    <td><span className={`badge ${user.status === "Active" ? "badge-green" : "badge-amber"}`}>{user.status}</span></td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
 
-        {/* Pending Approvals */}
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div className="card-title" style={{ margin: 0 }}>Pending Approvals</div>
-            <span className="badge badge-red">{pendingApprovals.length} pending</span>
+            <div className="card-title" style={{ margin: 0 }}>Pending Invite Activity</div>
+            <span className="badge badge-red">{data.pendingInvites.length} pending</span>
           </div>
-          {pendingApprovals.map((a) => (
-            <div key={a.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid var(--border)" }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)" }}>{a.name}</div>
-                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{a.type} · {a.detail}</div>
+          {data.pendingInvites.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>There are no outstanding invites right now.</div>
+          ) : (
+            data.pendingInvites.map((invite) => (
+              <div key={invite.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid var(--border)" }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)" }}>{invite.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{invite.role} · {invite.department}</div>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{invite.detail}</div>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-primary" style={{ padding: "5px 12px", fontSize: 12 }}>Approve</button>
-                <button className="btn btn-outline" style={{ padding: "5px 12px", fontSize: 12 }}>Reject</button>
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 
-      {/* Dept Distribution */}
       <div className="card">
         <div className="card-title">Workforce by Department</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {deptData.map((d, i) => (
-            <div key={d.dept} style={{ display: "flex", alignItems: "center", gap: 16 }}>
-              <div style={{ width: 120, fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>{d.dept}</div>
-              <div style={{ flex: 1, background: "var(--surface)", borderRadius: 99, height: 10, overflow: "hidden" }}>
-                <div style={{ width: `${d.pct}%`, background: colors[i], height: "100%", borderRadius: 99, transition: "width 0.6s ease" }} />
+          {data.departmentData.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Department breakdown will appear once users are added.</div>
+          ) : (
+            data.departmentData.map((item, index) => (
+              <div key={item.department} style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <div style={{ width: 140, fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>{item.department}</div>
+                <div style={{ flex: 1, background: "var(--surface)", borderRadius: 99, height: 10, overflow: "hidden" }}>
+                  <div style={{ width: `${item.percent}%`, background: colors[index % colors.length], height: "100%", borderRadius: 99, transition: "width 0.6s ease" }} />
+                </div>
+                <div style={{ width: 60, fontSize: 13, fontWeight: 700, color: "var(--ink)", textAlign: "right" }}>{item.count}</div>
+                <div style={{ width: 44, fontSize: 12, color: "var(--ink-3)" }}>{item.percent}%</div>
               </div>
-              <div style={{ width: 60, fontSize: 13, fontWeight: 700, color: "var(--ink)", textAlign: "right" }}>{d.count}</div>
-              <div style={{ width: 36, fontSize: 12, color: "var(--ink-3)" }}>{d.pct}%</div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
     </HRMSLayout>
