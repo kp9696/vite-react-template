@@ -149,8 +149,10 @@ export default function Login() {
             <br />
             Employees go to the HRMS dashboard.
             <br />
-            New work-email users are redirected to company registration.
+            New work-email users are redirected to company registration with OTP verification.
           </div>
+
+          <a href="/register" className="create-account-link">Create account</a>
 
           <div className="divider"><span>or use demo login</span></div>
 
@@ -242,6 +244,7 @@ export default function Login() {
         .error-msg { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
         .submit-btn { width: 100%; padding: 13px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; font-family: 'Syne', sans-serif; cursor: pointer; margin-top: 8px; }
         .security-note { margin-top: 18px; font-size: 12px; color: #6b7280; line-height: 1.6; }
+        .create-account-link { display: inline-flex; margin-top: 14px; color: #4f46e5; font-weight: 700; text-decoration: none; font-size: 13px; }
         @media (max-width: 900px) { .login-left { display: none; } .login-right { width: 100%; } }
       `}</style>
     </div>
