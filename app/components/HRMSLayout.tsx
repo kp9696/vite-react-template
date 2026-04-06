@@ -26,8 +26,8 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
       {/* Sidebar */}
       <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`}>
         <div className="sidebar-header">
-          <div className="logo-mark">H</div>
-          {!collapsed && <span className="logo-text">PeopleOS</span>}
+          <div className="logo-mark">JK</div>
+          {!collapsed && <span className="logo-text">JWithKP</span>}
           <button className="collapse-btn" onClick={() => setCollapsed(!collapsed)}>
             {collapsed ? "›" : "‹"}
           </button>
@@ -52,7 +52,7 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
             <div className="avatar">KP</div>
             {!collapsed && (
               <div className="user-info">
-                <span className="user-name">Kiran P.</span>
+                <span className="user-name">Admin</span>
                 <span className="user-role">HR Admin</span>
               </div>
             )}
