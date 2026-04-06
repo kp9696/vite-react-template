@@ -15,6 +15,7 @@ const nav = [
   { label: "Exit Mgmt", icon: "🚪", path: "/hrms/exit" },
   { label: "Analytics", icon: "📊", path: "/hrms/analytics" },
   { label: "HRBot AI", icon: "🤖", path: "/hrms/hrbot" },
+  { label: "User Mgmt", icon: "🔐", path: "/hrms/users" },
 ];
 
 export default function HRMSLayout({ children }: { children: React.ReactNode }) {

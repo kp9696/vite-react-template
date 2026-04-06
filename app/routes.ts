@@ -16,4 +16,5 @@ export default [
   route("hrms/exit", "routes/hrms.exit.tsx"),
   route("hrms/analytics", "routes/hrms.analytics.tsx"),
   route("hrms/hrbot", "routes/hrms.hrbot.tsx"),
+  route("hrms/users", "routes/hrms.users.tsx"),
 ] satisfies RouteConfig;
