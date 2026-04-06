@@ -1,220 +1,187 @@
+import { useEffect, useState, type CSSProperties } from "react";
+import { useFetcher, useLoaderData } from "react-router";
+import type { Route } from "./+types/hrms.onboarding";
 import HRMSLayout from "../components/HRMSLayout";
-import { useState } from "react";
+import { DEMO_USER } from "../lib/hrms.server";
+import { requireSignedInUser } from "../lib/session.server";
+import { createOnboardingJoiner, getDemoOnboardingDashboard, getOnboardingDashboard, toggleOnboardingTask } from "../lib/workforce.server";
 
-const newJoiners = [
-  {
-    name: "Ishaan Verma", role: "ML Engineer", dept: "Engineering", startDate: "Apr 14",
-    avatar: "IV", progress: 35,
-    tasks: [
-      { section: "Pre-joining", items: [
-        { label: "Offer Letter Signed", done: true },
-        { label: "Background Verification", done: true },
-        { label: "Document Submission", done: true },
-      ]},
-      { section: "Day 1 Setup", items: [
-        { label: "Laptop Assigned", done: true },
-        { label: "Email & Slack Access", done: false },
-        { label: "ID Card Issued", done: false },
-      ]},
-      { section: "Week 1", items: [
-        { label: "HR Induction Session", done: false },
-        { label: "Team Introduction", done: false },
-        { label: "Tool Access (Jira, GitHub)", done: false },
-      ]},
-      { section: "30-Day Goals", items: [
-        { label: "Complete Security Training", done: false },
-        { label: "First Project Kickoff", done: false },
-        { label: "Buddy Check-in", done: false },
-      ]},
-    ]
-  },
-  {
-    name: "Pooja Hegde", role: "UX Researcher", dept: "Design", startDate: "Apr 7",
-    avatar: "PH", progress: 72,
-    tasks: [
-      { section: "Pre-joining", items: [
-        { label: "Offer Letter Signed", done: true },
-        { label: "Background Verification", done: true },
-        { label: "Document Submission", done: true },
-      ]},
-      { section: "Day 1 Setup", items: [
-        { label: "Laptop Assigned", done: true },
-        { label: "Email & Slack Access", done: true },
-        { label: "ID Card Issued", done: true },
-      ]},
-      { section: "Week 1", items: [
-        { label: "HR Induction Session", done: true },
-        { label: "Team Introduction", done: true },
-        { label: "Tool Access (Figma, Notion)", done: false },
-      ]},
-      { section: "30-Day Goals", items: [
-        { label: "Complete Security Training", done: false },
-        { label: "First Research Sprint", done: false },
-        { label: "Buddy Check-in", done: false },
-      ]},
-    ]
-  },
-  {
-    name: "Tanvi Kulkarni", role: "Data Scientist", dept: "Analytics", startDate: "Apr 21",
-    avatar: "TK", progress: 10,
-    tasks: [
-      { section: "Pre-joining", items: [
-        { label: "Offer Letter Signed", done: true },
-        { label: "Background Verification", done: false },
-        { label: "Document Submission", done: false },
-      ]},
-      { section: "Day 1 Setup", items: [
-        { label: "Laptop Assigned", done: false },
-        { label: "Email & Slack Access", done: false },
-        { label: "ID Card Issued", done: false },
-      ]},
-      { section: "Week 1", items: [
-        { label: "HR Induction Session", done: false },
-        { label: "Team Introduction", done: false },
-        { label: "Tool Access (Databricks, Jupyter)", done: false },
-      ]},
-      { section: "30-Day Goals", items: [
-        { label: "Complete Security Training", done: false },
-        { label: "First Data Pipeline", done: false },
-        { label: "Buddy Check-in", done: false },
-      ]},
-    ]
-  },
-];
+type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
 export function meta() {
-  return [{ title: "PeopleOS · Onboarding" }];
+  return [{ title: "PeopleOS - Onboarding" }];
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  const data = currentUser.id === DEMO_USER.id
+    ? getDemoOnboardingDashboard()
+    : currentUser.orgId
+      ? await getOnboardingDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+      : getDemoOnboardingDashboard();
+
+  return { currentUser, ...data };
+}
+
+export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  if (currentUser.id === DEMO_USER.id) {
+    return { ok: false, type: "error", message: "Demo onboarding data is read-only." };
+  }
+  if (!currentUser.orgId) {
+    return { ok: false, type: "error", message: "Organization not found for this user." };
+  }
+
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+
+  if (intent === "add-joiner") {
+    await createOnboardingJoiner(context.cloudflare.env.HRMS, {
+      orgId: currentUser.orgId,
+      name: String(formData.get("name") || "").trim(),
+      role: String(formData.get("role") || "").trim(),
+      department: String(formData.get("department") || "").trim(),
+      startDate: String(formData.get("startDate") || "").trim(),
+    });
+    return { ok: true, type: "success", message: "New joiner added successfully." };
+  }
+
+  if (intent === "toggle-task") {
+    await toggleOnboardingTask(
+      context.cloudflare.env.HRMS,
+      String(formData.get("joinerId") || ""),
+      String(formData.get("taskId") || ""),
+    );
+    return { ok: true, type: "success", message: "Onboarding task updated." };
+  }
+
+  return { ok: false, type: "error", message: "Unsupported onboarding action." };
 }
 
 export default function Onboarding() {
+  const data = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<ActionResult>();
+  const taskFetcher = useFetcher<ActionResult>();
   const [selected, setSelected] = useState(0);
-  const joiner = newJoiners[selected];
-  const allTasks = joiner.tasks.flatMap(s => s.items);
-  const done = allTasks.filter(t => t.done).length;
+  const [showForm, setShowForm] = useState(false);
+  const [toast, setToast] = useState<ActionResult | null>(null);
+
+  useEffect(() => {
+    if (fetcher.data) {
+      setToast(fetcher.data);
+      if (fetcher.data.ok) setShowForm(false);
+    }
+  }, [fetcher.data]);
+
+  useEffect(() => {
+    if (taskFetcher.data) setToast(taskFetcher.data);
+  }, [taskFetcher.data]);
+
+  const joiner = data.joiners[selected] ?? data.joiners[0];
+  const doneCount = joiner ? joiner.tasks.filter((task) => task.done).length : 0;
 
   return (
     <HRMSLayout>
+      {toast ? <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13 }}>{toast.message}</div> : null}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Onboarding</div>
           <div className="page-sub">Track new hire journeys from offer to fully productive.</div>
         </div>
-        <button className="btn btn-primary">+ Add New Joiner</button>
+        <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Add New Joiner</button>
       </div>
 
+      {showForm ? (
+        <fetcher.Form method="post" className="card" style={{ marginBottom: 20 }}>
+          <input type="hidden" name="intent" value="add-joiner" />
+          <div className="card-title">Add New Joiner</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <input name="name" placeholder="Full name" style={fieldStyle} />
+            <input name="role" placeholder="Role" style={fieldStyle} />
+            <input name="department" placeholder="Department" style={fieldStyle} />
+            <input name="startDate" type="date" style={fieldStyle} />
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button className="btn btn-primary" type="submit" disabled={fetcher.state !== "idle"}>{fetcher.state !== "idle" ? "Saving..." : "Save Joiner"}</button>
+            <button className="btn btn-outline" type="button" onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </fetcher.Form>
+      ) : null}
+
       <div className="stat-grid">
-        {[
-          { label: "Joining This Month", value: "12", sub: "Apr 2026" },
-          { label: "In Progress", value: "8", sub: "Active onboarding" },
-          { label: "Completed", value: "4", sub: "Fully onboarded" },
-          { label: "Avg Completion", value: "58%", sub: "↑ 12% vs last month" },
-        ].map(s => (
-          <div className="stat-card" key={s.label}>
-            <div className="stat-label">{s.label}</div>
-            <div className="stat-value" style={{ fontSize: 22 }}>{s.value}</div>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{s.sub}</div>
+        {data.stats.map((stat) => (
+          <div className="stat-card" key={stat.label}>
+            <div className="stat-label">{stat.label}</div>
+            <div className="stat-value" style={{ fontSize: 22 }}>{stat.value}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{stat.sub}</div>
           </div>
         ))}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 20 }}>
-        {/* Joiner List */}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {newJoiners.map((j, i) => (
-            <div
-              key={j.name}
-              onClick={() => setSelected(i)}
-              style={{
-                background: selected === i ? "var(--accent)" : "white",
-                border: `1px solid ${selected === i ? "var(--accent)" : "var(--border)"}`,
-                borderRadius: 12, padding: 16, cursor: "pointer",
-                transition: "all 0.15s",
-              }}
-            >
+          {data.joiners.map((current, index) => (
+            <div key={current.id} onClick={() => setSelected(index)} style={{ background: selected === index ? "var(--accent)" : "white", border: `1px solid ${selected === index ? "var(--accent)" : "var(--border)"}`, borderRadius: 12, padding: 16, cursor: "pointer" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: "50%",
-                  background: selected === i ? "rgba(255,255,255,0.2)" : "var(--accent-light)",
-                  color: selected === i ? "white" : "var(--accent)",
-                  display: "grid", placeItems: "center",
-                  fontWeight: 700, fontSize: 12, flexShrink: 0
-                }}>{j.avatar}</div>
+                <div style={{ width: 36, height: 36, borderRadius: "50%", background: selected === index ? "rgba(255,255,255,0.2)" : "var(--accent-light)", color: selected === index ? "white" : "var(--accent)", display: "grid", placeItems: "center", fontWeight: 700, fontSize: 12 }}>{current.avatar}</div>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: selected === i ? "white" : "var(--ink)" }}>{j.name}</div>
-                  <div style={{ fontSize: 11, color: selected === i ? "rgba(255,255,255,0.7)" : "var(--ink-3)" }}>{j.role}</div>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: selected === index ? "white" : "var(--ink)" }}>{current.name}</div>
+                  <div style={{ fontSize: 11, color: selected === index ? "rgba(255,255,255,0.7)" : "var(--ink-3)" }}>{current.role}</div>
                 </div>
               </div>
-              <div style={{ fontSize: 11, color: selected === i ? "rgba(255,255,255,0.7)" : "var(--ink-3)", marginBottom: 8 }}>
-                Starts {j.startDate} · {j.dept}
+              <div style={{ fontSize: 11, color: selected === index ? "rgba(255,255,255,0.7)" : "var(--ink-3)", marginBottom: 8 }}>
+                Starts {current.startDateLabel} · {current.department}
               </div>
-              <div style={{ background: selected === i ? "rgba(255,255,255,0.2)" : "var(--surface)", borderRadius: 99, height: 6 }}>
-                <div style={{ width: `${j.progress}%`, background: selected === i ? "white" : "var(--accent)", height: "100%", borderRadius: 99 }} />
-              </div>
-              <div style={{ fontSize: 11, color: selected === i ? "rgba(255,255,255,0.8)" : "var(--ink-3)", marginTop: 4 }}>
-                {j.progress}% complete
+              <div style={{ background: selected === index ? "rgba(255,255,255,0.2)" : "var(--surface)", borderRadius: 99, height: 6 }}>
+                <div style={{ width: `${current.progress}%`, background: selected === index ? "white" : "var(--accent)", height: "100%", borderRadius: 99 }} />
               </div>
             </div>
           ))}
         </div>
 
-        {/* Checklist Detail */}
-        <div className="card" style={{ margin: 0 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 18 }}>{joiner.name}</div>
-              <div style={{ fontSize: 13, color: "var(--ink-3)" }}>{joiner.role} · Starts {joiner.startDate}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 28, fontWeight: 800, color: "var(--accent)" }}>{done}/{allTasks.length}</div>
-              <div style={{ fontSize: 12, color: "var(--ink-3)" }}>tasks done</div>
-            </div>
-          </div>
-
-          {/* Progress bar */}
-          <div style={{ background: "var(--surface)", borderRadius: 99, height: 10, marginBottom: 24 }}>
-            <div style={{ width: `${joiner.progress}%`, background: "var(--accent)", height: "100%", borderRadius: 99, transition: "width 0.6s" }} />
-          </div>
-
-          {joiner.tasks.map(section => (
-            <div key={section.section} style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--ink-3)", marginBottom: 10 }}>
-                {section.section}
+        {joiner ? (
+          <div className="card" style={{ margin: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 18 }}>{joiner.name}</div>
+                <div style={{ fontSize: 13, color: "var(--ink-3)" }}>{joiner.role} · Starts {joiner.startDateLabel}</div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {section.items.map(item => (
-                  <div key={item.label} style={{
-                    display: "flex", alignItems: "center", gap: 12,
-                    padding: "10px 14px", borderRadius: 8,
-                    background: item.done ? "var(--green-light)" : "var(--surface)",
-                    border: `1px solid ${item.done ? "#bbf7d0" : "var(--border)"}`,
-                  }}>
-                    <div style={{
-                      width: 20, height: 20, borderRadius: "50%",
-                      background: item.done ? "var(--green)" : "white",
-                      border: `2px solid ${item.done ? "var(--green)" : "var(--border)"}`,
-                      display: "grid", placeItems: "center", flexShrink: 0,
-                      color: "white", fontSize: 11
-                    }}>
-                      {item.done ? "✓" : ""}
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: 500, color: item.done ? "var(--green)" : "var(--ink)", textDecoration: item.done ? "line-through" : "none" }}>
-                      {item.label}
-                    </span>
-                    {!item.done && (
-                      <button className="btn btn-outline" style={{ marginLeft: "auto", padding: "3px 10px", fontSize: 11 }}>
-                        Mark Done
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 28, fontWeight: 800, color: "var(--accent)" }}>{doneCount}/{joiner.tasks.length}</div>
+                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>tasks done</div>
+              </div>
+            </div>
+
+            <div style={{ background: "var(--surface)", borderRadius: 99, height: 10, marginBottom: 24 }}>
+              <div style={{ width: `${joiner.progress}%`, background: "var(--accent)", height: "100%", borderRadius: 99 }} />
+            </div>
+
+            {joiner.groupedTasks.map((section) => (
+              <div key={section.section} style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--ink-3)", marginBottom: 10 }}>{section.section}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {section.items.map((task) => (
+                    <taskFetcher.Form key={task.id} method="post">
+                      <input type="hidden" name="intent" value="toggle-task" />
+                      <input type="hidden" name="joinerId" value={joiner.id} />
+                      <input type="hidden" name="taskId" value={task.id} />
+                      <button type="submit" style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 8, background: task.done ? "var(--green-light)" : "var(--surface)", border: `1px solid ${task.done ? "#bbf7d0" : "var(--border)"}`, cursor: "pointer" }}>
+                        <div style={{ width: 20, height: 20, borderRadius: "50%", background: task.done ? "var(--green)" : "white", border: `2px solid ${task.done ? "var(--green)" : "var(--border)"}`, display: "grid", placeItems: "center", color: "white", fontSize: 11 }}>
+                          {task.done ? "✓" : ""}
+                        </div>
+                        <span style={{ fontSize: 13, fontWeight: 500, color: task.done ? "var(--green)" : "var(--ink)", textDecoration: task.done ? "line-through" : "none" }}>{task.label}</span>
+                        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--ink-3)" }}>{task.done ? "Done" : "Mark Done"}</span>
                       </button>
-                    )}
-                    {item.done && (
-                      <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--green)", fontWeight: 600 }}>✓ Done</span>
-                    )}
-                  </div>
-                ))}
+                    </taskFetcher.Form>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </HRMSLayout>
   );
 }
+
+const fieldStyle: CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13 };
