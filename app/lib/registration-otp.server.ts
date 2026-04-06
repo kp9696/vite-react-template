@@ -5,14 +5,44 @@ interface PendingRegistration {
   department: string;
 }
 
+let registrationOtpSchemaReady = false;
+
 function generateOtpCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function ensureRegistrationOtpSchema(db: D1Database) {
+  if (registrationOtpSchemaReady) {
+    return;
+  }
+
+  await db.batch([
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS registration_otps (
+        email TEXT PRIMARY KEY,
+        otp_code TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        verified_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_registration_otps_expires_at
+       ON registration_otps(expires_at)`,
+    ),
+  ]);
+
+  registrationOtpSchemaReady = true;
 }
 
 export async function createRegistrationOtp(
   db: D1Database,
   payload: PendingRegistration,
 ): Promise<string> {
+  await ensureRegistrationOtpSchema(db);
+
   const code = generateOtpCode();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
@@ -47,6 +77,8 @@ export async function verifyRegistrationOtp(
   email: string,
   otpCode: string,
 ): Promise<PendingRegistration> {
+  await ensureRegistrationOtpSchema(db);
+
   const row = await db
     .prepare(
       `SELECT email, otp_code, payload_json, expires_at
