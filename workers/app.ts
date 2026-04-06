@@ -1,6 +1,6 @@
 import { createRequestHandler } from "react-router";
 import { sendInviteEmail } from "../app/lib/invite-email.server";
-import { createOrUpdateInvitedUser } from "../app/lib/hrms.server";
+import { createOrUpdateInvitedUser, getUserByEmail } from "../app/lib/hrms.server";
 
 declare module "react-router" {
   export interface AppLoadContext {
@@ -54,7 +54,17 @@ export default {
           );
         }
 
-        const user = await createOrUpdateInvitedUser(env.HRMS, payload);
+        const existingUser = await getUserByEmail(env.HRMS, payload.email);
+        const orgId = existingUser?.orgId;
+
+        if (!orgId) {
+          return Response.json(
+            { success: false, error: "No organization was found for this email. Please register the company first." },
+            { status: 400, headers: corsHeaders },
+          );
+        }
+
+        const user = await createOrUpdateInvitedUser(env.HRMS, { ...payload, orgId });
         const mailResult = await sendInviteEmail(env, env.HRMS, user.id, payload, request.url);
 
         return Response.json(

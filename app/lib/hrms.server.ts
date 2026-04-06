@@ -1,7 +1,18 @@
 export type UserStatus = "Active" | "Invited" | "Pending";
+import { isAdminRole, isWorkEmail, normalizeDomain } from "./hrms.shared";
+
+export interface Organization {
+  id: string;
+  name: string;
+  domain: string;
+  inviteLimit: number;
+  createdAt: string;
+}
 
 export interface HRMSUser {
   id: string;
+  orgId: string | null;
+  organizationName: string | null;
   name: string;
   email: string;
   role: string;
@@ -14,9 +25,17 @@ export interface HRMSUser {
 }
 
 export interface InviteUserInput {
+  orgId: string;
   name: string;
   email: string;
   role: string;
+  department: string;
+}
+
+export interface RegisterOrganizationInput {
+  organizationName: string;
+  adminName: string;
+  email: string;
   department: string;
 }
 
@@ -36,6 +55,8 @@ function normalizeMonthYear(value: string | null | undefined): string {
 function mapUser(row: Record<string, unknown>): HRMSUser {
   return {
     id: String(row.id),
+    orgId: row.org_id ? String(row.org_id) : null,
+    organizationName: row.organization_name ? String(row.organization_name) : null,
     name: String(row.name),
     email: String(row.email),
     role: String(row.role),
@@ -48,24 +69,43 @@ function mapUser(row: Record<string, unknown>): HRMSUser {
   };
 }
 
-export async function listUsers(db: D1Database): Promise<HRMSUser[]> {
-  const result = await db
-    .prepare(
-      `SELECT id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
-       FROM users
-       ORDER BY datetime(created_at) DESC, name ASC`,
-    )
-    .all<Record<string, unknown>>();
+function mapOrganization(row: Record<string, unknown>): Organization {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    domain: String(row.domain),
+    inviteLimit: Number(row.invite_limit),
+    createdAt: String(row.created_at),
+  };
+}
 
+export async function listUsers(db: D1Database, orgId?: string): Promise<HRMSUser[]> {
+  const statement = orgId
+    ? db.prepare(
+        `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+         FROM users
+         LEFT JOIN organizations ON organizations.id = users.org_id
+         WHERE users.org_id = ?
+         ORDER BY datetime(users.created_at) DESC, users.name ASC`,
+      ).bind(orgId)
+    : db.prepare(
+        `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+         FROM users
+         LEFT JOIN organizations ON organizations.id = users.org_id
+         ORDER BY datetime(users.created_at) DESC, users.name ASC`,
+      );
+
+  const result = await statement.all<Record<string, unknown>>();
   return result.results.map(mapUser);
 }
 
 export async function getUserByEmail(db: D1Database, email: string): Promise<HRMSUser | null> {
   const result = await db
     .prepare(
-      `SELECT id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+      `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
        FROM users
-       WHERE lower(email) = lower(?)
+       LEFT JOIN organizations ON organizations.id = users.org_id
+       WHERE lower(users.email) = lower(?)
        LIMIT 1`,
     )
     .bind(email.trim())
@@ -77,15 +117,48 @@ export async function getUserByEmail(db: D1Database, email: string): Promise<HRM
 export async function getUserById(db: D1Database, id: string): Promise<HRMSUser | null> {
   const result = await db
     .prepare(
-      `SELECT id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+      `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
        FROM users
-       WHERE id = ?
+       LEFT JOIN organizations ON organizations.id = users.org_id
+       WHERE users.id = ?
        LIMIT 1`,
     )
     .bind(id)
     .first<Record<string, unknown>>();
 
   return result ? mapUser(result) : null;
+}
+
+export async function getOrganizationById(db: D1Database, id: string): Promise<Organization | null> {
+  const result = await db
+    .prepare(`SELECT id, name, domain, invite_limit, created_at FROM organizations WHERE id = ? LIMIT 1`)
+    .bind(id)
+    .first<Record<string, unknown>>();
+
+  return result ? mapOrganization(result) : null;
+}
+
+export async function getOrganizationByDomain(db: D1Database, domain: string): Promise<Organization | null> {
+  const result = await db
+    .prepare(`SELECT id, name, domain, invite_limit, created_at FROM organizations WHERE lower(domain) = lower(?) LIMIT 1`)
+    .bind(domain)
+    .first<Record<string, unknown>>();
+
+  return result ? mapOrganization(result) : null;
+}
+
+export async function getOrganizationMemberUsage(db: D1Database, orgId: string): Promise<number> {
+  const result = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM users
+       WHERE org_id = ?
+       AND lower(role) NOT LIKE '%admin%'`,
+    )
+    .bind(orgId)
+    .first<{ count: number | string }>();
+
+  return Number(result?.count ?? 0);
 }
 
 export async function createOrUpdateInvitedUser(
@@ -100,10 +173,10 @@ export async function createOrUpdateInvitedUser(
     await db
       .prepare(
         `UPDATE users
-         SET name = ?, role = ?, department = ?, status = 'Invited', invite_sent_at = ?, updated_at = ?
+         SET org_id = ?, name = ?, role = ?, department = ?, status = 'Invited', invite_sent_at = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .bind(input.name.trim(), input.role.trim(), input.department.trim(), now, now, existing.id)
+      .bind(input.orgId, input.name.trim(), input.role.trim(), input.department.trim(), now, now, existing.id)
       .run();
 
     const updated = await getUserById(db, existing.id);
@@ -118,10 +191,10 @@ export async function createOrUpdateInvitedUser(
 
   await db
     .prepare(
-      `INSERT INTO users (id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'Invited', ?, ?, ?, ?)`,
+      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Invited', ?, ?, ?, ?)`,
     )
-    .bind(id, input.name.trim(), email, input.role.trim(), input.department.trim(), joinedOn, now, now, now)
+    .bind(id, input.orgId, input.name.trim(), email, input.role.trim(), input.department.trim(), joinedOn, now, now, now)
     .run();
 
   const created = await getUserById(db, id);
@@ -129,6 +202,57 @@ export async function createOrUpdateInvitedUser(
     throw new Error("Created user could not be reloaded.");
   }
   return created;
+}
+
+export async function registerOrganization(
+  db: D1Database,
+  input: RegisterOrganizationInput,
+): Promise<{ organization: Organization; adminUser: HRMSUser }> {
+  const email = input.email.trim().toLowerCase();
+  const domain = normalizeDomain(email);
+
+  if (!isWorkEmail(email)) {
+    throw new Error("Please use your work email address.");
+  }
+
+  const existingUser = await getUserByEmail(db, email);
+  if (existingUser) {
+    throw new Error("This email is already registered. Please use Google SSO to sign in.");
+  }
+
+  const existingOrganization = await getOrganizationByDomain(db, domain);
+  if (existingOrganization) {
+    throw new Error("This company domain is already registered. Please use Google SSO to sign in.");
+  }
+
+  const orgId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const userId = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO organizations (id, name, domain, invite_limit, created_at, updated_at)
+       VALUES (?, ?, ?, 10, ?, ?)`,
+    )
+    .bind(orgId, input.organizationName.trim(), domain, now, now)
+    .run();
+
+  await db
+    .prepare(
+      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'Admin', ?, 'Active', ?, ?, ?, ?)`,
+    )
+    .bind(userId, orgId, input.adminName.trim(), email, input.department.trim(), now, now, now, now)
+    .run();
+
+  const organization = await getOrganizationById(db, orgId);
+  const adminUser = await getUserById(db, userId);
+
+  if (!organization || !adminUser) {
+    throw new Error("Registration completed partially and could not be reloaded.");
+  }
+
+  return { organization, adminUser };
 }
 
 export async function markInviteSent(db: D1Database, id: string): Promise<void> {
@@ -139,13 +263,16 @@ export async function markInviteSent(db: D1Database, id: string): Promise<void> 
     .run();
 }
 
-export async function getDashboardData(db: D1Database) {
-  const users = await listUsers(db);
+export async function getDashboardData(db: D1Database, orgId?: string) {
+  const users = await listUsers(db, orgId);
+  const organization = orgId ? await getOrganizationById(db, orgId) : null;
 
   const totalUsers = users.length;
   const activeUsers = users.filter((user) => user.status === "Active").length;
   const invitedUsers = users.filter((user) => user.status === "Invited").length;
-  const adminUsers = users.filter((user) => user.role.toLowerCase().includes("admin")).length;
+  const adminUsers = users.filter((user) => isAdminRole(user.role)).length;
+  const memberUsage = orgId ? await getOrganizationMemberUsage(db, orgId) : users.filter((user) => !isAdminRole(user.role)).length;
+  const inviteLimit = organization?.inviteLimit ?? 0;
 
   const recentUsers = users.slice(0, 5);
   const pendingInvites = users
@@ -178,10 +305,12 @@ export async function getDashboardData(db: D1Database) {
     .sort((a, b) => b.count - a.count);
 
   return {
+    organization,
     stats: [
       { label: "Total Users", value: String(totalUsers), delta: `${activeUsers} active`, tone: "positive" as const },
       { label: "Active Employees", value: String(activeUsers), delta: `${invitedUsers} invited`, tone: "positive" as const },
       { label: "Pending Invites", value: String(invitedUsers), delta: invitedUsers === 0 ? "All caught up" : "Awaiting setup", tone: invitedUsers === 0 ? "positive" as const : "warning" as const },
+      { label: "Invite Capacity", value: inviteLimit ? `${memberUsage}/${inviteLimit}` : String(memberUsage), delta: inviteLimit ? `${Math.max(inviteLimit - memberUsage, 0)} seats left` : "No org limit set", tone: "neutral" as const },
       { label: "Admins", value: String(adminUsers), delta: "Users with elevated access", tone: "neutral" as const },
     ],
     recentUsers,
