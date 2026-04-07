@@ -22,13 +22,27 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
+  // Get session info from localStorage
+  const session = typeof window !== "undefined"
+    ? JSON.parse(localStorage.getItem("hrms_session") || "null")
+    : null;
+  const userName = session?.fullName || "Admin";
+  const userRole = session?.role || "HR Admin";
+  const orgName = session?.orgName || "JWithKP";
+  const initials = userName.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase();
+
+  const handleLogout = () => {
+    localStorage.removeItem("hrms_session");
+    window.location.href = "/login";
+  };
+
   return (
     <div className="hrms-shell">
       {/* Sidebar */}
       <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`}>
         <div className="sidebar-header">
           <div className="logo-mark">JK</div>
-          {!collapsed && <span className="logo-text">JWithKP</span>}
+          {!collapsed && <span className="logo-text">{orgName.length > 12 ? orgName.slice(0, 12) + "…" : orgName}</span>}
           <button className="collapse-btn" onClick={() => setCollapsed(!collapsed)}>
             {collapsed ? "›" : "‹"}
           </button>
