@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { useLoaderData } from "react-router";
+import type { Route } from "./+types/hrms.hrbot";
 import HRMSLayout from "../components/HRMSLayout";
+import { requireSignedInUser } from "../lib/session.server";
 
 interface Message {
   role: "user" | "assistant";
@@ -93,10 +96,16 @@ If your question needs company-specific records, contact HR or connect this modu
 }
 
 export function meta() {
-  return [{ title: "PeopleOS - HRBot" }];
+  return [{ title: "JWithKP HRMS - HRBot" }];
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  return { currentUser };
 }
 
 export default function HRBot() {
+  const { currentUser } = useLoaderData<typeof loader>();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -135,17 +144,58 @@ export default function HRBot() {
     }
   };
 
+  const renderInline = (text: string) => {
+    const parts = text.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((part, index) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
+      }
+
+      return <Fragment key={`${part}-${index}`}>{part}</Fragment>;
+    });
+  };
+
   const renderContent = (text: string) => {
-    return text
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.*?)\*/g, "<em>$1</em>")
-      .replace(/^- (.+)/gm, "<li>$1</li>")
-      .replace(/(<li>.*<\/li>)/gs, "<ul style='margin:6px 0 6px 16px'>$1</ul>")
-      .replace(/\n/g, "<br/>");
+    const lines = text.split("\n");
+    const nodes: React.ReactNode[] = [];
+    let listItems: string[] = [];
+
+    const flushList = () => {
+      if (listItems.length === 0) {
+        return;
+      }
+
+      nodes.push(
+        <ul key={`list-${nodes.length}`} style={{ margin: "6px 0 6px 16px" }}>
+          {listItems.map((item, index) => (
+            <li key={`${item}-${index}`}>{renderInline(item)}</li>
+          ))}
+        </ul>,
+      );
+      listItems = [];
+    };
+
+    for (const line of lines) {
+      if (line.startsWith("- ")) {
+        listItems.push(line.slice(2));
+        continue;
+      }
+
+      flushList();
+      if (!line.trim()) {
+        nodes.push(<div key={`spacer-${nodes.length}`} style={{ height: 8 }} />);
+        continue;
+      }
+
+      nodes.push(<div key={`line-${nodes.length}`}>{renderInline(line)}</div>);
+    }
+
+    flushList();
+    return nodes;
   };
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={currentUser}>
       <div className="page-title">HRBot - Policy Assistant</div>
       <div className="page-sub">A deploy-safe built-in assistant for common HR policy questions.</div>
 
@@ -175,8 +225,9 @@ export default function HRBot() {
                       fontSize: 13.5,
                       lineHeight: 1.6,
                     }}
-                    dangerouslySetInnerHTML={{ __html: renderContent(message.content) }}
-                  />
+                  >
+                    {renderContent(message.content)}
+                  </div>
                   <div style={{ fontSize: 10, color: "var(--ink-3)", marginTop: 4, textAlign: message.role === "user" ? "right" : "left" }}>{message.ts}</div>
                 </div>
               </div>

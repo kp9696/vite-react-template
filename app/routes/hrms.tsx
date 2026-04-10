@@ -8,7 +8,7 @@ import { requireSignedInUser } from "../lib/session.server";
 const colors = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9"];
 
 export function meta() {
-  return [{ title: "PeopleOS - Dashboard" }];
+  return [{ title: "JWithKP HRMS - Dashboard" }];
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -27,7 +27,7 @@ export default function HRMSDashboard() {
   const data = useLoaderData<typeof loader>();
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={data.currentUser}>
       <div className="page-title">Welcome, {data.currentUser.name}</div>
       <div className="page-sub">
         {data.organization?.name

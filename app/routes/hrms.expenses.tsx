@@ -1,5 +1,8 @@
-import HRMSLayout from "../components/HRMSLayout";
+import { useLoaderData } from "react-router";
 import { useState } from "react";
+import type { Route } from "./+types/hrms.expenses";
+import HRMSLayout from "../components/HRMSLayout";
+import { requireSignedInUser } from "../lib/session.server";
 
 const expenses = [
   { id: "EXP-1042", name: "Vikram Joshi", category: "Travel", desc: "Flight BLR → DEL (client visit)", amount: 12400, date: "Apr 3", status: "Pending", receipt: true },
@@ -30,10 +33,16 @@ const catIcons: Record<string, string> = {
 const fmt = (n: number) => "₹" + n.toLocaleString("en-IN");
 
 export function meta() {
-  return [{ title: "PeopleOS · Expenses" }];
+  return [{ title: "JWithKP HRMS - Expenses" }];
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  return { currentUser };
 }
 
 export default function Expenses() {
+  const { currentUser } = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"all" | "pending" | "mine">("all");
   const [showForm, setShowForm] = useState(false);
 
@@ -48,7 +57,7 @@ export default function Expenses() {
   const totalReimbursed = expenses.filter(e => e.status === "Reimbursed").reduce((a, e) => a + e.amount, 0);
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={currentUser}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Expense Management</div>

@@ -1,5 +1,8 @@
-import HRMSLayout from "../components/HRMSLayout";
+import { useLoaderData } from "react-router";
 import { useState } from "react";
+import type { Route } from "./+types/hrms.payroll";
+import HRMSLayout from "../components/HRMSLayout";
+import { requireSignedInUser } from "../lib/session.server";
 
 const payrollData = [
   { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, gross: 350000, deductions: 42000, net: 308000, status: "Processed" },
@@ -13,10 +16,16 @@ const payrollData = [
 const fmt = (n: number) => "₹" + n.toLocaleString("en-IN");
 
 export function meta() {
-  return [{ title: "PeopleOS · Payroll" }];
+  return [{ title: "JWithKP HRMS - Payroll" }];
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  return { currentUser };
 }
 
 export default function Payroll() {
+  const { currentUser } = useLoaderData<typeof loader>();
   const [month, setMonth] = useState("April 2026");
 
   const totalGross = payrollData.reduce((a, e) => a + e.gross, 0);
@@ -25,7 +34,7 @@ export default function Payroll() {
   const pending = payrollData.filter((e) => e.status === "Pending").length;
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={currentUser}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Payroll</div>

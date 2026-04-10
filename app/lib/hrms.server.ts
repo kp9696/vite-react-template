@@ -62,8 +62,8 @@ export const DEMO_ORGANIZATION: Organization = {
   id: DEMO_ORG_ID,
   name: "JWithKP Demo Workspace",
   domain: "jwithkp.demo",
-  inviteLimit: 5,
-  createdAt: "2026-04-01T09:00:00.000Z",
+  inviteLimit: 10,
+  createdAt: "2025-11-01T09:00:00.000Z",
 };
 
 export const DEMO_USERS: HRMSUser[] = [
@@ -91,10 +91,10 @@ export const DEMO_USERS: HRMSUser[] = [
     role: "Manager",
     department: "Design",
     status: "Active",
-    joinedOn: "Apr 2026",
+    joinedOn: "Mar 2026",
     inviteSentAt: null,
-    createdAt: "2026-04-03T09:00:00.000Z",
-    updatedAt: "2026-04-03T09:00:00.000Z",
+    createdAt: "2026-03-15T09:00:00.000Z",
+    updatedAt: "2026-03-15T09:00:00.000Z",
   },
   {
     id: "USRDEMO04",
@@ -119,10 +119,80 @@ export const DEMO_USERS: HRMSUser[] = [
     role: "HR Manager",
     department: "People Ops",
     status: "Active",
-    joinedOn: "Apr 2026",
+    joinedOn: "Feb 2026",
     inviteSentAt: null,
-    createdAt: "2026-04-05T09:00:00.000Z",
-    updatedAt: "2026-04-05T09:00:00.000Z",
+    createdAt: "2026-02-10T09:00:00.000Z",
+    updatedAt: "2026-02-10T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO06",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Meera Iyer",
+    email: "meera@jwithkp.demo",
+    role: "Employee",
+    department: "Marketing",
+    status: "Active",
+    joinedOn: "Jan 2026",
+    inviteSentAt: null,
+    createdAt: "2026-01-12T09:00:00.000Z",
+    updatedAt: "2026-01-12T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO07",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Vikram Joshi",
+    email: "vikram@jwithkp.demo",
+    role: "Employee",
+    department: "Engineering",
+    status: "Active",
+    joinedOn: "Jan 2026",
+    inviteSentAt: null,
+    createdAt: "2026-01-20T09:00:00.000Z",
+    updatedAt: "2026-01-20T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO08",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Arjun Gupta",
+    email: "arjun@jwithkp.demo",
+    role: "Employee",
+    department: "Sales",
+    status: "Invited",
+    joinedOn: "Apr 2026",
+    inviteSentAt: "2026-04-08T09:00:00.000Z",
+    createdAt: "2026-04-08T09:00:00.000Z",
+    updatedAt: "2026-04-08T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO09",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Deepa Krishnan",
+    email: "deepa@jwithkp.demo",
+    role: "Manager",
+    department: "Engineering",
+    status: "Active",
+    joinedOn: "Dec 2025",
+    inviteSentAt: null,
+    createdAt: "2025-12-01T09:00:00.000Z",
+    updatedAt: "2025-12-01T09:00:00.000Z",
+  },
+  {
+    id: "USRDEMO10",
+    orgId: DEMO_ORG_ID,
+    organizationName: "JWithKP Demo Workspace",
+    name: "Kavya Sharma",
+    email: "kavya@jwithkp.demo",
+    role: "Employee",
+    department: "Finance",
+    status: "Active",
+    joinedOn: "Nov 2025",
+    inviteSentAt: null,
+    createdAt: "2025-11-15T09:00:00.000Z",
+    updatedAt: "2025-11-15T09:00:00.000Z",
   },
 ];
 
@@ -385,6 +455,7 @@ export async function registerOrganization(
 
   const email = input.email.trim().toLowerCase();
   const domain = normalizeDomain(email);
+  const organizationDomain = domain === "gmail.com" ? `gmail:${email}` : domain;
 
   if (!isWorkEmail(email)) {
     throw new Error("Please use a Gmail or company email address.");
@@ -392,12 +463,16 @@ export async function registerOrganization(
 
   const existingUser = await getUserByEmail(db, email);
   if (existingUser) {
-    throw new Error("This email is already registered. Please use Google SSO to sign in.");
+    throw new Error("This email is already registered. Please sign in or contact your admin.");
   }
 
-  const existingOrganization = await getOrganizationByDomain(db, domain);
+  const existingOrganization = await getOrganizationByDomain(db, organizationDomain);
   if (existingOrganization) {
-    throw new Error("This company domain is already registered. Please use Google SSO to sign in.");
+    throw new Error(
+      domain === "gmail.com"
+        ? "This Gmail account is already linked to a workspace. Please sign in with the same email."
+        : "This company domain is already registered. Please contact your existing admin to get invited.",
+    );
   }
 
   const orgId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
@@ -409,7 +484,7 @@ export async function registerOrganization(
       `INSERT INTO organizations (id, name, domain, invite_limit, created_at, updated_at)
        VALUES (?, ?, ?, 10, ?, ?)`,
     )
-    .bind(orgId, input.organizationName.trim(), domain, now, now)
+    .bind(orgId, input.organizationName.trim(), organizationDomain, now, now)
     .run();
 
   await db
@@ -436,6 +511,26 @@ export async function markInviteSent(db: D1Database, id: string): Promise<void> 
     .prepare(`UPDATE users SET invite_sent_at = ?, updated_at = ? WHERE id = ?`)
     .bind(now, now, id)
     .run();
+}
+
+export async function activateInvitedUser(db: D1Database, id: string): Promise<HRMSUser> {
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `UPDATE users
+       SET status = 'Active', updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(now, id)
+    .run();
+
+  const user = await getUserById(db, id);
+  if (!user) {
+    throw new Error("Invited user could not be loaded.");
+  }
+
+  return user;
 }
 
 export async function getDashboardData(db: D1Database, orgId?: string) {
@@ -525,7 +620,9 @@ export function getDemoDashboardData() {
       name: user.name,
       role: user.role,
       department: user.department,
-      detail: "Invite sent 4 Apr",
+      detail: user.inviteSentAt
+        ? `Invite sent ${new Date(user.inviteSentAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`
+        : "Invite pending",
     })),
     departmentData: Array.from(departmentCounts.entries()).map(([department, count]) => ({
       department,

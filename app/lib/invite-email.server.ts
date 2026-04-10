@@ -1,3 +1,4 @@
+import { createInviteToken } from "./invite-token.server";
 import { markInviteSent } from "./hrms.server";
 
 interface InviteEmailPayload {
@@ -41,15 +42,6 @@ function toBase64Url(value: string): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
-}
-
-function buildInviteToken(email: string): string {
-  return toBase64Url(
-    JSON.stringify({
-      email,
-      exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
-    }),
-  );
 }
 
 function buildRawEmail(from: string, to: string, subject: string, html: string): string {
@@ -121,9 +113,10 @@ export async function sendInviteEmail(
   }
 
   const token = await getGmailAccessToken(env);
+  const inviteToken = await createInviteToken(db, userId, payload.email);
   const url = new URL(requestUrl);
   const baseUrl = env.HRMS_BASE_URL || `${url.protocol}//${url.host}`;
-  const inviteUrl = `${baseUrl}/login?invite=${buildInviteToken(payload.email)}`;
+  const inviteUrl = `${baseUrl}/login?invite=${encodeURIComponent(inviteToken)}`;
   const html = buildInviteHtml(
     payload.name,
     payload.email,

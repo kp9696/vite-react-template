@@ -1,4 +1,7 @@
+import { useLoaderData } from "react-router";
+import type { Route } from "./+types/hrms.analytics";
 import HRMSLayout from "../components/HRMSLayout";
+import { requireSignedInUser } from "../lib/session.server";
 
 const attritionByDept = [
   { dept: "Engineering", rate: 8.2, headcount: 412 },
@@ -21,12 +24,18 @@ const hiringTrend = [
 const maxHired = Math.max(...hiringTrend.map(h => h.hired));
 
 export function meta() {
-  return [{ title: "PeopleOS · Analytics" }];
+  return [{ title: "JWithKP HRMS - Analytics" }];
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  return { currentUser };
 }
 
 export default function Analytics() {
+  const { currentUser } = useLoaderData<typeof loader>();
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={currentUser}>
       <div className="page-title">Workforce Analytics</div>
       <div className="page-sub">Data-driven insights to guide people decisions.</div>
 

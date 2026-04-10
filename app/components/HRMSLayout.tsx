@@ -1,5 +1,14 @@
 import { useState } from "react";
-import { Link, useLocation } from "react-router";
+import { Form, Link, useLocation } from "react-router";
+
+interface CurrentUser {
+  id: string;
+  name: string;
+  role: string;
+  email: string;
+}
+
+const DEMO_USER_ID = "USRDEMO01";
 
 const nav = [
   { label: "Dashboard", icon: "⬛", path: "/hrms" },
@@ -18,31 +27,55 @@ const nav = [
   { label: "User Mgmt", icon: "🔐", path: "/hrms/users" },
 ];
 
-export default function HRMSLayout({ children }: { children: React.ReactNode }) {
+function getInitials(name: string): string {
+  const parts = name.trim().split(" ").filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+export default function HRMSLayout({
+  children,
+  currentUser,
+}: {
+  children: React.ReactNode;
+  currentUser?: CurrentUser;
+}) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
-
-  // Get session info from localStorage
-  const session = typeof window !== "undefined"
-    ? JSON.parse(localStorage.getItem("hrms_session") || "null")
-    : null;
-  const userName = session?.fullName || "Admin";
-  const userRole = session?.role || "HR Admin";
-  const orgName = session?.orgName || "JWithKP";
-  const initials = userName.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase();
-
-  const handleLogout = () => {
-    localStorage.removeItem("hrms_session");
-    window.location.href = "/login";
-  };
+  const isDemo = currentUser?.id === DEMO_USER_ID;
+  const initials = currentUser ? getInitials(currentUser.name) : "?";
 
   return (
     <div className="hrms-shell">
-      {/* Sidebar */}
-      <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`}>
+      {isDemo ? (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 200,
+          background: "linear-gradient(90deg, #4f46e5, #7c3aed)",
+          color: "white", fontSize: 12, fontWeight: 600,
+          padding: "7px 20px", textAlign: "center", letterSpacing: 0.2,
+        }}>
+          Demo workspace — all data is sample data. Create your own account to manage a real team.
+          <a href="/register" style={{ color: "#c4b5fd", marginLeft: 12, textDecoration: "underline", fontWeight: 700 }}>
+            Get started free →
+          </a>
+        </div>
+      ) : null}
+
+      <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`} style={{ top: isDemo ? 33 : 0 }}>
         <div className="sidebar-header">
           <div className="logo-mark">JK</div>
-          {!collapsed && <span className="logo-text">{orgName.length > 12 ? orgName.slice(0, 12) + "…" : orgName}</span>}
+          {!collapsed ? <span className="logo-text">JWithKP</span> : null}
+          {!collapsed && isDemo ? (
+            <span style={{
+              marginLeft: "auto", marginRight: 6,
+              background: "rgba(99,102,241,0.25)", color: "#c4b5fd",
+              fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 99,
+              letterSpacing: 0.5, textTransform: "uppercase",
+            }}>
+              Demo
+            </span>
+          ) : null}
           <button className="collapse-btn" onClick={() => setCollapsed(!collapsed)}>
             {collapsed ? "›" : "‹"}
           </button>
@@ -56,30 +89,44 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
               className={`nav-item ${location.pathname === item.path ? "active" : ""}`}
             >
               <span className="nav-icon">{item.icon}</span>
-              {!collapsed && <span className="nav-label">{item.label}</span>}
-              {!collapsed && location.pathname === item.path && <span className="active-dot" />}
+              {!collapsed ? <span className="nav-label">{item.label}</span> : null}
+              {!collapsed && location.pathname === item.path ? <span className="active-dot" /> : null}
             </Link>
           ))}
         </nav>
 
         <div className="sidebar-footer">
           <div className="user-pill">
-            <div className="avatar">KP</div>
-            {!collapsed && (
+            <div className="avatar">{initials}</div>
+            {!collapsed && currentUser ? (
               <div className="user-info">
-                <span className="user-name">Admin</span>
-                <span className="user-role">HR Admin</span>
+                <span className="user-name" title={currentUser.email}>{currentUser.name}</span>
+                <span className="user-role">{currentUser.role}</span>
               </div>
-            )}
+            ) : null}
           </div>
+          <Form method="post" action="/login" style={{ marginTop: 8 }}>
+            <input type="hidden" name="intent" value="logout" />
+            <button
+              type="submit"
+              title="Sign Out"
+              style={{
+                width: "100%", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "rgba(255,255,255,0.5)", borderRadius: 8, padding: "7px 10px",
+                fontSize: 12, fontWeight: 600, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "flex-start", gap: 8,
+              }}
+            >
+              <span>↩</span>{!collapsed ? " Sign Out" : null}
+            </button>
+          </Form>
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="hrms-main">
+      <main className="hrms-main" style={{ marginTop: isDemo ? 33 : 0 }}>
         <header className="hrms-topbar">
           <div className="topbar-breadcrumb">
-            {nav.find((n) => n.path === location.pathname)?.label ?? "Dashboard"}
+            {nav.find((item) => item.path === location.pathname)?.label ?? "Dashboard"}
           </div>
           <div className="topbar-actions">
             <button className="topbar-btn">🔔</button>
@@ -111,16 +158,9 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           --sidebar-w: 220px;
           --sidebar-w-collapsed: 64px;
         }
-
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'DM Sans', 'Segoe UI', sans-serif; background: var(--surface); color: var(--ink); }
-
-        .hrms-shell {
-          display: flex;
-          min-height: 100vh;
-        }
-
-        /* Sidebar */
+        .hrms-shell { display: flex; min-height: 100vh; }
         .hrms-sidebar {
           width: var(--sidebar-w);
           background: var(--ink);
@@ -128,12 +168,11 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           flex-direction: column;
           transition: width 0.25s ease;
           position: fixed;
-          top: 0; left: 0; bottom: 0;
+          left: 0; bottom: 0;
           z-index: 100;
           overflow: hidden;
         }
         .hrms-sidebar.collapsed { width: var(--sidebar-w-collapsed); }
-
         .sidebar-header {
           display: flex;
           align-items: center;
@@ -166,9 +205,9 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           display: grid; place-items: center;
           flex-shrink: 0;
         }
-
         .sidebar-nav {
           flex: 1;
+          min-height: 0;
           padding: 12px 10px;
           display: flex;
           flex-direction: column;
@@ -198,8 +237,8 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           border-radius: 50%;
           margin-left: auto;
         }
-
         .sidebar-footer {
+          flex-shrink: 0;
           padding: 12px 10px 20px;
           border-top: 1px solid rgba(255,255,255,0.07);
         }
@@ -219,10 +258,9 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           font-size: 12px; font-weight: 700;
           color: white; flex-shrink: 0;
         }
-        .user-name { display: block; font-size: 13px; font-weight: 600; color: white; }
+        .user-name { display: block; font-size: 13px; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
         .user-role { display: block; font-size: 11px; color: rgba(255,255,255,0.45); }
-
-        /* Main */
+        .user-info { overflow: hidden; }
         .hrms-main {
           flex: 1;
           margin-left: var(--sidebar-w);
@@ -232,7 +270,6 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           min-height: 100vh;
         }
         .hrms-sidebar.collapsed ~ .hrms-main { margin-left: var(--sidebar-w-collapsed); }
-
         .hrms-topbar {
           background: var(--card);
           border-bottom: 1px solid var(--border);
@@ -258,16 +295,9 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           padding: 6px 12px; border-radius: 8px;
           font-weight: 500;
         }
-
-        .hrms-content {
-          padding: 28px;
-          flex: 1;
-        }
-
-        /* Shared card/stat styles */
+        .hrms-content { padding: 28px; flex: 1; }
         .page-title { font-size: 22px; font-weight: 800; color: var(--ink); letter-spacing: -0.4px; margin-bottom: 4px; }
         .page-sub { font-size: 13px; color: var(--ink-3); margin-bottom: 24px; }
-
         .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 28px; }
         .stat-card {
           background: var(--card);
@@ -280,7 +310,6 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
         .stat-delta { font-size: 12px; margin-top: 4px; }
         .delta-up { color: var(--green); }
         .delta-down { color: var(--red); }
-
         .card {
           background: var(--card);
           border: 1px solid var(--border);
@@ -289,13 +318,11 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
           margin-bottom: 20px;
         }
         .card-title { font-size: 14px; font-weight: 700; color: var(--ink); margin-bottom: 16px; }
-
         .table { width: 100%; border-collapse: collapse; }
         .table th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-3); padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
         .table td { font-size: 13px; color: var(--ink-2); padding: 12px 12px; border-bottom: 1px solid var(--border); }
         .table tr:last-child td { border-bottom: none; }
         .table tr:hover td { background: var(--surface); }
-
         .badge {
           display: inline-flex; align-items: center;
           padding: 3px 10px; border-radius: 20px;
@@ -305,7 +332,6 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
         .badge-amber { background: var(--amber-light); color: var(--amber); }
         .badge-red { background: var(--red-light); color: var(--red); }
         .badge-blue { background: var(--accent-light); color: var(--accent); }
-
         .btn {
           padding: 8px 16px; border-radius: 8px;
           font-size: 13px; font-weight: 600;
@@ -316,10 +342,8 @@ export default function HRMSLayout({ children }: { children: React.ReactNode }) 
         .btn-primary:hover { opacity: 0.9; }
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--ink-2); }
         .btn-outline:hover { background: var(--surface); }
-
         .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-
         @media (max-width: 1024px) {
           .stat-grid { grid-template-columns: repeat(2, 1fr); }
           .two-col { grid-template-columns: 1fr; }

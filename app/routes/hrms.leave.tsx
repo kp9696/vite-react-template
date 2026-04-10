@@ -1,5 +1,8 @@
-import HRMSLayout from "../components/HRMSLayout";
+import { useLoaderData } from "react-router";
 import { useState } from "react";
+import type { Route } from "./+types/hrms.leave";
+import HRMSLayout from "../components/HRMSLayout";
+import { requireSignedInUser } from "../lib/session.server";
 
 const leaveRequests = [
   { name: "Deepa Krishnan", type: "Annual Leave", from: "Apr 10", to: "Apr 12", days: 3, status: "Pending", reason: "Family vacation" },
@@ -20,14 +23,20 @@ const leaveBalance = [
 const colors = { "Annual Leave": "#4f46e5", "Sick Leave": "#ef4444", "Casual Leave": "#f59e0b", "Comp Off": "#10b981" };
 
 export function meta() {
-  return [{ title: "PeopleOS · Leave Management" }];
+  return [{ title: "JWithKP HRMS - Leave" }];
+}
+
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  return { currentUser };
 }
 
 export default function Leave() {
+  const { currentUser } = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"requests" | "balance" | "calendar">("requests");
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={currentUser}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Leave Management</div>

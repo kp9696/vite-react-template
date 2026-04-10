@@ -46,10 +46,16 @@ export interface OnboardingJoinerRecord {
 }
 
 export const DEMO_EMPLOYEES: EmployeeRecord[] = [
-  { id: "EMPD001", orgId: "ORGDEMOUI", name: "Aarav Shah", role: "Senior Engineer", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2025-04-02", salary: "INR 28L", createdAt: "2025-04-02T09:00:00.000Z" },
-  { id: "EMPD002", orgId: "ORGDEMOUI", name: "Priya Nair", role: "Product Designer", department: "Design", location: "Mumbai", status: "Active", joinedOn: "2025-03-18", salary: "INR 22L", createdAt: "2025-03-18T09:00:00.000Z" },
-  { id: "EMPD003", orgId: "ORGDEMOUI", name: "Rohan Mehta", role: "Data Analyst", department: "Analytics", location: "Pune", status: "Onboarding", joinedOn: "2025-03-28", salary: "INR 18L", createdAt: "2025-03-28T09:00:00.000Z" },
-  { id: "EMPD004", orgId: "ORGDEMOUI", name: "Sneha Pillai", role: "HR Generalist", department: "People Ops", location: "Bengaluru", status: "Active", joinedOn: "2025-02-12", salary: "INR 16L", createdAt: "2025-02-12T09:00:00.000Z" },
+  { id: "EMPD001", orgId: "ORGDEMOUI", name: "Deepa Krishnan", role: "Engineering Manager", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2024-08-10", salary: "INR 42L", createdAt: "2024-08-10T09:00:00.000Z" },
+  { id: "EMPD002", orgId: "ORGDEMOUI", name: "Aarav Shah", role: "Senior Engineer", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2025-04-02", salary: "INR 28L", createdAt: "2025-04-02T09:00:00.000Z" },
+  { id: "EMPD003", orgId: "ORGDEMOUI", name: "Vikram Joshi", role: "Backend Engineer", department: "Engineering", location: "Hyderabad", status: "Active", joinedOn: "2025-01-20", salary: "INR 22L", createdAt: "2025-01-20T09:00:00.000Z" },
+  { id: "EMPD004", orgId: "ORGDEMOUI", name: "Priya Nair", role: "Product Designer", department: "Design", location: "Mumbai", status: "Active", joinedOn: "2025-03-18", salary: "INR 22L", createdAt: "2025-03-18T09:00:00.000Z" },
+  { id: "EMPD005", orgId: "ORGDEMOUI", name: "Rohan Mehta", role: "Data Analyst", department: "Analytics", location: "Pune", status: "Onboarding", joinedOn: "2026-03-28", salary: "INR 18L", createdAt: "2026-03-28T09:00:00.000Z" },
+  { id: "EMPD006", orgId: "ORGDEMOUI", name: "Sneha Pillai", role: "HR Generalist", department: "People Ops", location: "Bengaluru", status: "Active", joinedOn: "2025-02-12", salary: "INR 16L", createdAt: "2025-02-12T09:00:00.000Z" },
+  { id: "EMPD007", orgId: "ORGDEMOUI", name: "Meera Iyer", role: "Marketing Lead", department: "Marketing", location: "Mumbai", status: "Active", joinedOn: "2025-01-12", salary: "INR 20L", createdAt: "2025-01-12T09:00:00.000Z" },
+  { id: "EMPD008", orgId: "ORGDEMOUI", name: "Arjun Gupta", role: "Sales Executive", department: "Sales", location: "Delhi", status: "Active", joinedOn: "2025-06-01", salary: "INR 14L", createdAt: "2025-06-01T09:00:00.000Z" },
+  { id: "EMPD009", orgId: "ORGDEMOUI", name: "Kavya Sharma", role: "Finance Analyst", department: "Finance", location: "Bengaluru", status: "Active", joinedOn: "2025-11-15", salary: "INR 17L", createdAt: "2025-11-15T09:00:00.000Z" },
+  { id: "EMPD010", orgId: "ORGDEMOUI", name: "Ishaan Verma", role: "ML Engineer", department: "Engineering", location: "Bengaluru", status: "Onboarding", joinedOn: "2026-04-14", salary: "INR 26L", createdAt: "2026-04-01T09:00:00.000Z" },
 ];
 
 export const DEMO_OPENINGS: JobOpeningRecord[] = [
@@ -224,13 +230,16 @@ export async function getEmployeesDashboard(db: D1Database, orgId: string) {
 }
 
 export function getDemoEmployeesDashboard() {
+  const active = DEMO_EMPLOYEES.filter((e) => e.status === "Active").length;
+  const onLeave = DEMO_EMPLOYEES.filter((e) => e.status === "On Leave").length;
+  const onboarding = DEMO_EMPLOYEES.filter((e) => e.status === "Onboarding").length;
   return {
     employees: DEMO_EMPLOYEES,
     stats: [
       { label: "Total", value: String(DEMO_EMPLOYEES.length), color: "#4f46e5" },
-      { label: "Active", value: String(DEMO_EMPLOYEES.filter((employee) => employee.status === "Active").length), color: "#10b981" },
-      { label: "On Leave", value: String(DEMO_EMPLOYEES.filter((employee) => employee.status === "On Leave").length), color: "#f59e0b" },
-      { label: "Onboarding", value: String(DEMO_EMPLOYEES.filter((employee) => employee.status === "Onboarding").length), color: "#8b5cf6" },
+      { label: "Active", value: String(active), color: "#10b981" },
+      { label: "On Leave", value: String(onLeave), color: "#f59e0b" },
+      { label: "Onboarding", value: String(onboarding), color: "#8b5cf6" },
     ],
     view: DEMO_EMPLOYEES.map((employee) => ({ ...employee, joinedLabel: monthYear(employee.joinedOn) })),
   };

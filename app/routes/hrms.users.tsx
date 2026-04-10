@@ -191,7 +191,7 @@ export default function AdminUsers() {
   const seatsLeft = Math.max((organization?.inviteLimit ?? 0) - memberUsage, 0);
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={currentUser}>
       {toast && (
         <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)" }}>
           {toast.message}

@@ -9,7 +9,7 @@ import { createJobOpening, getDemoRecruitmentDashboard, getRecruitmentDashboard 
 type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
 export function meta() {
-  return [{ title: "PeopleOS - Recruitment" }];
+  return [{ title: "JWithKP HRMS - Recruitment" }];
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -58,7 +58,7 @@ export default function Recruitment() {
   }, [fetcher.data]);
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={data.currentUser}>
       {toast ? <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13 }}>{toast.message}</div> : null}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>

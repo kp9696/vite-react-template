@@ -12,7 +12,7 @@ const statuses = ["All", "Active", "Onboarding", "On Leave"];
 type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
 export function meta() {
-  return [{ title: "PeopleOS - Employees" }];
+  return [{ title: "JWithKP HRMS - Employees" }];
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -76,7 +76,7 @@ export default function Employees() {
   }), [data.view, search, department, status]);
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={data.currentUser}>
       {toast ? <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13 }}>{toast.message}</div> : null}
       <div className="page-title">Employees</div>
       <div className="page-sub">Manage your workforce with real employee records.</div>

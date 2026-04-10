@@ -9,7 +9,7 @@ import { createOnboardingJoiner, getDemoOnboardingDashboard, getOnboardingDashbo
 type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
 export function meta() {
-  return [{ title: "PeopleOS - Onboarding" }];
+  return [{ title: "JWithKP HRMS - Onboarding" }];
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -81,7 +81,7 @@ export default function Onboarding() {
   const doneCount = joiner ? joiner.tasks.filter((task) => task.done).length : 0;
 
   return (
-    <HRMSLayout>
+    <HRMSLayout currentUser={data.currentUser}>
       {toast ? <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13 }}>{toast.message}</div> : null}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
