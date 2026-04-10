@@ -3,24 +3,49 @@ import { useState } from "react";
 import type { Route } from "./+types/hrms.leave";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/session.server";
+import { avatarColor, getInitials } from "../lib/hrms.shared";
 
-const leaveRequests = [
-  { name: "Deepa Krishnan", type: "Annual Leave", from: "Apr 10", to: "Apr 12", days: 3, status: "Pending", reason: "Family vacation" },
-  { name: "Meera Iyer", type: "Sick Leave", from: "Apr 8", to: "Apr 9", days: 2, status: "Approved", reason: "Medical appointment" },
-  { name: "Vikram Joshi", type: "WFH", from: "Apr 14", to: "Apr 15", days: 2, status: "Pending", reason: "Home renovation" },
-  { name: "Priya Nair", type: "Maternity Leave", from: "May 1", to: "Jul 31", days: 90, status: "Approved", reason: "Maternity" },
-  { name: "Arjun Gupta", type: "Annual Leave", from: "Apr 20", to: "Apr 22", days: 3, status: "Rejected", reason: "Personal trip" },
-  { name: "Kavya Sharma", type: "Sick Leave", from: "Apr 7", to: "Apr 7", days: 1, status: "Approved", reason: "Fever" },
+type LeaveStatus = "Pending" | "Approved" | "Rejected";
+
+interface LeaveRequest {
+  name: string;
+  type: string;
+  from: string;
+  to: string;
+  days: number;
+  status: LeaveStatus;
+  reason: string;
+  fromDate: Date;
+  toDate: Date;
+}
+
+const LEAVE_TYPE_COLORS: Record<string, string> = {
+  "Annual Leave": "#4f46e5",
+  "Sick Leave": "#ef4444",
+  "Maternity Leave": "#ec4899",
+  "WFH": "#0ea5e9",
+  "Comp Off": "#10b981",
+  "Casual Leave": "#f59e0b",
+};
+
+const initialRequests: LeaveRequest[] = [
+  { name: "Deepa Krishnan", type: "Annual Leave",    from: "Apr 10", to: "Apr 12", days: 3,  status: "Pending",  reason: "Family vacation",      fromDate: new Date(2026,3,10), toDate: new Date(2026,3,12) },
+  { name: "Meera Iyer",     type: "Sick Leave",      from: "Apr 8",  to: "Apr 9",  days: 2,  status: "Approved", reason: "Medical appointment",  fromDate: new Date(2026,3,8),  toDate: new Date(2026,3,9)  },
+  { name: "Vikram Joshi",   type: "WFH",             from: "Apr 14", to: "Apr 15", days: 2,  status: "Pending",  reason: "Home renovation",      fromDate: new Date(2026,3,14), toDate: new Date(2026,3,15) },
+  { name: "Priya Nair",     type: "Maternity Leave", from: "May 1",  to: "Jul 31", days: 90, status: "Approved", reason: "Maternity",            fromDate: new Date(2026,4,1),  toDate: new Date(2026,6,31) },
+  { name: "Arjun Gupta",    type: "Annual Leave",    from: "Apr 20", to: "Apr 22", days: 3,  status: "Rejected", reason: "Personal trip",        fromDate: new Date(2026,3,20), toDate: new Date(2026,3,22) },
+  { name: "Kavya Sharma",   type: "Sick Leave",      from: "Apr 7",  to: "Apr 7",  days: 1,  status: "Approved", reason: "Fever",                fromDate: new Date(2026,3,7),  toDate: new Date(2026,3,7)  },
 ];
 
 const leaveBalance = [
   { type: "Annual Leave", total: 18, used: 7, remaining: 11 },
-  { type: "Sick Leave", total: 12, used: 2, remaining: 10 },
-  { type: "Casual Leave", total: 6, used: 3, remaining: 3 },
-  { type: "Comp Off", total: 4, used: 0, remaining: 4 },
+  { type: "Sick Leave",   total: 12, used: 2, remaining: 10 },
+  { type: "Casual Leave", total: 6,  used: 3, remaining: 3  },
+  { type: "Comp Off",     total: 4,  used: 0, remaining: 4  },
 ];
 
-const colors = { "Annual Leave": "#4f46e5", "Sick Leave": "#ef4444", "Casual Leave": "#f59e0b", "Comp Off": "#10b981" };
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Leave" }];
@@ -34,6 +59,49 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export default function Leave() {
   const { currentUser } = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"requests" | "balance" | "calendar">("requests");
+  const [requests, setRequests] = useState<LeaveRequest[]>(initialRequests);
+  const [calYear, setCalYear] = useState(2026);
+  const [calMonth, setCalMonth] = useState(3); // April
+  const [showApplyModal, setShowApplyModal] = useState(false);
+  const [applyForm, setApplyForm] = useState({ type: "Annual Leave", from: "", to: "", reason: "" });
+
+  const handleAction = (name: string, from: string, action: LeaveStatus) => {
+    setRequests((prev) =>
+      prev.map((r) => r.name === name && r.from === from ? { ...r, status: action } : r)
+    );
+  };
+
+  const pendingCount = requests.filter((r) => r.status === "Pending").length;
+
+  // Calendar helpers
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+
+  // Collect leave days in current month view
+  const leaveDayMap: Record<number, { name: string; color: string }[]> = {};
+  requests
+    .filter((r) => r.status \!== "Rejected")
+    .forEach((r) => {
+      const d = new Date(r.fromDate);
+      const end = new Date(r.toDate);
+      while (d <= end) {
+        if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
+          const day = d.getDate();
+          if (\!leaveDayMap[day]) leaveDayMap[day] = [];
+          leaveDayMap[day].push({ name: r.name.split(" ")[0], color: LEAVE_TYPE_COLORS[r.type] ?? "#6b7280" });
+        }
+        d.setDate(d.getDate() + 1);
+      }
+    });
+
+  const prevMonth = () => {
+    if (calMonth === 0) { setCalMonth(11); setCalYear(calYear - 1); }
+    else setCalMonth(calMonth - 1);
+  };
+  const nextMonth = () => {
+    if (calMonth === 11) { setCalMonth(0); setCalYear(calYear + 1); }
+    else setCalMonth(calMonth + 1);
+  };
 
   return (
     <HRMSLayout currentUser={currentUser}>
@@ -42,45 +110,89 @@ export default function Leave() {
           <div className="page-title">Leave Management</div>
           <div className="page-sub">Track, approve, and manage all leave requests.</div>
         </div>
-        <button className="btn btn-primary">+ Apply Leave</button>
+        <button className="btn btn-primary" onClick={() => setShowApplyModal(true)}>+ Apply Leave</button>
       </div>
 
-      {/* My Balance Cards */}
-      <div className="stat-grid" style={{ marginBottom: 24 }}>
-        {leaveBalance.map((l) => (
-          <div className="stat-card" key={l.type} style={{ borderLeft: `4px solid ${(colors as any)[l.type]}` }}>
-            <div className="stat-label">{l.type}</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-              <div className="stat-value" style={{ color: (colors as any)[l.type] }}>{l.remaining}</div>
-              <div style={{ fontSize: 13, color: "var(--ink-3)" }}>/ {l.total} days</div>
+      {/* Apply Leave Modal */}
+      {showApplyModal ? (
+        <div className="modal-overlay" onClick={() => setShowApplyModal(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">
+              Apply for Leave
+              <button className="modal-close" onClick={() => setShowApplyModal(false)}>✕</button>
             </div>
-            <div style={{ marginTop: 10, background: "var(--surface)", borderRadius: 99, height: 6 }}>
-              <div style={{ width: `${(l.used / l.total) * 100}%`, background: (colors as any)[l.type], height: "100%", borderRadius: 99 }} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <label style={lblStyle}>Leave Type</label>
+                <select value={applyForm.type} onChange={(e) => setApplyForm((f) => ({ ...f, type: e.target.value }))} style={inpStyle}>
+                  {Object.keys(LEAVE_TYPE_COLORS).map((t) => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={lblStyle}>From Date</label>
+                  <input type="date" value={applyForm.from} onChange={(e) => setApplyForm((f) => ({ ...f, from: e.target.value }))} style={inpStyle} />
+                </div>
+                <div>
+                  <label style={lblStyle}>To Date</label>
+                  <input type="date" value={applyForm.to} onChange={(e) => setApplyForm((f) => ({ ...f, to: e.target.value }))} style={inpStyle} />
+                </div>
+              </div>
+              <div>
+                <label style={lblStyle}>Reason</label>
+                <textarea value={applyForm.reason} onChange={(e) => setApplyForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Brief reason for leave…" rows={3}
+                  style={{ ...inpStyle, resize: "vertical" as const }} />
+              </div>
+              {applyForm.from && applyForm.to ? (
+                <div style={{ background: "var(--accent-light)", border: "1px solid #c7d2fe", borderRadius: 10, padding: 12, fontSize: 13 }}>
+                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>
+                    {Math.max(1, Math.ceil((new Date(applyForm.to).getTime() - new Date(applyForm.from).getTime()) / 86400000) + 1)} working days
+                  </span>{" "}
+                  <span style={{ color: "var(--ink-3)" }}>will be deducted from {applyForm.type}</span>
+                </div>
+              ) : null}
             </div>
-            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>{l.used} used</div>
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button className="btn btn-primary" onClick={() => setShowApplyModal(false)}>Submit Request</button>
+              <button className="btn btn-outline" onClick={() => setShowApplyModal(false)}>Cancel</button>
+            </div>
           </div>
-        ))}
+        </div>
+      ) : null}
+
+      {/* Balance cards */}
+      <div className="stat-grid" style={{ marginBottom: 24 }}>
+        {leaveBalance.map((l) => {
+          const color = LEAVE_TYPE_COLORS[l.type] ?? "#6b7280";
+          const usedPct = Math.round((l.used / l.total) * 100);
+          return (
+            <div className="stat-card" key={l.type} style={{ borderLeft: `4px solid ${color}` }}>
+              <div className="stat-label">{l.type}</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 10 }}>
+                <div className="stat-value" style={{ color }}>{l.remaining}</div>
+                <div style={{ fontSize: 13, color: "var(--ink-3)" }}>/ {l.total} days left</div>
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${usedPct}%`, background: color }} />
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 5 }}>
+                {l.used} used · {usedPct}%
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "var(--surface)", padding: 4, borderRadius: 10, width: "fit-content" }}>
+      <div className="tab-bar">
         {(["requests", "balance", "calendar"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              padding: "7px 18px", borderRadius: 8, border: "none", cursor: "pointer",
-              fontSize: 13, fontWeight: 600, textTransform: "capitalize",
-              background: tab === t ? "white" : "transparent",
-              color: tab === t ? "var(--ink)" : "var(--ink-3)",
-              boxShadow: tab === t ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
-            }}
-          >
-            {t}
+          <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
+            {t === "requests" ? `Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` : t === "balance" ? "Balance" : "Calendar"}
           </button>
         ))}
       </div>
 
+      {/* Requests tab */}
       {tab === "requests" && (
         <div className="card">
           <table className="table">
@@ -88,14 +200,24 @@ export default function Leave() {
               <tr><th>Employee</th><th>Type</th><th>Duration</th><th>Days</th><th>Reason</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {leaveRequests.map((r) => (
+              {requests.map((r) => (
                 <tr key={r.name + r.from}>
                   <td>
-                    <div style={{ fontWeight: 600, color: "var(--ink)" }}>{r.name}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="avatar-sm" style={{ background: avatarColor(r.name) }}>
+                        {getInitials(r.name)}
+                      </span>
+                      <span style={{ fontWeight: 600, color: "var(--ink)" }}>{r.name}</span>
+                    </div>
                   </td>
-                  <td>{r.type}</td>
+                  <td>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 600 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: LEAVE_TYPE_COLORS[r.type] ?? "#6b7280", display: "inline-block", flexShrink: 0 }} />
+                      {r.type}
+                    </span>
+                  </td>
                   <td style={{ fontSize: 12 }}>{r.from} → {r.to}</td>
-                  <td style={{ fontWeight: 700 }}>{r.days}d</td>
+                  <td style={{ fontWeight: 700, color: "var(--ink)" }}>{r.days}d</td>
                   <td style={{ fontSize: 12, color: "var(--ink-3)", maxWidth: 140 }}>{r.reason}</td>
                   <td>
                     <span className={`badge ${r.status === "Approved" ? "badge-green" : r.status === "Pending" ? "badge-amber" : "badge-red"}`}>
@@ -105,9 +227,24 @@ export default function Leave() {
                   <td>
                     {r.status === "Pending" && (
                       <div style={{ display: "flex", gap: 6 }}>
-                        <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 12 }}>✓</button>
-                        <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 12 }}>✕</button>
+                        <button
+                          className="btn btn-success"
+                          style={{ padding: "4px 10px", fontSize: 12 }}
+                          onClick={() => handleAction(r.name, r.from, "Approved")}
+                        >✓ Approve</button>
+                        <button
+                          className="btn btn-danger"
+                          style={{ padding: "4px 10px", fontSize: 12 }}
+                          onClick={() => handleAction(r.name, r.from, "Rejected")}
+                        >✕ Reject</button>
                       </div>
+                    )}
+                    {r.status === "Approved" && (
+                      <button
+                        className="btn btn-outline"
+                        style={{ padding: "4px 10px", fontSize: 11, color: "var(--ink-3)" }}
+                        onClick={() => handleAction(r.name, r.from, "Rejected")}
+                      >Revoke</button>
                     )}
                   </td>
                 </tr>
@@ -117,39 +254,127 @@ export default function Leave() {
         </div>
       )}
 
+      {/* Balance tab */}
       {tab === "balance" && (
         <div className="card">
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 20 }}>
-            {leaveBalance.map((l) => (
-              <div key={l.type} style={{ padding: 20, background: "var(--surface)", borderRadius: 12 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{l.type}</div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Total Entitled</span>
-                  <span style={{ fontWeight: 700 }}>{l.total} days</span>
+            {leaveBalance.map((l) => {
+              const color = LEAVE_TYPE_COLORS[l.type] ?? "#6b7280";
+              return (
+                <div key={l.type} style={{ padding: 20, background: "var(--surface)", borderRadius: 14, border: `1.5px solid ${color}22` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
+                    <span style={{ fontSize: 14, fontWeight: 700 }}>{l.type}</span>
+                  </div>
+                  {[["Total Entitled", l.total + " days", "var(--ink)"], ["Used", l.used + " days", "var(--red)"], ["Remaining", l.remaining + " days", "var(--green)"]].map(([label, val, col]) => (
+                    <div key={label as string} style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                      <span style={{ fontSize: 12, color: "var(--ink-3)" }}>{label}</span>
+                      <span style={{ fontWeight: 700, color: col as string }}>{val}</span>
+                    </div>
+                  ))}
+                  <div className="progress-track" style={{ marginTop: 8 }}>
+                    <div className="progress-fill" style={{ width: `${Math.round((l.used / l.total) * 100)}%`, background: color }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 5, textAlign: "right" }}>
+                    {Math.round((l.used / l.total) * 100)}% used
+                  </div>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Used</span>
-                  <span style={{ fontWeight: 700, color: "var(--red)" }}>{l.used} days</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Remaining</span>
-                  <span style={{ fontWeight: 700, color: "var(--green)" }}>{l.remaining} days</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
+      {/* Calendar tab */}
       {tab === "calendar" && (
         <div className="card">
-          <div style={{ textAlign: "center", padding: "60px 0", color: "var(--ink-3)" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📅</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>Leave Calendar</div>
-            <div style={{ fontSize: 13, marginTop: 4 }}>Visual calendar view of team leaves — coming soon.</div>
+          {/* Month nav */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+            <button className="btn btn-outline" style={{ padding: "6px 12px" }} onClick={prevMonth}>‹</button>
+            <div style={{ fontWeight: 800, fontSize: 16, color: "var(--ink)" }}>
+              {MONTHS[calMonth]} {calYear}
+            </div>
+            <button className="btn btn-outline" style={{ padding: "6px 12px" }} onClick={nextMonth}>›</button>
+          </div>
+
+          {/* Day headers */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
+            {DAYS.map((d) => (
+              <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", paddingBottom: 6 }}>
+                {d}
+              </div>
+            ))}
+          </div>
+
+          {/* Calendar grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+            {/* Empty cells for first day offset */}
+            {Array.from({ length: firstDay }).map((_, i) => (
+              <div key={`empty-${i}`} />
+            ))}
+            {/* Day cells */}
+            {Array.from({ length: daysInMonth }).map((_, i) => {
+              const day = i + 1;
+              const today = new Date();
+              const isToday = today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
+              const isWeekend = ((firstDay + i) % 7 === 0) || ((firstDay + i) % 7 === 6);
+              const leaveEntries = leaveDayMap[day] ?? [];
+
+              return (
+                <div
+                  key={day}
+                  style={{
+                    minHeight: 70,
+                    padding: "6px 8px",
+                    borderRadius: 10,
+                    border: isToday ? "2px solid var(--accent)" : "1px solid var(--border)",
+                    background: isToday ? "var(--accent-light)" : isWeekend ? "var(--surface)" : "white",
+                    transition: "box-shadow 0.12s",
+                    cursor: leaveEntries.length > 0 ? "pointer" : "default",
+                  }}
+                >
+                  <div style={{
+                    fontSize: 12, fontWeight: isToday ? 800 : 500,
+                    color: isToday ? "var(--accent)" : isWeekend ? "var(--ink-3)" : "var(--ink)",
+                    marginBottom: 4,
+                  }}>
+                    {day}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {leaveEntries.slice(0, 2).map((entry, idx) => (
+                      <div key={idx} style={{
+                        fontSize: 10, fontWeight: 600, color: "white",
+                        background: entry.color, borderRadius: 4,
+                        padding: "1px 5px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}>
+                        {entry.name}
+                      </div>
+                    ))}
+                    {leaveEntries.length > 2 && (
+                      <div style={{ fontSize: 10, color: "var(--ink-3)", fontWeight: 600 }}>
+                        +{leaveEntries.length - 2} more
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Legend */}
+          <div style={{ marginTop: 20, display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {Object.entries(LEAVE_TYPE_COLORS).map(([type, color]) => (
+              <div key={type} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 3, background: color, display: "inline-block" }} />
+                {type}
+              </div>
+            ))}
           </div>
         </div>
       )}
     </HRMSLayout>
   );
 }
+
+const lblStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 5 };
+const inpStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", color: "var(--ink)" };
