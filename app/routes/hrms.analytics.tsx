@@ -186,7 +186,7 @@ export default function Analytics() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {salaryByDept.sort((a, b) => b.avg - a.avg).map((d, i) => {
             const isHov = hoveredSalary === d.dept;
-            const COLORS = ["#4f46e5","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"];
+            const COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"];
             const color = COLORS[i % COLORS.length];
             const minPct = (d.min / maxSalary) * 100;
             const maxPct = (d.max / maxSalary) * 100;

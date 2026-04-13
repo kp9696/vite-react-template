@@ -5,7 +5,7 @@ import { DEMO_USER, getDashboardData, getDemoDashboardData } from "../lib/hrms.s
 import { isAdminRole } from "../lib/hrms.shared";
 import { requireSignedInUser } from "../lib/session.server";
 
-const colors = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9"];
+const colors = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9"];
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Dashboard" }];

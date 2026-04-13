@@ -301,7 +301,7 @@ export default function Payroll() {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {deptSummary.sort((a, b) => b.net - a.net).map((d, i) => {
             const pct = Math.round((d.net / totalNet) * 100);
-            const COLORS = ["#4f46e5","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6"];
+            const COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6"];
             const color = COLORS[i % COLORS.length];
             return (
               <div key={d.dept} style={{ display: "flex", alignItems: "center", gap: 14 }}>

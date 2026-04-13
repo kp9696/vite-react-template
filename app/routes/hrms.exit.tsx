@@ -233,7 +233,7 @@ export default function Exit() {
           <div className="card" style={{ margin: 0, marginTop: 8 }}>
             <div className="card-title">Top Exit Reasons</div>
             {[
-              { reason: "Better Opportunity", pct: 42, color: "#4f46e5" },
+              { reason: "Better Opportunity", pct: 42, color: "#6366f1" },
               { reason: "Higher Studies", pct: 18, color: "#10b981" },
               { reason: "Relocation", pct: 15, color: "#f59e0b" },
               { reason: "Personal", pct: 25, color: "#8b5cf6" },

@@ -193,7 +193,8 @@ export default function AdminUsers() {
   return (
     <HRMSLayout currentUser={currentUser}>
       {toast && (
-        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)" }}>
+        <div className={`toast toast-${toast.type}`}>
+          <span>{toast.type === "success" ? "✓" : "✕"}</span>
           {toast.message}
         </div>
       )}

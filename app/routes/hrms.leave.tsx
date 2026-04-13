@@ -20,7 +20,7 @@ interface LeaveRequest {
 }
 
 const LEAVE_TYPE_COLORS: Record<string, string> = {
-  "Annual Leave": "#4f46e5",
+  "Annual Leave": "#6366f1",
   "Sick Leave": "#ef4444",
   "Maternity Leave": "#ec4899",
   "WFH": "#0ea5e9",

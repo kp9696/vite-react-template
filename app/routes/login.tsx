@@ -85,13 +85,11 @@ export default function Login() {
 
   return (
     <div className="login-root">
+      {/* ── Left Panel ── */}
       <div className="login-left">
         <div className="left-inner">
           <div className="brand">
-            <div className="brand-logo">
-              <span className="brand-j">J</span>
-              <span className="brand-k">K</span>
-            </div>
+            <div className="brand-logo">JK</div>
             <div className="brand-text">
               <span className="brand-name">JWithKP</span>
               <span className="brand-tag">HRMS Platform</span>
@@ -100,70 +98,70 @@ export default function Login() {
 
           <div className="left-headline">
             <h1>People-first.<br /><span className="accent-text">HR simplified.</span></h1>
-            <p className="left-sub">Create your workspace with OTP verification, then manage your team from a clean admin dashboard. Demo access stays available for walkthroughs.</p>
+            <p className="left-sub">Manage your entire workforce from a single, clean dashboard. OTP-verified onboarding. Role-based access. Real-time data.</p>
           </div>
 
           <div className="feature-pills">
-            {["OTP Signup", "Invite Controls", "Admin Roles", "Employee Workspace", "Live D1 Data"].map((item) => (
-              <span key={item} className="pill">{item}</span>
+            {["OTP Signup", "Invite Controls", "Admin Roles", "Employee Workspace", "Live D1 Data"].map((f) => (
+              <span key={f} className="pill">{f}</span>
             ))}
           </div>
 
           <div className="testimonial">
             <div className="testimonial-quote">"Admins can onboard their team in minutes and keep role structure clean from day one."</div>
             <div className="testimonial-author">
-              <div className="author-avatar">RK</div>
+              <div className="t-avatar">RK</div>
               <div>
-                <div className="author-name">Rajesh Kumar</div>
-                <div className="author-role">VP People, TechCorp India</div>
+                <div className="t-name">Rajesh Kumar</div>
+                <div className="t-role">VP People, TechCorp India</div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="deco-circle deco-1" />
-        <div className="deco-circle deco-2" />
+        <div className="deco-blob deco-1" />
+        <div className="deco-blob deco-2" />
         <div className="deco-grid" />
       </div>
 
+      {/* ── Right Panel ── */}
       <div className="login-right">
         <div className="form-wrapper">
           <div className="form-header">
-            <h2>Welcome</h2>
-            <p>Create an account with email OTP, or use the demo account for walkthroughs.</p>
+            <div className="form-logo">JK</div>
+            <h2>Welcome back</h2>
+            <p>Sign in with demo credentials or create a new workspace.</p>
           </div>
 
-          <div className="helper-card">
-            Account access:
-            <br />
-            Create your workspace with OTP verification.
-            <br />
-            Admins land in the user management dashboard after setup.
-            <br />
-            Team members can be invited from inside the admin panel.
+          <div className="info-card">
+            <div className="info-card-title">How access works</div>
+            Register your org with OTP · Admins land in the management dashboard · Invite team members from inside the panel.
           </div>
 
           {loaderData.inviteError ? (
             <div className="error-msg" style={{ marginTop: 16 }}>{loaderData.inviteError}</div>
           ) : null}
 
-          <a href="/register" className="create-account-link">Create account with OTP</a>
+          <a href="/register" className="cta-link">
+            <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+            Create workspace with OTP
+          </a>
 
-          <div className="divider"><span>or use demo login</span></div>
+          <div className="divider"><span>or demo login</span></div>
 
           <Form method="post">
             <input type="hidden" name="intent" value="demo-login" />
-            <div className="demo-card">
-              <div className="demo-title">Demo Account</div>
-              <div><strong>Username:</strong> Demo</div>
-              <div><strong>Password:</strong> demo</div>
+
+            <div className="demo-badge">
+              <span className="demo-dot" />
+              <span><strong>Demo:</strong> username <code>Demo</code> · password <code>demo</code></span>
             </div>
 
             <div className="field-group">
               <label className="field-label">Username</label>
               <div className="field-wrap">
                 <span className="field-icon">
-                  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
                 </span>
                 <input name="username" type="text" placeholder="Demo" className="field-input" autoComplete="username" />
               </div>
@@ -173,7 +171,7 @@ export default function Login() {
               <label className="field-label">Password</label>
               <div className="field-wrap">
                 <span className="field-icon">
-                  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                 </span>
                 <input name="password" type="password" placeholder="demo" className="field-input" autoComplete="current-password" />
               </div>
@@ -182,62 +180,196 @@ export default function Login() {
             {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
 
             <button type="submit" className="submit-btn" disabled={submitting}>
-              Enter Demo
+              {submitting ? "Signing in…" : "Enter Demo"}
             </button>
           </Form>
 
           <div className="security-note">
-            Company registration starts with 10 employee invites. Existing admin organizations can invite up to 5 users.
+            New organisations get 10 invite seats. Existing admins can invite up to 5 additional users.
           </div>
         </div>
       </div>
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..800;1,14..32,300..800&display=swap');
+
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        .login-root { display: flex; min-height: 100vh; font-family: 'DM Sans', sans-serif; background: #f8f7f4; }
-        .login-left { flex: 1; background: #0d1117; position: relative; overflow: hidden; display: flex; align-items: center; padding: 60px; }
-        .left-inner { position: relative; z-index: 10; max-width: 520px; }
-        .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 56px; }
-        .brand-logo { width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 14px; display: flex; align-items: center; justify-content: center; font-family: 'Syne', sans-serif; font-weight: 800; font-size: 14px; letter-spacing: -1px; color: white; box-shadow: 0 8px 24px rgba(99,102,241,0.4); }
-        .brand-k { color: #c4b5fd; }
-        .brand-text { display: flex; flex-direction: column; }
-        .brand-name { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 18px; color: white; letter-spacing: -0.5px; line-height: 1.1; }
-        .brand-tag { font-size: 11px; color: rgba(255,255,255,0.4); font-weight: 400; letter-spacing: 0.5px; text-transform: uppercase; }
-        .left-headline h1 { font-family: 'Syne', sans-serif; font-size: clamp(36px, 4vw, 52px); font-weight: 800; color: white; line-height: 1.1; letter-spacing: -1.5px; margin-bottom: 20px; }
-        .accent-text { background: linear-gradient(90deg, #818cf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-        .left-sub { font-size: 15px; color: rgba(255,255,255,0.5); line-height: 1.7; max-width: 420px; margin-bottom: 36px; }
-        .feature-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 48px; }
-        .pill { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.65); padding: 6px 14px; border-radius: 99px; font-size: 12px; font-weight: 500; letter-spacing: 0.2px; }
-        .testimonial { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 24px; }
-        .testimonial-quote { font-size: 14px; color: rgba(255,255,255,0.8); line-height: 1.6; font-style: italic; margin-bottom: 16px; }
+
+        .login-root {
+          display: flex; min-height: 100vh;
+          font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+          -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Left Panel ───────────────── */
+        .login-left {
+          flex: 1; background: #141929;
+          position: relative; overflow: hidden;
+          display: flex; align-items: center; padding: 64px;
+        }
+        .left-inner { position: relative; z-index: 10; max-width: 500px; animation: fadeInLeft 0.7s ease-out; }
+
+        .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 52px; }
+        .brand-logo {
+          width: 46px; height: 46px; flex-shrink: 0;
+          background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          border-radius: 13px; display: grid; place-items: center;
+          font-weight: 800; font-size: 14px; color: white;
+          box-shadow: 0 8px 24px rgba(99,102,241,0.45);
+          letter-spacing: -0.5px;
+        }
+        .brand-name { font-size: 18px; font-weight: 700; color: white; letter-spacing: -0.4px; display: block; }
+        .brand-tag { font-size: 10px; color: rgba(255,255,255,0.38); font-weight: 500; letter-spacing: 0.8px; text-transform: uppercase; display: block; margin-top: 2px; }
+
+        .left-headline h1 {
+          font-size: clamp(34px, 3.8vw, 50px); font-weight: 800; color: white;
+          line-height: 1.12; letter-spacing: -1.5px; margin-bottom: 20px;
+        }
+        .accent-text {
+          background: linear-gradient(90deg, #818cf8, #c084fc);
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+        }
+        .left-sub { font-size: 15px; color: rgba(255,255,255,0.52); line-height: 1.75; max-width: 400px; margin-bottom: 36px; }
+
+        .feature-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 44px; }
+        .pill {
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+          color: rgba(255,255,255,0.6); padding: 6px 14px; border-radius: 99px;
+          font-size: 12px; font-weight: 500; letter-spacing: 0.1px;
+          transition: all 0.2s;
+        }
+        .pill:hover { background: rgba(99,102,241,0.18); border-color: rgba(99,102,241,0.4); color: #a5b4fc; }
+
+        .testimonial {
+          background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 16px; padding: 22px;
+        }
+        .testimonial-quote { font-size: 14px; color: rgba(255,255,255,0.78); line-height: 1.65; font-style: italic; margin-bottom: 14px; }
         .testimonial-author { display: flex; align-items: center; gap: 10px; }
-        .author-avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: grid; place-items: center; font-size: 12px; font-weight: 700; color: white; flex-shrink: 0; }
-        .author-name { font-size: 13px; font-weight: 600; color: white; }
-        .author-role { font-size: 11px; color: rgba(255,255,255,0.4); }
-        .deco-circle { position: absolute; border-radius: 50%; pointer-events: none; }
-        .deco-1 { width: 500px; height: 500px; background: radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%); top: -150px; right: -150px; }
-        .deco-2 { width: 300px; height: 300px; background: radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 70%); bottom: -80px; left: -80px; }
-        .deco-grid { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 40px 40px; }
-        .login-right { width: 480px; display: flex; align-items: center; justify-content: center; padding: 40px; background: #f8f7f4; }
-        .form-wrapper { width: 100%; max-width: 380px; }
-        .form-header { margin-bottom: 24px; }
-        .form-header h2 { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 800; color: #0d1117; letter-spacing: -0.5px; margin-bottom: 6px; }
-        .form-header p { font-size: 14px; color: #6b7280; }
-        .helper-card, .demo-card { background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 12px; padding: 14px 16px; color: #3730a3; font-size: 13px; line-height: 1.7; margin-top: 16px; }
-        .demo-title { font-weight: 700; margin-bottom: 4px; }
-        .divider { display: flex; align-items: center; gap: 12px; margin: 24px 0; color: #9ca3af; font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }
-        .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #e5e7eb; }
+        .t-avatar {
+          width: 36px; height: 36px; border-radius: 50%;
+          background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          display: grid; place-items: center; font-size: 12px; font-weight: 700; color: white; flex-shrink: 0;
+        }
+        .t-name { font-size: 13px; font-weight: 600; color: white; }
+        .t-role { font-size: 11px; color: rgba(255,255,255,0.38); margin-top: 1px; }
+
+        .deco-blob { position: absolute; border-radius: 50%; pointer-events: none; }
+        .deco-1 { width: 480px; height: 480px; background: radial-gradient(circle, rgba(99,102,241,0.18) 0%, transparent 70%); top: -160px; right: -160px; }
+        .deco-2 { width: 320px; height: 320px; background: radial-gradient(circle, rgba(139,92,246,0.13) 0%, transparent 70%); bottom: -80px; left: -80px; }
+        .deco-grid {
+          position: absolute; inset: 0; pointer-events: none;
+          background-image: linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+                            linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+          background-size: 44px 44px;
+        }
+
+        /* ── Right Panel ──────────────── */
+        .login-right {
+          width: 500px; flex-shrink: 0;
+          display: flex; align-items: center; justify-content: center;
+          padding: 48px 44px; background: #f1f5fd;
+        }
+        .form-wrapper { width: 100%; max-width: 390px; animation: fadeInRight 0.7s ease-out; }
+
+        .form-header { margin-bottom: 28px; }
+        .form-logo {
+          width: 40px; height: 40px; border-radius: 11px;
+          background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          display: grid; place-items: center;
+          font-weight: 800; font-size: 13px; color: white;
+          margin-bottom: 20px;
+          box-shadow: 0 4px 14px rgba(99,102,241,0.35);
+          letter-spacing: -0.5px;
+        }
+        .form-header h2 { font-size: 26px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; margin-bottom: 6px; }
+        .form-header p { font-size: 14px; color: #64748b; line-height: 1.5; }
+
+        .info-card {
+          background: #eef2ff; border: 1px solid #c7d2fe;
+          border-radius: 12px; padding: 14px 16px;
+          color: #3730a3; font-size: 13px; line-height: 1.7; margin-bottom: 4px;
+        }
+        .info-card-title { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
+
+        .error-msg {
+          background: #fef2f2; border: 1px solid #fecaca; color: #dc2626;
+          font-size: 13px; padding: 10px 14px; border-radius: 10px; margin-bottom: 16px;
+          font-weight: 500;
+        }
+
+        .cta-link {
+          display: inline-flex; align-items: center; gap: 7px;
+          margin-top: 16px;
+          background: white; border: 1.5px solid #c7d2fe;
+          color: #6366f1; font-weight: 700; font-size: 13.5px;
+          text-decoration: none; padding: 10px 18px; border-radius: 10px;
+          transition: all 0.18s; width: 100%; justify-content: center;
+          box-shadow: 0 1px 4px rgba(99,102,241,0.1);
+        }
+        .cta-link:hover {
+          background: #eef2ff; border-color: #818cf8;
+          box-shadow: 0 4px 14px rgba(99,102,241,0.18);
+          transform: translateY(-1px);
+        }
+
+        .divider {
+          display: flex; align-items: center; gap: 12px;
+          margin: 22px 0; color: #94a3b8;
+          font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+        }
+        .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #e2e8f0; }
+
+        .demo-badge {
+          display: flex; align-items: center; gap: 8px;
+          background: #f0fdf4; border: 1px solid #bbf7d0;
+          border-radius: 10px; padding: 11px 14px;
+          font-size: 13px; color: #15803d; margin-bottom: 18px;
+          line-height: 1.5;
+        }
+        .demo-dot {
+          width: 8px; height: 8px; border-radius: 50%;
+          background: #22c55e; flex-shrink: 0;
+          box-shadow: 0 0 0 3px rgba(34,197,94,0.25);
+        }
+        .demo-badge code { background: #dcfce7; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-weight: 700; }
+
         .field-group { margin-bottom: 18px; }
-        .field-label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+        .field-label { display: block; font-size: 12.5px; font-weight: 600; color: #374151; margin-bottom: 6px; letter-spacing: 0.1px; }
         .field-wrap { position: relative; }
-        .field-icon { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: #9ca3af; display: flex; align-items: center; }
-        .field-input { width: 100%; padding: 11px 16px 11px 40px; border: 1.5px solid #e5e7eb; border-radius: 10px; font-size: 14px; font-family: 'DM Sans', sans-serif; color: #0d1117; background: white; outline: none; }
-        .error-msg { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
-        .submit-btn { width: 100%; padding: 13px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; font-family: 'Syne', sans-serif; cursor: pointer; margin-top: 8px; }
-        .security-note { margin-top: 18px; font-size: 12px; color: #6b7280; line-height: 1.6; }
-        .create-account-link { display: inline-flex; margin-top: 14px; color: #4f46e5; font-weight: 700; text-decoration: none; font-size: 13px; }
-        @media (max-width: 900px) { .login-left { display: none; } .login-right { width: 100%; } }
+        .field-icon { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: #94a3b8; display: flex; align-items: center; transition: color 0.15s; }
+        .field-input {
+          width: 100%; padding: 11px 16px 11px 38px;
+          border: 1.5px solid #e2e8f0; border-radius: 10px;
+          font-size: 14px; font-family: 'Inter', sans-serif;
+          color: #0f172a; background: white; outline: none;
+          transition: all 0.18s; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .field-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.13); }
+        .field-input:hover:not(:focus) { border-color: #c7d2fe; }
+        .field-wrap:focus-within .field-icon { color: #6366f1; }
+
+        .submit-btn {
+          width: 100%; padding: 13px; margin-top: 4px;
+          background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+          color: white; border: none; border-radius: 10px;
+          font-size: 14.5px; font-weight: 700; font-family: 'Inter', sans-serif;
+          cursor: pointer; transition: all 0.18s;
+          box-shadow: 0 4px 16px rgba(99,102,241,0.35);
+          letter-spacing: -0.1px;
+        }
+        .submit-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.45); }
+        .submit-btn:active:not(:disabled) { transform: translateY(0); }
+        .submit-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+
+        .security-note { margin-top: 18px; font-size: 12px; color: #94a3b8; line-height: 1.65; text-align: center; }
+
+        /* ── Animations ───────────────── */
+        @keyframes fadeInLeft { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes fadeInRight { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+
+        @media (max-width: 960px) { .login-left { display: none; } .login-right { width: 100%; } }
+        @media (max-width: 480px) { .login-right { padding: 32px 24px; } }
       `}</style>
     </div>
   );

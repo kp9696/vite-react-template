@@ -14,7 +14,7 @@ const courses = [
 ];
 
 const catColors: Record<string, string> = {
-  Management: "#4f46e5",
+  Management: "#6366f1",
   Compliance: "#ef4444",
   Technical: "#8b5cf6",
   "Soft Skills": "#10b981",

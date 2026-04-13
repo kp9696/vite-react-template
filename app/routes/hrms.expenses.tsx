@@ -17,7 +17,7 @@ const initialExpenses = [
 ];
 
 const catColors: Record<string, string> = {
-  "Travel": "#4f46e5",
+  "Travel": "#6366f1",
   "Meals": "#f59e0b",
   "Software": "#8b5cf6",
   "Office Supplies": "#10b981",

@@ -10,7 +10,7 @@ import { avatarColor, getInitials } from "../lib/hrms.shared";
 type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
 const DEPT_COLORS: Record<string, string> = {
-  Engineering: "#4f46e5", Design: "#ec4899", Analytics: "#f59e0b",
+  Engineering: "#6366f1", Design: "#ec4899", Analytics: "#f59e0b",
   Sales: "#10b981", "People Ops": "#0ea5e9", Marketing: "#8b5cf6",
   Finance: "#06b6d4", Operations: "#ef4444",
 };
