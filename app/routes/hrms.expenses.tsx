@@ -4,14 +4,16 @@ import type { Route } from "./+types/hrms.expenses";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/session.server";
 
-const expenses = [
-  { id: "EXP-1042", name: "Vikram Joshi", category: "Travel", desc: "Flight BLR → DEL (client visit)", amount: 12400, date: "Apr 3", status: "Pending", receipt: true },
-  { id: "EXP-1041", name: "Arjun Gupta", category: "Meals", desc: "Client dinner — 4 pax", amount: 4800, date: "Apr 2", status: "Approved", receipt: true },
-  { id: "EXP-1040", name: "Deepa Krishnan", category: "Software", desc: "Figma annual license", amount: 9600, date: "Apr 1", status: "Approved", receipt: true },
-  { id: "EXP-1039", name: "Priya Nair", category: "Travel", desc: "Cab to client site (10 trips)", amount: 3200, date: "Mar 30", status: "Reimbursed", receipt: true },
-  { id: "EXP-1038", name: "Rohan Mehta", category: "Office Supplies", desc: "Mechanical keyboard + mousepad", amount: 5400, date: "Mar 28", status: "Rejected", receipt: false },
-  { id: "EXP-1037", name: "Sneha Pillai", category: "Training", desc: "SHRM certification fee", amount: 18000, date: "Mar 25", status: "Approved", receipt: true },
-  { id: "EXP-1036", name: "Meera Iyer", category: "Travel", desc: "Hotel stay — Mumbai conf.", amount: 8700, date: "Mar 22", status: "Reimbursed", receipt: true },
+type ExpenseStatus = "Pending" | "Approved" | "Reimbursed" | "Rejected";
+
+const initialExpenses = [
+  { id: "EXP-1042", name: "Vikram Joshi", category: "Travel", desc: "Flight BLR → DEL (client visit)", amount: 12400, date: "Apr 3", status: "Pending" as ExpenseStatus, receipt: true },
+  { id: "EXP-1041", name: "Arjun Gupta", category: "Meals", desc: "Client dinner — 4 pax", amount: 4800, date: "Apr 2", status: "Approved" as ExpenseStatus, receipt: true },
+  { id: "EXP-1040", name: "Deepa Krishnan", category: "Software", desc: "Figma annual license", amount: 9600, date: "Apr 1", status: "Approved" as ExpenseStatus, receipt: true },
+  { id: "EXP-1039", name: "Priya Nair", category: "Travel", desc: "Cab to client site (10 trips)", amount: 3200, date: "Mar 30", status: "Reimbursed" as ExpenseStatus, receipt: true },
+  { id: "EXP-1038", name: "Rohan Mehta", category: "Office Supplies", desc: "Mechanical keyboard + mousepad", amount: 5400, date: "Mar 28", status: "Rejected" as ExpenseStatus, receipt: false },
+  { id: "EXP-1037", name: "Sneha Pillai", category: "Training", desc: "SHRM certification fee", amount: 18000, date: "Mar 25", status: "Approved" as ExpenseStatus, receipt: true },
+  { id: "EXP-1036", name: "Meera Iyer", category: "Travel", desc: "Hotel stay — Mumbai conf.", amount: 8700, date: "Mar 22", status: "Reimbursed" as ExpenseStatus, receipt: true },
 ];
 
 const catColors: Record<string, string> = {
@@ -45,11 +47,15 @@ export default function Expenses() {
   const { currentUser } = useLoaderData<typeof loader>();
   const [tab, setTab] = useState<"all" | "pending" | "mine">("all");
   const [showForm, setShowForm] = useState(false);
+  const [expenses, setExpenses] = useState(initialExpenses);
+
+  const updateStatus = (id: string, status: ExpenseStatus) =>
+    setExpenses(prev => prev.map(e => e.id === id ? { ...e, status } : e));
 
   const filtered = tab === "pending"
     ? expenses.filter(e => e.status === "Pending")
     : tab === "mine"
-    ? expenses.filter(e => e.name === "Deepa Krishnan")
+    ? expenses.filter(e => e.name === currentUser.name)
     : expenses;
 
   const totalPending = expenses.filter(e => e.status === "Pending").reduce((a, e) => a + e.amount, 0);
@@ -197,12 +203,12 @@ export default function Expenses() {
                 <td>
                   {e.status === "Pending" && (
                     <div style={{ display: "flex", gap: 4 }}>
-                      <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }}>✓</button>
-                      <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }}>✕</button>
+                      <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => updateStatus(e.id, "Approved")}>✓</button>
+                      <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => updateStatus(e.id, "Rejected")}>✕</button>
                     </div>
                   )}
                   {e.status === "Approved" && (
-                    <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }}>💸 Pay</button>
+                    <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => updateStatus(e.id, "Reimbursed")}>💸 Pay</button>
                   )}
                 </td>
               </tr>

@@ -45,6 +45,30 @@ export interface OnboardingJoinerRecord {
   tasks: OnboardingTaskRecord[];
 }
 
+export interface ExitTaskRecord {
+  id: string;
+  exitId: string;
+  label: string;
+  done: boolean;
+  sortOrder: number;
+}
+
+export interface ExitProcessRecord {
+  id: string;
+  orgId: string;
+  name: string;
+  employeeCode: string;
+  role: string;
+  department: string;
+  exitType: string;
+  noticePeriod: string;
+  lastDay: string;
+  progress: number;
+  reason: string;
+  createdAt: string;
+  tasks: ExitTaskRecord[];
+}
+
 export const DEMO_EMPLOYEES: EmployeeRecord[] = [
   { id: "EMPD001", orgId: "ORGDEMOUI", name: "Deepa Krishnan", role: "Engineering Manager", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2024-08-10", salary: "INR 42L", createdAt: "2024-08-10T09:00:00.000Z" },
   { id: "EMPD002", orgId: "ORGDEMOUI", name: "Aarav Shah", role: "Senior Engineer", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2025-04-02", salary: "INR 28L", createdAt: "2025-04-02T09:00:00.000Z" },
@@ -106,6 +130,57 @@ export const DEMO_JOINERS: OnboardingJoinerRecord[] = [
   },
 ];
 
+export const DEMO_EXITS: ExitProcessRecord[] = [
+  {
+    id: "EXTD001",
+    orgId: "ORGDEMOUI",
+    name: "Rajesh Kumar",
+    employeeCode: "EMP088",
+    role: "Backend Engineer",
+    department: "Engineering",
+    exitType: "Resignation",
+    noticePeriod: "60 days",
+    lastDay: "2026-05-31",
+    progress: 38,
+    reason: "Better opportunity",
+    createdAt: "2026-04-01T09:00:00.000Z",
+    tasks: [
+      { id: "XTKD001", exitId: "EXTD001", label: "Resignation Accepted", done: true, sortOrder: 1 },
+      { id: "XTKD002", exitId: "EXTD001", label: "Notice Period Confirmed", done: true, sortOrder: 2 },
+      { id: "XTKD003", exitId: "EXTD001", label: "Knowledge Transfer Plan", done: true, sortOrder: 3 },
+      { id: "XTKD004", exitId: "EXTD001", label: "Asset Retrieval", done: false, sortOrder: 4 },
+      { id: "XTKD005", exitId: "EXTD001", label: "Access Revocation", done: false, sortOrder: 5 },
+      { id: "XTKD006", exitId: "EXTD001", label: "Exit Interview", done: false, sortOrder: 6 },
+      { id: "XTKD007", exitId: "EXTD001", label: "Full & Final Settlement", done: false, sortOrder: 7 },
+      { id: "XTKD008", exitId: "EXTD001", label: "Experience Letter", done: false, sortOrder: 8 },
+    ],
+  },
+  {
+    id: "EXTD002",
+    orgId: "ORGDEMOUI",
+    name: "Aditi Sharma",
+    employeeCode: "EMP124",
+    role: "Marketing Analyst",
+    department: "Marketing",
+    exitType: "Resignation",
+    noticePeriod: "30 days",
+    lastDay: "2026-04-30",
+    progress: 75,
+    reason: "Higher studies",
+    createdAt: "2026-04-02T09:00:00.000Z",
+    tasks: [
+      { id: "XTKD009", exitId: "EXTD002", label: "Resignation Accepted", done: true, sortOrder: 1 },
+      { id: "XTKD010", exitId: "EXTD002", label: "Notice Period Confirmed", done: true, sortOrder: 2 },
+      { id: "XTKD011", exitId: "EXTD002", label: "Knowledge Transfer Plan", done: true, sortOrder: 3 },
+      { id: "XTKD012", exitId: "EXTD002", label: "Asset Retrieval", done: true, sortOrder: 4 },
+      { id: "XTKD013", exitId: "EXTD002", label: "Access Revocation", done: true, sortOrder: 5 },
+      { id: "XTKD014", exitId: "EXTD002", label: "Exit Interview", done: true, sortOrder: 6 },
+      { id: "XTKD015", exitId: "EXTD002", label: "Full & Final Settlement", done: false, sortOrder: 7 },
+      { id: "XTKD016", exitId: "EXTD002", label: "Experience Letter", done: false, sortOrder: 8 },
+    ],
+  },
+];
+
 function monthYear(value: string): string {
   return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(new Date(value));
 }
@@ -158,6 +233,16 @@ function mapTask(row: Record<string, unknown>): OnboardingTaskRecord {
   };
 }
 
+function mapExitTask(row: Record<string, unknown>): ExitTaskRecord {
+  return {
+    id: String(row.id),
+    exitId: String(row.exit_id),
+    label: String(row.label),
+    done: Boolean(row.done),
+    sortOrder: Number(row.sort_order),
+  };
+}
+
 const defaultOnboardingTemplate = [
   ["Pre-joining", "Offer Letter Signed"],
   ["Pre-joining", "Background Verification"],
@@ -171,6 +256,17 @@ const defaultOnboardingTemplate = [
   ["30-Day Goals", "Complete Security Training"],
   ["30-Day Goals", "First Project Kickoff"],
   ["30-Day Goals", "Buddy Check-in"],
+] as const;
+
+const defaultExitTemplate = [
+  "Resignation Accepted",
+  "Notice Period Confirmed",
+  "Knowledge Transfer Plan",
+  "Asset Retrieval",
+  "Access Revocation",
+  "Exit Interview",
+  "Full & Final Settlement",
+  "Experience Letter",
 ] as const;
 
 export async function listEmployees(db: D1Database, orgId: string): Promise<EmployeeRecord[]> {
@@ -485,4 +581,138 @@ export function getDemoOnboardingDashboard() {
       { label: "Avg Completion", value: `${joiners.length ? Math.round(joiners.reduce((sum, joiner) => sum + joiner.progress, 0) / joiners.length) : 0}%`, sub: "Across all joiners" },
     ],
   };
+}
+
+export async function listExitProcesses(db: D1Database, orgId: string): Promise<ExitProcessRecord[]> {
+  const exitsResult = await db
+    .prepare(
+      `SELECT id, org_id, name, employee_code, role, department, exit_type, notice_period, last_day, progress, reason, created_at
+       FROM exit_processes
+       WHERE org_id = ?
+       ORDER BY date(last_day) ASC, datetime(created_at) DESC`,
+    )
+    .bind(orgId)
+    .all<Record<string, unknown>>();
+
+  const tasksResult = await db
+    .prepare(
+      `SELECT id, exit_id, label, done, sort_order
+       FROM exit_tasks
+       WHERE exit_id IN (SELECT id FROM exit_processes WHERE org_id = ?)
+       ORDER BY sort_order ASC`,
+    )
+    .bind(orgId)
+    .all<Record<string, unknown>>();
+
+  const taskMap = new Map<string, ExitTaskRecord[]>();
+  for (const row of tasksResult.results) {
+    const task = mapExitTask(row);
+    const list = taskMap.get(task.exitId) ?? [];
+    list.push(task);
+    taskMap.set(task.exitId, list);
+  }
+
+  return exitsResult.results.map((row) => ({
+    id: String(row.id),
+    orgId: String(row.org_id),
+    name: String(row.name),
+    employeeCode: String(row.employee_code),
+    role: String(row.role),
+    department: String(row.department),
+    exitType: String(row.exit_type),
+    noticePeriod: String(row.notice_period),
+    lastDay: String(row.last_day),
+    progress: Number(row.progress ?? 0),
+    reason: String(row.reason ?? "-"),
+    createdAt: String(row.created_at),
+    tasks: taskMap.get(String(row.id)) ?? [],
+  }));
+}
+
+export async function createExitProcess(
+  db: D1Database,
+  input: {
+    orgId: string;
+    name: string;
+    employeeCode: string;
+    role: string;
+    department: string;
+    exitType: string;
+    noticePeriod: string;
+    lastDay: string;
+  },
+): Promise<void> {
+  const id = `EXT${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO exit_processes (id, org_id, name, employee_code, role, department, exit_type, notice_period, last_day, progress, reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '-', ?, ?)`,
+    )
+    .bind(
+      id,
+      input.orgId,
+      input.name.trim(),
+      input.employeeCode.trim(),
+      input.role.trim(),
+      input.department.trim(),
+      input.exitType.trim(),
+      input.noticePeriod.trim(),
+      input.lastDay,
+      now,
+      now,
+    )
+    .run();
+
+  const statements = defaultExitTemplate.map((label, index) =>
+    db.prepare(
+      `INSERT INTO exit_tasks (id, exit_id, label, done, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    ).bind(`XTK${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`, id, label, index + 1, now, now),
+  );
+
+  await db.batch(statements);
+}
+
+export async function toggleExitTask(db: D1Database, exitId: string, taskId: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `UPDATE exit_tasks
+       SET done = CASE done WHEN 1 THEN 0 ELSE 1 END,
+           updated_at = ?
+       WHERE id = ? AND exit_id = ?`,
+    )
+    .bind(now, taskId, exitId)
+    .run();
+
+  const result = await db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN done = 1 THEN 1 ELSE 0 END) AS done_count,
+         COUNT(*) AS total_count
+       FROM exit_tasks
+       WHERE exit_id = ?`,
+    )
+    .bind(exitId)
+    .first<{ done_count: number | string; total_count: number | string }>();
+
+  const done = Number(result?.done_count ?? 0);
+  const total = Number(result?.total_count ?? 0);
+  const progress = total === 0 ? 0 : Math.round((done / total) * 100);
+
+  await db
+    .prepare(`UPDATE exit_processes SET progress = ?, updated_at = ? WHERE id = ?`)
+    .bind(progress, now, exitId)
+    .run();
+}
+
+export async function getExitDashboard(db: D1Database, orgId: string) {
+  const exits = await listExitProcesses(db, orgId);
+  return { exits };
+}
+
+export function getDemoExitDashboard() {
+  return { exits: DEMO_EXITS };
 }

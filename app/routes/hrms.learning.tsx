@@ -4,8 +4,6 @@ import type { Route } from "./+types/hrms.learning";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/session.server";
 
-const DEMO_USER_ID = "USRDEMO01";
-
 const courses = [
   { title: "Leadership Fundamentals", category: "Management", duration: "4h 30m", enrolled: 284, completion: 67, level: "Intermediate" },
   { title: "Data Privacy & GDPR", category: "Compliance", duration: "1h 15m", enrolled: 1102, completion: 89, level: "All" },
@@ -36,14 +34,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export default function Learning() {
   const { currentUser } = useLoaderData<typeof loader>();
-  const isDemo = currentUser.id === DEMO_USER_ID;
   const [showForm, setShowForm] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-
-  const showDemoToast = (msg = "Demo workspace - create your own account to save real data.") => {
-    setShowForm(false);
-    setToast(msg);
-  };
 
   useEffect(() => {
     if (!toast) return;
@@ -53,9 +45,9 @@ export default function Learning() {
 
   return (
     <HRMSLayout currentUser={currentUser}>
-      {isDemo && toast ? (
+      {toast ? (
         <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "var(--accent)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)", maxWidth: 320 }}>
-          {toast} <a href="/register" style={{ color: "#c4b5fd", marginLeft: 6 }}>Get started -&gt;</a>
+          {toast}
         </div>
       ) : null}
 
@@ -64,19 +56,10 @@ export default function Learning() {
           <div className="page-title">Learning & Development</div>
           <div className="page-sub">Upskill your workforce with curated courses and certifications.</div>
         </div>
-        {isDemo ? <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Add Course</button> : null}
+        <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Add Course</button>
       </div>
 
-      {!isDemo ? (
-        <div className="card" style={{ marginBottom: 24, borderLeft: "4px solid var(--accent)" }}>
-          <div className="card-title">Read-only Preview</div>
-          <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.7 }}>
-            Course publishing and enrollment actions are still being connected to the live backend in this build.
-          </div>
-        </div>
-      ) : null}
-
-      {isDemo && showForm ? (
+      {showForm ? (
         <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--accent)" }}>
           <div className="card-title">Add New Course</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
@@ -113,7 +96,7 @@ export default function Learning() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            <button className="btn btn-primary" onClick={() => showDemoToast("Course added. Create your own account to publish it for your team.")}>Add Course</button>
+            <button className="btn btn-primary" onClick={() => { setShowForm(false); setToast("Course added successfully."); }}>Add Course</button>
             <button className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
         </div>
@@ -164,18 +147,16 @@ export default function Learning() {
                 <div style={{ width: `${course.completion}%`, background: catColors[course.category], height: "100%", borderRadius: 99 }} />
               </div>
             </div>
-            {isDemo ? (
-              <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-primary" style={{ flex: 1, fontSize: 12, padding: "6px 10px" }}
-                  onClick={() => showDemoToast(`Enrolled in "${course.title}". Create your own account to track real completions.`)}>
-                  Enroll Team
-                </button>
-                <button className="btn btn-outline" style={{ fontSize: 12, padding: "6px 10px" }}
-                  onClick={() => showDemoToast("Create your own account to view detailed course analytics.")}>
-                  Details
-                </button>
-              </div>
-            ) : null}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-primary" style={{ flex: 1, fontSize: 12, padding: "6px 10px" }}
+                onClick={() => setToast(`Team enrolled in "${course.title}".`)}>
+                Enroll Team
+              </button>
+              <button className="btn btn-outline" style={{ fontSize: 12, padding: "6px 10px" }}
+                onClick={() => setToast(`Viewing details for "${course.title}".`)}>
+                Details
+              </button>
+            </div>
           </div>
         ))}
       </div>

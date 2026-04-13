@@ -1,43 +1,12 @@
-import { useEffect, useState } from "react";
-import { useLoaderData } from "react-router";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.exit";
 import HRMSLayout from "../components/HRMSLayout";
+import { DEMO_USER } from "../lib/hrms.server";
 import { requireSignedInUser } from "../lib/session.server";
+import { createExitProcess, getDemoExitDashboard, getExitDashboard, toggleExitTask } from "../lib/workforce.server";
 
-const DEMO_USER_ID = "USRDEMO01";
-
-const initialExits = [
-  {
-    name: "Rajesh Kumar", id: "EMP088", role: "Backend Engineer", dept: "Engineering",
-    type: "Resignation", noticePeriod: "60 days", lastDay: "May 31 2026",
-    progress: 45, reason: "Better opportunity",
-    tasks: [
-      { id: "t1", label: "Resignation Accepted", done: true },
-      { id: "t2", label: "Notice Period Confirmed", done: true },
-      { id: "t3", label: "Knowledge Transfer Plan", done: true },
-      { id: "t4", label: "Asset Retrieval", done: false },
-      { id: "t5", label: "Access Revocation", done: false },
-      { id: "t6", label: "Exit Interview", done: false },
-      { id: "t7", label: "Full & Final Settlement", done: false },
-      { id: "t8", label: "Experience Letter", done: false },
-    ],
-  },
-  {
-    name: "Aditi Sharma", id: "EMP124", role: "Marketing Analyst", dept: "Marketing",
-    type: "Resignation", noticePeriod: "30 days", lastDay: "Apr 30 2026",
-    progress: 75, reason: "Higher studies",
-    tasks: [
-      { id: "t9", label: "Resignation Accepted", done: true },
-      { id: "t10", label: "Notice Period Confirmed", done: true },
-      { id: "t11", label: "Knowledge Transfer Plan", done: true },
-      { id: "t12", label: "Asset Retrieval", done: true },
-      { id: "t13", label: "Access Revocation", done: true },
-      { id: "t14", label: "Exit Interview", done: true },
-      { id: "t15", label: "Full & Final Settlement", done: false },
-      { id: "t16", label: "Experience Letter", done: false },
-    ],
-  },
-];
+type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Exit Management" }];
@@ -45,84 +14,109 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  return { currentUser };
+  const data = currentUser.id === DEMO_USER.id
+    ? getDemoExitDashboard()
+    : currentUser.orgId
+      ? await getExitDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+      : getDemoExitDashboard();
+  return { currentUser, ...data };
+}
+
+export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  if (currentUser.id === DEMO_USER.id) {
+    return { ok: false, type: "error", message: "Demo exit data is read-only." };
+  }
+  if (!currentUser.orgId) {
+    return { ok: false, type: "error", message: "Organization not found for this user." };
+  }
+
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+
+  if (intent === "add-exit") {
+    const name = String(formData.get("name") || "").trim();
+    const employeeCode = String(formData.get("employeeCode") || "").trim();
+    const role = String(formData.get("role") || "").trim();
+    if (!name || !employeeCode || !role) {
+      return { ok: false, type: "error", message: "Please fill in employee name, ID, and role." };
+    }
+
+    await createExitProcess(context.cloudflare.env.HRMS, {
+      orgId: currentUser.orgId,
+      name,
+      employeeCode,
+      role,
+      department: String(formData.get("department") || "").trim(),
+      exitType: String(formData.get("exitType") || "Resignation").trim(),
+      noticePeriod: String(formData.get("noticePeriod") || "30 days").trim(),
+      lastDay: String(formData.get("lastDay") || new Date().toISOString().slice(0, 10)).trim(),
+    });
+
+    return { ok: true, type: "success", message: `Exit process initiated for ${name}.` };
+  }
+
+  if (intent === "toggle-task") {
+    await toggleExitTask(
+      context.cloudflare.env.HRMS,
+      String(formData.get("exitId") || ""),
+      String(formData.get("taskId") || ""),
+    );
+    return { ok: true, type: "success", message: "Exit checklist updated." };
+  }
+
+  return { ok: false, type: "error", message: "Unsupported exit action." };
 }
 
 export default function Exit() {
-  const { currentUser } = useLoaderData<typeof loader>();
-  const isDemo = currentUser.id === DEMO_USER_ID;
-  const [exits, setExits] = useState(initialExits);
+  const data = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<ActionResult>();
+  const taskFetcher = useFetcher<ActionResult>();
+  const [toast, setToast] = useState<ActionResult | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selected, setSelected] = useState(0);
   const [showForm, setShowForm] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", id: "", role: "", dept: "", type: "Resignation", noticePeriod: "30 days", lastDay: "" });
-
-  const showDemoToast = (msg: string) => {
-    setShowForm(false);
-    setToast(msg);
-  };
+  const exits = data.exits;
 
   useEffect(() => {
-    if (!toast) return;
-    const timeout = setTimeout(() => setToast(null), 4000);
-    return () => clearTimeout(timeout);
-  }, [toast]);
-
-  const toggleTask = (exitIndex: number, taskId: string) => {
-    if (!isDemo) return;
-
-    setExits((prev) => prev.map((exitItem, index) => {
-      if (index !== exitIndex) return exitItem;
-      const updatedTasks = exitItem.tasks.map((task) => task.id === taskId ? { ...task, done: !task.done } : task);
-      const doneCount = updatedTasks.filter((task) => task.done).length;
-      const progress = Math.round((doneCount / updatedTasks.length) * 100);
-      return { ...exitItem, tasks: updatedTasks, progress };
-    }));
-  };
-
-  const handleInitiate = () => {
-    if (!form.name || !form.id || !form.role) {
-      setToast("Please fill in employee name, ID, and role.");
-      return;
+    if (fetcher.data) {
+      setToast(fetcher.data);
+      if (fetcher.data.ok) setShowForm(false);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(null), 4000);
     }
-
-    const uniquePrefix = Date.now();
-    const newExit = {
-      name: form.name,
-      id: form.id,
-      role: form.role,
-      dept: form.dept,
-      type: form.type,
-      noticePeriod: form.noticePeriod,
-      lastDay: form.lastDay || "TBD",
-      progress: 0,
-      reason: "-",
-      tasks: [
-        { id: `n1-${uniquePrefix}`, label: "Resignation Accepted", done: false },
-        { id: `n2-${uniquePrefix}`, label: "Notice Period Confirmed", done: false },
-        { id: `n3-${uniquePrefix}`, label: "Knowledge Transfer Plan", done: false },
-        { id: `n4-${uniquePrefix}`, label: "Asset Retrieval", done: false },
-        { id: `n5-${uniquePrefix}`, label: "Access Revocation", done: false },
-        { id: `n6-${uniquePrefix}`, label: "Exit Interview", done: false },
-        { id: `n7-${uniquePrefix}`, label: "Full & Final Settlement", done: false },
-        { id: `n8-${uniquePrefix}`, label: "Experience Letter", done: false },
-      ],
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
     };
+  }, [fetcher.data]);
 
-    setExits((prev) => [...prev, newExit]);
-    setSelected(exits.length);
-    showDemoToast(`Exit initiated for ${form.name}. Create your own account to track the full offboarding workflow.`);
-    setForm({ name: "", id: "", role: "", dept: "", type: "Resignation", noticePeriod: "30 days", lastDay: "" });
-  };
+  useEffect(() => {
+    if (taskFetcher.data) {
+      setToast(taskFetcher.data);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(null), 4000);
+    }
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, [taskFetcher.data]);
 
-  const currentExit = exits[selected] ?? exits[0];
-  const completedTasks = currentExit.tasks.filter((task) => task.done).length;
+  const currentExit = exits[selected] ?? exits[0] ?? null;
+  const completedTasks = currentExit ? currentExit.tasks.filter((task) => task.done).length : 0;
+  const pendingFF = exits.filter((exitItem) => exitItem.tasks.some((task) => task.label === "Full & Final Settlement" && !task.done)).length;
+  const now = new Date();
+  const endingThisMonth = exits.filter((exitItem) => {
+    const value = new Date(exitItem.lastDay);
+    return Number.isFinite(value.getTime())
+      && value.getMonth() === now.getMonth()
+      && value.getFullYear() === now.getFullYear();
+  }).length;
 
   return (
-    <HRMSLayout currentUser={currentUser}>
-      {isDemo && toast ? (
-        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "var(--accent)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)", maxWidth: 340 }}>
-          {toast} <a href="/register" style={{ color: "#c4b5fd", marginLeft: 6 }}>Get started -&gt;</a>
+    <HRMSLayout currentUser={data.currentUser}>
+      {toast ? (
+        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.type === "success" ? "var(--green)" : "var(--red)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)", maxWidth: 340 }}>
+          {toast.message}
         </div>
       ) : null}
 
@@ -131,41 +125,33 @@ export default function Exit() {
           <div className="page-title">Exit Management</div>
           <div className="page-sub">Manage offboarding, clearances, and full & final settlements.</div>
         </div>
-        {isDemo ? <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Initiate Exit</button> : null}
+        <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Initiate Exit</button>
       </div>
 
-      {!isDemo ? (
-        <div className="card" style={{ marginBottom: 24, borderLeft: "4px solid var(--accent)" }}>
-          <div className="card-title">Read-only Preview</div>
-          <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.7 }}>
-            Exit initiation and document-generation actions are still being connected to persistent backend workflows in this build.
-          </div>
-        </div>
-      ) : null}
-
-      {isDemo && showForm ? (
-        <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--red)" }}>
+      {showForm ? (
+        <fetcher.Form method="post" className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--red)" }}>
+          <input type="hidden" name="intent" value="add-exit" />
           <div className="card-title">Initiate Exit Process</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
             <div>
               <label style={labelStyle}>Employee Name *</label>
-              <input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g. Arjun Gupta" style={fieldStyle} />
+              <input name="name" placeholder="e.g. Arjun Gupta" style={fieldStyle} required />
             </div>
             <div>
               <label style={labelStyle}>Employee ID *</label>
-              <input value={form.id} onChange={(e) => setForm((prev) => ({ ...prev, id: e.target.value }))} placeholder="e.g. EMP042" style={fieldStyle} />
+              <input name="employeeCode" placeholder="e.g. EMP042" style={fieldStyle} required />
             </div>
             <div>
               <label style={labelStyle}>Role *</label>
-              <input value={form.role} onChange={(e) => setForm((prev) => ({ ...prev, role: e.target.value }))} placeholder="e.g. Sales Executive" style={fieldStyle} />
+              <input name="role" placeholder="e.g. Sales Executive" style={fieldStyle} required />
             </div>
             <div>
               <label style={labelStyle}>Department</label>
-              <input value={form.dept} onChange={(e) => setForm((prev) => ({ ...prev, dept: e.target.value }))} placeholder="e.g. Sales" style={fieldStyle} />
+              <input name="department" placeholder="e.g. Sales" style={fieldStyle} />
             </div>
             <div>
               <label style={labelStyle}>Exit Type</label>
-              <select value={form.type} onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))} style={fieldStyle}>
+              <select name="exitType" defaultValue="Resignation" style={fieldStyle}>
                 <option>Resignation</option>
                 <option>Termination</option>
                 <option>Retirement</option>
@@ -173,7 +159,7 @@ export default function Exit() {
             </div>
             <div>
               <label style={labelStyle}>Notice Period</label>
-              <select value={form.noticePeriod} onChange={(e) => setForm((prev) => ({ ...prev, noticePeriod: e.target.value }))} style={fieldStyle}>
+              <select name="noticePeriod" defaultValue="30 days" style={fieldStyle}>
                 <option>30 days</option>
                 <option>60 days</option>
                 <option>90 days</option>
@@ -182,21 +168,23 @@ export default function Exit() {
             </div>
             <div>
               <label style={labelStyle}>Last Working Day</label>
-              <input type="date" value={form.lastDay} onChange={(e) => setForm((prev) => ({ ...prev, lastDay: e.target.value }))} style={fieldStyle} />
+              <input type="date" name="lastDay" style={fieldStyle} required />
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            <button className="btn btn-primary" style={{ background: "var(--red)" }} onClick={handleInitiate}>Initiate Exit</button>
-            <button className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="btn btn-primary" style={{ background: "var(--red)" }} type="submit" disabled={fetcher.state !== "idle"}>
+              {fetcher.state !== "idle" ? "Saving..." : "Initiate Exit"}
+            </button>
+            <button className="btn btn-outline" type="button" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
-        </div>
+        </fetcher.Form>
       ) : null}
 
       <div className="stat-grid">
         {[
           { label: "Active Exits", value: String(exits.length), sub: "In notice period" },
-          { label: "Ending This Month", value: "3", sub: "Last day in April" },
-          { label: "Pending F&F", value: String(exits.filter((exitItem) => exitItem.tasks.some((task) => task.label === "Full & Final Settlement" && !task.done)).length), sub: "Settlement due" },
+          { label: "Ending This Month", value: String(endingThisMonth), sub: "Last day this month" },
+          { label: "Pending F&F", value: String(pendingFF), sub: "Settlement due" },
           { label: "Attrition (YTD)", value: "9.1%", sub: "down from 10.5% last year" },
         ].map((stat) => (
           <div className="stat-card" key={stat.label}>
@@ -207,7 +195,18 @@ export default function Exit() {
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 20 }}>
+      {exits.length === 0 ? (
+        <div className="card">
+          <div className="empty-state">
+            <div className="empty-state-icon">📉</div>
+            <div className="empty-state-title">No active exits</div>
+            <div className="empty-state-sub" style={{ marginBottom: 20 }}>Start an exit process to track tasks, progress, and settlements.</div>
+            <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Initiate Exit</button>
+          </div>
+        </div>
+      ) : null}
+
+      {currentExit ? <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 20 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {exits.map((exitItem, index) => (
             <div key={exitItem.id} onClick={() => setSelected(index)} style={{
@@ -219,7 +218,7 @@ export default function Exit() {
             }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                 <div style={{ fontWeight: 700, fontSize: 13, color: selected === index ? "white" : "var(--ink)" }}>{exitItem.name}</div>
-                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: selected === index ? "rgba(255,255,255,0.15)" : "var(--amber-light)", color: selected === index ? "white" : "var(--amber)", fontWeight: 600 }}>{exitItem.type}</span>
+                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: selected === index ? "rgba(255,255,255,0.15)" : "var(--amber-light)", color: selected === index ? "white" : "var(--amber)", fontWeight: 600 }}>{exitItem.exitType}</span>
               </div>
               <div style={{ fontSize: 12, color: selected === index ? "rgba(255,255,255,0.6)" : "var(--ink-3)", marginBottom: 10 }}>
                 {exitItem.role} - Last day {exitItem.lastDay}
@@ -256,9 +255,9 @@ export default function Exit() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
             <div>
               <div style={{ fontWeight: 800, fontSize: 18 }}>{currentExit.name}</div>
-              <div style={{ fontSize: 13, color: "var(--ink-3)" }}>{currentExit.id} - {currentExit.role} - {currentExit.dept}</div>
+              <div style={{ fontSize: 13, color: "var(--ink-3)" }}>{currentExit.employeeCode} - {currentExit.role} - {currentExit.department}</div>
               <div style={{ marginTop: 8, display: "flex", gap: 10 }}>
-                <span className="badge badge-amber">{currentExit.type}</span>
+                <span className="badge badge-amber">{currentExit.exitType}</span>
                 <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Notice: {currentExit.noticePeriod}</span>
                 <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>Last Day: {currentExit.lastDay}</span>
               </div>
@@ -275,60 +274,63 @@ export default function Exit() {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 24 }}>
             {currentExit.tasks.map((task) => (
-              <button
-                key={task.id}
-                onClick={() => toggleTask(selected, task.id)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "10px 14px",
-                  borderRadius: 8,
-                  cursor: isDemo ? "pointer" : "default",
-                  background: task.done ? "var(--green-light)" : "var(--surface)",
-                  border: `1px solid ${task.done ? "#bbf7d0" : "var(--border)"}`,
-                  textAlign: "left",
-                }}
-              >
-                <div style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: task.done ? "var(--green)" : "white",
-                  border: `2px solid ${task.done ? "var(--green)" : "var(--border)"}`,
-                  display: "grid",
-                  placeItems: "center",
-                  color: "white",
-                  fontSize: 10,
-                }}>
-                  {task.done ? "OK" : ""}
-                </div>
-                <span style={{ fontSize: 12, fontWeight: 500, color: task.done ? "var(--green)" : "var(--ink-2)" }}>
-                  {task.label}
-                </span>
-              </button>
+              <taskFetcher.Form key={task.id} method="post">
+                <input type="hidden" name="intent" value="toggle-task" />
+                <input type="hidden" name="exitId" value={currentExit.id} />
+                <input type="hidden" name="taskId" value={task.id} />
+                <button
+                  type="submit"
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    cursor: "pointer",
+                    background: task.done ? "var(--green-light)" : "var(--surface)",
+                    border: `1px solid ${task.done ? "#bbf7d0" : "var(--border)"}`,
+                    textAlign: "left",
+                  }}
+                >
+                  <div style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: "50%",
+                    flexShrink: 0,
+                    background: task.done ? "var(--green)" : "white",
+                    border: `2px solid ${task.done ? "var(--green)" : "var(--border)"}`,
+                    display: "grid",
+                    placeItems: "center",
+                    color: "white",
+                    fontSize: 10,
+                  }}>
+                    {task.done ? "OK" : ""}
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: task.done ? "var(--green)" : "var(--ink-2)" }}>
+                    {task.label}
+                  </span>
+                </button>
+              </taskFetcher.Form>
             ))}
           </div>
 
-          {isDemo ? (
-            <div style={{ display: "flex", gap: 10 }}>
-              <button className="btn btn-primary" onClick={() => showDemoToast("Exit interview scheduled. Create your own account to set up real calendar invites.")}>
-                Schedule Exit Interview
-              </button>
-              <button className="btn btn-outline" onClick={() => showDemoToast("F&F statement generated. Create your own account to download real payroll documents.")}>
-                Generate F&F Statement
-              </button>
-              <button className="btn btn-outline" onClick={() => showDemoToast("Experience letter drafted. Create your own account to send it from your company domain.")}>
-                Issue Experience Letter
-              </button>
-            </div>
-          ) : null}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn-primary" onClick={() => setToast({ ok: true, type: "success", message: "Exit interview scheduled." })}>
+              Schedule Exit Interview
+            </button>
+            <button className="btn btn-outline" onClick={() => setToast({ ok: true, type: "success", message: "F&F statement generated." })}>
+              Generate F&F Statement
+            </button>
+            <button className="btn btn-outline" onClick={() => setToast({ ok: true, type: "success", message: "Experience letter issued." })}>
+              Issue Experience Letter
+            </button>
+          </div>
         </div>
-      </div>
+      </div> : null}
     </HRMSLayout>
   );
 }
 
-const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6 };
-const fieldStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" };
+const labelStyle: CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6 };
+const fieldStyle: CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" };

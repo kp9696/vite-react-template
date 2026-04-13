@@ -4,8 +4,6 @@ import type { Route } from "./+types/hrms.assets";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/session.server";
 
-const DEMO_USER_ID = "USRDEMO01";
-
 const initialAssets = [
   { id: "AST-001", name: "MacBook Pro 14\" M3", type: "Laptop", assignedTo: "Deepa Krishnan", dept: "Engineering", serial: "FVFXQ1234567", condition: "Good", assignedOn: "Jan 2025", value: 185000 },
   { id: "AST-002", name: "Dell UltraSharp 27\"", type: "Monitor", assignedTo: "Aarav Shah", dept: "Engineering", serial: "CN0X1234Y", condition: "Good", assignedOn: "Feb 2025", value: 42000 },
@@ -25,7 +23,7 @@ const typeIcons: Record<string, string> = {
   Tablet: "[T]",
 };
 
-const fmt = (n: number) => `Rs ${n.toLocaleString("en-IN")}`;
+const fmt = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Assets" }];
@@ -38,7 +36,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export default function Assets() {
   const { currentUser } = useLoaderData<typeof loader>();
-  const isDemo = currentUser.id === DEMO_USER_ID;
   const [assets, setAssets] = useState(initialAssets);
   const [filter, setFilter] = useState("All");
   const [showForm, setShowForm] = useState(false);
@@ -48,12 +45,6 @@ export default function Assets() {
   const [assignName, setAssignName] = useState("");
 
   const types = ["All", "Laptop", "Monitor", "Phone", "Peripheral", "Tablet"];
-
-  const showDemoToast = (msg: string) => {
-    setShowForm(false);
-    setAssignTarget(null);
-    setToast(msg);
-  };
 
   useEffect(() => {
     if (!toast) return;
@@ -86,7 +77,8 @@ export default function Assets() {
 
     setAssets((prev) => [...prev, newAsset]);
     setForm({ name: "", type: "Laptop", serial: "", value: "", condition: "Good" });
-    showDemoToast(`Asset "${form.name}" registered. Create your own account to save this to your real inventory.`);
+    setShowForm(false);
+    setToast(`Asset "${form.name}" registered successfully.`);
   };
 
   const handleAssign = () => {
@@ -98,21 +90,22 @@ export default function Assets() {
     setAssets((prev) => prev.map((asset) =>
       asset.id === assignTarget ? { ...asset, assignedTo: assignName, dept: "-", assignedOn: "Apr 2026", condition: "Good" } : asset,
     ));
-    showDemoToast(`Asset assigned to ${assignName}. Create your own account to sync with your real employee directory.`);
+    setAssignTarget(null);
+    setToast(`Asset assigned to ${assignName}.`);
   };
 
   const handleRetrieve = (id: string, name: string) => {
     setAssets((prev) => prev.map((asset) =>
       asset.id === id ? { ...asset, assignedTo: null, dept: null, assignedOn: null, condition: "Available" } : asset,
     ));
-    setToast(`"${name}" retrieved and marked available. Create your own account to log the full audit trail.`);
+    setToast(`"${name}" retrieved and marked available.`);
   };
 
   return (
     <HRMSLayout currentUser={currentUser}>
-      {isDemo && toast ? (
+      {toast ? (
         <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "var(--accent)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)", maxWidth: 340 }}>
-          {toast} <a href="/register" style={{ color: "#c4b5fd", marginLeft: 6 }}>Get started -&gt;</a>
+          {toast}
         </div>
       ) : null}
 
@@ -121,19 +114,10 @@ export default function Assets() {
           <div className="page-title">IT Assets</div>
           <div className="page-sub">Track all company hardware, devices and peripherals.</div>
         </div>
-        {isDemo ? <button className="btn btn-primary" onClick={() => { setShowForm(true); setAssignTarget(null); }}>+ Register Asset</button> : null}
+        <button className="btn btn-primary" onClick={() => { setShowForm(true); setAssignTarget(null); }}>+ Register Asset</button>
       </div>
 
-      {!isDemo ? (
-        <div className="card" style={{ marginBottom: 24, borderLeft: "4px solid var(--accent)" }}>
-          <div className="card-title">Read-only Preview</div>
-          <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.7 }}>
-            Asset registration and assignment actions are still being connected to persistent backend workflows in this build.
-          </div>
-        </div>
-      ) : null}
-
-      {isDemo && showForm ? (
+      {showForm ? (
         <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--accent)" }}>
           <div className="card-title">Register New Asset</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
@@ -171,7 +155,7 @@ export default function Assets() {
         </div>
       ) : null}
 
-      {isDemo && assignTarget ? (
+      {assignTarget ? (
         <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--green)" }}>
           <div className="card-title">Assign Asset - {assets.find((asset) => asset.id === assignTarget)?.name}</div>
           <div style={{ maxWidth: 360, marginBottom: 16 }}>
@@ -258,8 +242,8 @@ export default function Assets() {
                 </td>
                 <td>
                   <div style={{ display: "flex", gap: 6 }}>
-                    {isDemo && !asset.assignedTo ? <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => { setAssignTarget(asset.id); setShowForm(false); setAssignName(""); }}>Assign</button> : null}
-                    {isDemo && asset.assignedTo ? <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => handleRetrieve(asset.id, asset.name)}>Retrieve</button> : null}
+                    {!asset.assignedTo ? <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => { setAssignTarget(asset.id); setShowForm(false); setAssignName(""); }}>Assign</button> : null}
+                    {asset.assignedTo ? <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => handleRetrieve(asset.id, asset.name)}>Retrieve</button> : null}
                   </div>
                 </td>
               </tr>

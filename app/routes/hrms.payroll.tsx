@@ -5,15 +5,34 @@ import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/session.server";
 import { avatarColor, getInitials } from "../lib/hrms.shared";
 
-const payrollData = [
-  { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, conveyance: 19200, pf: 33600, tds: 5600, pt: 2800, gross: 411200, deductions: 42000, net: 369200, status: "Processed" },
-  { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
-  { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
-  { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Pending" },
-  { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
-  { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Pending" },
-];
+const ALL_PAYROLL: Record<string, typeof payrollData> = {
+  "April 2026": [
+    { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, conveyance: 19200, pf: 33600, tds: 5600, pt: 2800, gross: 411200, deductions: 42000, net: 369200, status: "Processed" },
+    { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
+    { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
+    { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Pending" },
+    { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
+    { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Pending" },
+  ],
+  "March 2026": [
+    { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, conveyance: 19200, pf: 33600, tds: 5600, pt: 2800, gross: 411200, deductions: 42000, net: 369200, status: "Processed" },
+    { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
+    { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
+    { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Processed" },
+    { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
+    { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Processed" },
+  ],
+  "February 2026": [
+    { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 265000, hra: 106000, conveyance: 19200, pf: 31800, tds: 5200, pt: 2800, gross: 390200, deductions: 39800, net: 350400, status: "Processed" },
+    { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
+    { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
+    { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Processed" },
+    { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
+    { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Processed" },
+  ],
+};
 
+const payrollData = ALL_PAYROLL["April 2026"];
 type Employee = typeof payrollData[0];
 
 const fmt = (n: number) => "₹" + n.toLocaleString("en-IN");
@@ -27,13 +46,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   return { currentUser };
 }
 
-function PayslipModal({ emp, onClose }: { emp: Employee; onClose: () => void }) {
+function PayslipModal({ emp, month, onClose }: { emp: Employee; month: string; onClose: () => void }) {
   const color = avatarColor(emp.name);
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">
-          Payslip — April 2026
+          Payslip — {month}
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
 
@@ -97,13 +116,13 @@ function PayslipModal({ emp, onClose }: { emp: Employee; onClose: () => void }) 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: "var(--green-light)", borderRadius: 12, border: "1px solid #a7f3d0" }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--green)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Net Pay (Take-Home)</div>
-            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>After all deductions · April 2026</div>
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>After all deductions · {month}</div>
           </div>
           <div style={{ fontSize: 26, fontWeight: 900, color: "var(--green)" }}>{fmt(emp.net)}</div>
         </div>
 
         <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-          <button className="btn btn-primary" onClick={onClose}>Download PDF</button>
+          <button className="btn btn-primary" onClick={() => window.print()}>🖨️ Print / Save PDF</button>
           <button className="btn btn-outline" onClick={onClose}>Close</button>
         </div>
       </div>
@@ -111,20 +130,45 @@ function PayslipModal({ emp, onClose }: { emp: Employee; onClose: () => void }) 
   );
 }
 
+function exportCSV(rows: Employee[], month: string) {
+  const headers = ["Employee", "ID", "Department", "Basic", "HRA", "Gross", "Deductions", "Net Pay", "Status"];
+  const lines = [
+    headers.join(","),
+    ...rows.map((e) =>
+      [e.name, e.id, e.dept, e.basic, e.hra, e.gross, e.deductions, e.net, e.status].join(",")
+    ),
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `payroll-${month.replace(" ", "-")}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function Payroll() {
   const { currentUser } = useLoaderData<typeof loader>();
   const [month, setMonth] = useState("April 2026");
   const [selectedPayslip, setSelectedPayslip] = useState<Employee | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
-  const totalGross      = payrollData.reduce((a, e) => a + e.gross, 0);
-  const totalNet        = payrollData.reduce((a, e) => a + e.net, 0);
-  const totalDeductions = payrollData.reduce((a, e) => a + e.deductions, 0);
-  const pending         = payrollData.filter((e) => e.status === "Pending").length;
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const rows = ALL_PAYROLL[month] ?? ALL_PAYROLL["April 2026"];
+
+  const totalGross      = rows.reduce((a, e) => a + e.gross, 0);
+  const totalNet        = rows.reduce((a, e) => a + e.net, 0);
+  const totalDeductions = rows.reduce((a, e) => a + e.deductions, 0);
+  const pending         = rows.filter((e) => e.status === "Pending").length;
 
   // Dept summary
   const deptSummary = Object.values(
-    payrollData.reduce<Record<string, { dept: string; count: number; net: number }>>((acc, e) => {
-      if (\!acc[e.dept]) acc[e.dept] = { dept: e.dept, count: 0, net: 0 };
+    rows.reduce<Record<string, { dept: string; count: number; net: number }>>((acc, e) => {
+      if (!acc[e.dept]) acc[e.dept] = { dept: e.dept, count: 0, net: 0 };
       acc[e.dept].count++;
       acc[e.dept].net += e.net;
       return acc;
@@ -133,8 +177,11 @@ export default function Payroll() {
 
   return (
     <HRMSLayout currentUser={currentUser}>
+      {toast ? (
+        <div className="toast toast-success" style={{ cursor: "default" }}>{toast}</div>
+      ) : null}
       {selectedPayslip ? (
-        <PayslipModal emp={selectedPayslip} onClose={() => setSelectedPayslip(null)} />
+        <PayslipModal emp={selectedPayslip} month={month} onClose={() => setSelectedPayslip(null)} />
       ) : null}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
@@ -148,7 +195,13 @@ export default function Payroll() {
             <option>March 2026</option>
             <option>February 2026</option>
           </select>
-          <button className="btn btn-primary">▶ Run Payroll</button>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (pending === 0) { showToast(`Payroll for ${month} is already fully processed.`); return; }
+              showToast(`Payroll run started for ${month}. Processing ${pending} pending employee(s)…`);
+            }}
+          >▶ Run Payroll</button>
         </div>
       </div>
 
@@ -179,10 +232,10 @@ export default function Payroll() {
         {/* Payroll register */}
         <div className="card" style={{ gridColumn: "1/-1" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div className="card-title" style={{ margin: 0 }}>Payroll Register — {month}</div>
+            <div className="card-title" style={{ margin: 0 }}>Payroll Register — {month} ({rows.length} employees)</div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-outline" style={{ fontSize: 12 }}>📥 Export CSV</button>
-              <button className="btn btn-outline" style={{ fontSize: 12 }}>🖨️ Print</button>
+              <button className="btn btn-outline" style={{ fontSize: 12 }} onClick={() => exportCSV(rows, month)}>📥 Export CSV</button>
+              <button className="btn btn-outline" style={{ fontSize: 12 }} onClick={() => window.print()}>🖨️ Print</button>
             </div>
           </div>
 
@@ -191,7 +244,7 @@ export default function Payroll() {
               <tr><th>Employee</th><th>Department</th><th>Basic</th><th>HRA</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
-              {payrollData.map((e) => (
+              {rows.map((e) => (
                 <tr key={e.id}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 9 }}>

@@ -44,7 +44,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
   if (currentUser.id === DEMO_USER.id) {
     return { ok: false, type: "error", message: "Demo recruitment data is read-only." };
   }
-  if (\!currentUser.orgId) {
+  if (!currentUser.orgId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
   const formData = await request.formData();
@@ -152,8 +152,8 @@ export default function Recruitment() {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-primary" type="submit" disabled={fetcher.state \!== "idle"}>
-                  {fetcher.state \!== "idle" ? "Posting…" : "Post Role"}
+                <button className="btn btn-primary" type="submit" disabled={fetcher.state !== "idle"}>
+                  {fetcher.state !== "idle" ? "Posting…" : "Post Role"}
                 </button>
                 <button className="btn btn-outline" type="button" onClick={() => setShowForm(false)}>Cancel</button>
               </div>
@@ -162,8 +162,20 @@ export default function Recruitment() {
         </div>
       ) : null}
 
+      {/* Empty state */}
+      {data.openings.length === 0 ? (
+        <div className="card">
+          <div className="empty-state">
+            <div className="empty-state-icon">🎯</div>
+            <div className="empty-state-title">No open positions yet</div>
+            <div className="empty-state-sub" style={{ marginBottom: 20 }}>Post your first role to start tracking applicants through the pipeline.</div>
+            <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Post New Role</button>
+          </div>
+        </div>
+      ) : null}
+
       {/* Kanban view */}
-      {viewMode === "kanban" && (
+      {data.openings.length > 0 && viewMode === "kanban" && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 28 }}>
           {data.pipeline.map((column) => (
             <div key={column.stage}>
@@ -260,7 +272,7 @@ export default function Recruitment() {
       )}
 
       {/* Table view */}
-      {viewMode === "table" && (
+      {data.openings.length > 0 && viewMode === "table" && (
         <div className="card">
           <div className="card-title">Open Positions</div>
           <table className="table">

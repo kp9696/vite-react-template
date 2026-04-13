@@ -37,12 +37,24 @@ const initialRequests: LeaveRequest[] = [
   { name: "Kavya Sharma",   type: "Sick Leave",      from: "Apr 7",  to: "Apr 7",  days: 1,  status: "Approved", reason: "Fever",                fromDate: new Date(2026,3,7),  toDate: new Date(2026,3,7)  },
 ];
 
-const leaveBalance = [
-  { type: "Annual Leave", total: 18, used: 7, remaining: 11 },
-  { type: "Sick Leave",   total: 12, used: 2, remaining: 10 },
-  { type: "Casual Leave", total: 6,  used: 3, remaining: 3  },
-  { type: "Comp Off",     total: 4,  used: 0, remaining: 4  },
-];
+const BASE_BALANCE: Record<string, { total: number; baseUsed: number }> = {
+  "Annual Leave": { total: 18, baseUsed: 7 },
+  "Sick Leave":   { total: 12, baseUsed: 2 },
+  "Casual Leave": { total: 6,  baseUsed: 3 },
+  "Comp Off":     { total: 4,  baseUsed: 0 },
+  "WFH":          { total: 30, baseUsed: 4 },
+  "Maternity Leave": { total: 90, baseUsed: 0 },
+};
+
+function computeBalance(requests: LeaveRequest[]) {
+  return Object.entries(BASE_BALANCE).map(([type, { total, baseUsed }]) => {
+    const extraUsed = requests
+      .filter((r) => r.type === type && r.status === "Approved")
+      .reduce((sum, r) => sum + r.days, 0);
+    const used = baseUsed + extraUsed;
+    return { type, total, used, remaining: Math.max(0, total - used) };
+  }).filter((b) => b.total > 0);
+}
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -65,6 +77,30 @@ export default function Leave() {
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [applyForm, setApplyForm] = useState({ type: "Annual Leave", from: "", to: "", reason: "" });
 
+  const leaveBalance = computeBalance(requests);
+
+  const handleApply = () => {
+    if (!applyForm.from || !applyForm.to || !applyForm.reason.trim()) return;
+    const fromDate = new Date(applyForm.from);
+    const toDate = new Date(applyForm.to);
+    const days = Math.max(1, Math.ceil((toDate.getTime() - fromDate.getTime()) / 86400000) + 1);
+    const fmt = (d: Date) => d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
+    const newRequest: LeaveRequest = {
+      name: currentUser.name,
+      type: applyForm.type,
+      from: fmt(fromDate),
+      to: fmt(toDate),
+      days,
+      status: "Pending",
+      reason: applyForm.reason,
+      fromDate,
+      toDate,
+    };
+    setRequests((prev) => [newRequest, ...prev]);
+    setApplyForm({ type: "Annual Leave", from: "", to: "", reason: "" });
+    setShowApplyModal(false);
+  };
+
   const handleAction = (name: string, from: string, action: LeaveStatus) => {
     setRequests((prev) =>
       prev.map((r) => r.name === name && r.from === from ? { ...r, status: action } : r)
@@ -80,14 +116,14 @@ export default function Leave() {
   // Collect leave days in current month view
   const leaveDayMap: Record<number, { name: string; color: string }[]> = {};
   requests
-    .filter((r) => r.status \!== "Rejected")
+    .filter((r) => r.status !== "Rejected")
     .forEach((r) => {
       const d = new Date(r.fromDate);
       const end = new Date(r.toDate);
       while (d <= end) {
         if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
           const day = d.getDate();
-          if (\!leaveDayMap[day]) leaveDayMap[day] = [];
+          if (!leaveDayMap[day]) leaveDayMap[day] = [];
           leaveDayMap[day].push({ name: r.name.split(" ")[0], color: LEAVE_TYPE_COLORS[r.type] ?? "#6b7280" });
         }
         d.setDate(d.getDate() + 1);
@@ -153,16 +189,22 @@ export default function Leave() {
               ) : null}
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-              <button className="btn btn-primary" onClick={() => setShowApplyModal(false)}>Submit Request</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleApply}
+                disabled={!applyForm.from || !applyForm.to || !applyForm.reason.trim()}
+              >
+                Submit Request
+              </button>
               <button className="btn btn-outline" onClick={() => setShowApplyModal(false)}>Cancel</button>
             </div>
           </div>
         </div>
       ) : null}
 
-      {/* Balance cards */}
+      {/* Balance cards — top 4 primary types */}
       <div className="stat-grid" style={{ marginBottom: 24 }}>
-        {leaveBalance.map((l) => {
+        {leaveBalance.filter((l) => ["Annual Leave", "Sick Leave", "Casual Leave", "Comp Off"].includes(l.type)).map((l) => {
           const color = LEAVE_TYPE_COLORS[l.type] ?? "#6b7280";
           const usedPct = Math.round((l.used / l.total) * 100);
           return (

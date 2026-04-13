@@ -118,7 +118,18 @@ export default function Onboarding() {
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 20 }}>
+      {data.joiners.length === 0 ? (
+        <div className="card">
+          <div className="empty-state">
+            <div className="empty-state-icon">🚀</div>
+            <div className="empty-state-title">No joiners added yet</div>
+            <div className="empty-state-sub" style={{ marginBottom: 20 }}>Add your first new hire to start tracking their onboarding progress.</div>
+            <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Add New Joiner</button>
+          </div>
+        </div>
+      ) : null}
+
+      {data.joiners.length > 0 ? <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 20 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {data.joiners.map((current, index) => (
             <div key={current.id} onClick={() => setSelected(index)} style={{ background: selected === index ? "var(--accent)" : "white", border: `1px solid ${selected === index ? "var(--accent)" : "var(--border)"}`, borderRadius: 12, padding: 16, cursor: "pointer" }}>
@@ -179,7 +190,7 @@ export default function Onboarding() {
             ))}
           </div>
         ) : null}
-      </div>
+      </div> : null}
     </HRMSLayout>
   );
 }

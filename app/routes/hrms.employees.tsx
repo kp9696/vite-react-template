@@ -31,7 +31,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
   if (currentUser.id === DEMO_USER.id) {
     return { ok: false, type: "error", message: "Demo workspace employee records are read-only." };
   }
-  if (\!currentUser.orgId) {
+  if (!currentUser.orgId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
   const formData = await request.formData();
@@ -130,7 +130,7 @@ export default function Employees() {
                 <div>
                   <label style={labelStyle}>Department</label>
                   <select name="department" style={inputStyle}>
-                    {departments.filter((d) => d \!== "All").map((d) => <option key={d}>{d}</option>)}
+                    {departments.filter((d) => d !== "All").map((d) => <option key={d}>{d}</option>)}
                   </select>
                 </div>
                 <div>
@@ -148,13 +148,13 @@ export default function Employees() {
                 <div>
                   <label style={labelStyle}>Status</label>
                   <select name="status" style={inputStyle}>
-                    {statuses.filter((s) => s \!== "All").map((s) => <option key={s}>{s}</option>)}
+                    {statuses.filter((s) => s !== "All").map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-primary" type="submit" disabled={fetcher.state \!== "idle"}>
-                  {fetcher.state \!== "idle" ? "Saving…" : "Save Employee"}
+                <button className="btn btn-primary" type="submit" disabled={fetcher.state !== "idle"}>
+                  {fetcher.state !== "idle" ? "Saving…" : "Save Employee"}
                 </button>
                 <button className="btn btn-outline" type="button" onClick={() => setShowForm(false)}>Cancel</button>
               </div>
@@ -177,7 +177,7 @@ export default function Employees() {
               borderColor: department === dept ? "var(--accent)" : "var(--border)",
             }}
           >
-            {dept}{dept \!== "All" && deptCounts[dept] ? ` · ${deptCounts[dept]}` : ""}
+            {dept}{dept !== "All" && deptCounts[dept] ? ` · ${deptCounts[dept]}` : ""}
           </button>
         ))}
       </div>
