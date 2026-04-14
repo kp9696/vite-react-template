@@ -159,12 +159,34 @@ export async function requireSignedInUser(request: Request, db: D1Database) {
     if (authUser) {
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
+      const normalizedEmail = email.trim().toLowerCase();
+      const domain = normalizedEmail.split("@")[1] ?? normalizedEmail;
+      const orgDomain = domain === "gmail.com" || domain === "yahoo.com" || domain === "outlook.com"
+        ? `gmail:${normalizedEmail}`
+        : domain;
+      const orgId = `ORG${id.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+      // Ensure org exists
       await db
         .prepare(
-          `INSERT OR IGNORE INTO users (id, name, email, role, department, status, joined_on, created_at, updated_at)
-           VALUES (?, ?, ?, 'Employee', 'General', 'Active', ?, ?, ?)`,
+          `INSERT OR IGNORE INTO organizations (id, name, domain, invite_limit, created_at, updated_at)
+           VALUES (?, ?, ?, 5, ?, ?)`,
         )
-        .bind(id, authUser.name, email.trim().toLowerCase(), now, now, now)
+        .bind(orgId, `${authUser.name}'s Organization`, orgDomain, now, now)
+        .run();
+
+      const actualOrg = await db
+        .prepare(`SELECT id FROM organizations WHERE domain = ? LIMIT 1`)
+        .bind(orgDomain)
+        .first<{ id: string }>();
+      const resolvedOrgId = actualOrg?.id ?? orgId;
+
+      await db
+        .prepare(
+          `INSERT OR IGNORE INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
+        )
+        .bind(id, resolvedOrgId, authUser.name, normalizedEmail, now, now, now)
         .run();
       user = await getUserByEmail(db, email);
     }

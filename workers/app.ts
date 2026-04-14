@@ -588,18 +588,41 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
     .bind(pendingData.name, email, pendingData.password)
     .run();
 
-  // Insert into users (HRMS user store) so the user can log in and access the dashboard
+  // Auto-create an organization (invite system) + company (SaaS) for the new admin
+  const defaultOrgName = `${pendingData.name}'s Organization`;
+  const domain = email.split("@")[1] ?? email;
+  // For Gmail/free email, use email-scoped domain so multiple users can register
+  const orgDomain = domain === "gmail.com" || domain === "yahoo.com" || domain === "outlook.com"
+    ? `gmail:${email}`
+    : domain;
+  const orgId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
   await env.HRMS
     .prepare(
-      `INSERT OR IGNORE INTO users (id, name, email, role, department, status, joined_on, created_at, updated_at)
-       VALUES (?, ?, ?, 'Employee', 'General', 'Active', ?, ?, ?)`,
+      `INSERT OR IGNORE INTO organizations (id, name, domain, invite_limit, created_at, updated_at)
+       VALUES (?, ?, ?, 5, ?, ?)`,
     )
-    .bind(userId, pendingData.name, email, now, now, now)
+    .bind(orgId, defaultOrgName, orgDomain, now, now)
     .run();
 
-  // Auto-create a company for the new user (SaaS multi-tenant)
-  const defaultCompanyName = `${pendingData.name}'s Organization`;
-  await getOrCreateCompany(env.HRMS, email, defaultCompanyName);
+  // Get the actual org id (handles the OR IGNORE case where org already existed)
+  const actualOrg = await env.HRMS
+    .prepare(`SELECT id FROM organizations WHERE domain = ? LIMIT 1`)
+    .bind(orgDomain)
+    .first<{ id: string }>();
+  const resolvedOrgId = actualOrg?.id ?? orgId;
+
+  // Insert into users as HR Admin, linked to their org
+  await env.HRMS
+    .prepare(
+      `INSERT OR IGNORE INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
+    )
+    .bind(userId, resolvedOrgId, pendingData.name, email, now, now, now)
+    .run();
+
+  // Also create a SaaS company record
+  await getOrCreateCompany(env.HRMS, email, defaultOrgName);
 
   // Clean up all OTP-related keys for this email
   await env.OTP_STORE.delete(email);
