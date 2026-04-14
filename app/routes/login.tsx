@@ -49,15 +49,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
-  const db = context.cloudflare.env.HRMS;
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
 
   // ── Email / password login (OTP-verified accounts) ──
   if (intent === "email-login") {
-    const { verifyPasswordWithMigration } = await import("../../workers/security/auth");
-    const { enforceLoginRateLimit, extractClientIp } = await import("../../workers/security/rateLimiter");
-
     const email = String(formData.get("email") || "").trim().toLowerCase();
     const password = String(formData.get("password") || "").trim();
 
@@ -65,42 +61,30 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: "Email and password are required." } satisfies ActionData;
     }
 
-    const ip = extractClientIp(request);
-    const limited = await enforceLoginRateLimit(context.cloudflare.env.OTP_STORE, ip, email);
-    if (!limited.ok) {
-      return { error: limited.message } satisfies ActionData;
+    const apiResponse = await fetch(new URL("/api/auth/login", request.url).toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": request.headers.get("User-Agent") || "",
+        "CF-Connecting-IP": request.headers.get("CF-Connecting-IP") || "",
+        "X-Forwarded-For": request.headers.get("X-Forwarded-For") || "",
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const payload = (await apiResponse.json().catch(() => ({}))) as { error?: string };
+    if (!apiResponse.ok) {
+      return { error: payload.error || "Invalid email or password." } satisfies ActionData;
     }
 
-    const authUser = await db
-      .prepare(
-        `SELECT id, password FROM auth_users
-         WHERE lower(email) = lower(?) AND is_verified = 1
-         LIMIT 1`,
-      )
-      .bind(email)
-      .first<{ id: number; password: string }>();
-
-    if (!authUser) {
-      return { error: "Invalid email or password." } satisfies ActionData;
-    }
-
-    const passwordOk = await verifyPasswordWithMigration(db, email, password, authUser.password);
-    if (!passwordOk) {
-      return { error: "Invalid email or password." } satisfies ActionData;
-    }
-
-    const userProfile = await db
-      .prepare(`SELECT id FROM users WHERE lower(email) = lower(?) LIMIT 1`)
-      .bind(email)
-      .first<{ id: string }>();
-
-    if (!userProfile) {
-      return { error: "User profile is missing. Contact support." } satisfies ActionData;
+    const setCookie = apiResponse.headers.get("Set-Cookie");
+    if (!setCookie) {
+      return { error: "Login session could not be established." } satisfies ActionData;
     }
 
     return redirect("/hrms", {
       headers: {
-        "Set-Cookie": await createAuthSessionCookie(context.cloudflare.env, email, request),
+        "Set-Cookie": setCookie,
       },
     });
   }
