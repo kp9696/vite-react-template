@@ -843,6 +843,11 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   const { method } = request;
   const { pathname } = new URL(request.url);
 
+  // Only API requests should be handled here; let SSR routes pass through.
+  if (!pathname.startsWith("/api/")) {
+    return null;
+  }
+
   const needsAuth = !(
     method === "POST" && pathname === "/api/invitations/accept"
   );
