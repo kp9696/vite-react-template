@@ -5,7 +5,8 @@ interface LimitState {
   retryAfter: number;
 }
 
-const LOCK_TTL_SECONDS = 3;
+// Cloudflare KV requires expiration_ttl to be at least 60 seconds.
+const LOCK_TTL_SECONDS = 60;
 const LOCK_RETRIES = 3;
 
 function windowKey(prefix: string, identifier: string, windowSeconds: number): string {

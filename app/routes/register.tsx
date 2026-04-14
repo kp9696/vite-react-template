@@ -31,7 +31,16 @@ async function readApiPayload(response: Response): Promise<ApiPayload> {
   }
 
   const text = await response.text();
+  const looksLikeHtml = /^\s*<!doctype html/i.test(text) || /<html[\s>]/i.test(text);
+  if (looksLikeHtml) {
+    return { error: `Server returned an HTML error page (${response.status}). Please deploy latest worker and retry.` };
+  }
+
   if (text.includes("Oops!") || text.includes("unexpected error")) {
+    return { error: `Server error (${response.status}). Please retry after deployment/restart.` };
+  }
+
+  if (response.status >= 500) {
     return { error: `Server error (${response.status}). Please retry after deployment/restart.` };
   }
 
