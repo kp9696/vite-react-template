@@ -32,6 +32,8 @@ import {
   revokeRefreshTokenById,
   sha256Hex,
 } from "./security/refreshTokens";
+import { handleCoreHrmsApi } from "./modules/hrms-core";
+import { handleSchemaCoreApi } from "./modules/hrms-schema-api";
 
 declare module "react-router" {
   export interface AppLoadContext {
@@ -295,10 +297,11 @@ async function sendSignupOtpEmail(
 }
 
 async function requireApiAuth(request: Request, env: Env) {
-  if (!env.JWT_ACCESS_SECRET) {
+  const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
+  if (!accessSecret) {
     return null;
   }
-  return requireAuth(request, env.JWT_ACCESS_SECRET);
+  return requireAuth(request, accessSecret);
 }
 
 async function handleSendSignupOtp(request: Request, env: Env): Promise<Response> {
@@ -509,7 +512,8 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
 }
 
 async function handleApiLogin(request: Request, env: Env): Promise<Response> {
-  if (!env.JWT_ACCESS_SECRET) {
+  const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
+  if (!accessSecret) {
     return apiJson(request, env, { error: "JWT access secret is not configured." }, 500);
   }
 
@@ -566,7 +570,7 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
     hrUser.id,
     tenantId,
     hrUser.role,
-    env.JWT_ACCESS_SECRET,
+    accessSecret,
   );
 
   const refreshToken = generateOpaqueRefreshToken();
@@ -603,7 +607,8 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleApiRefresh(request: Request, env: Env): Promise<Response> {
-  if (!env.JWT_ACCESS_SECRET) {
+  const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
+  if (!accessSecret) {
     return apiJson(request, env, { error: "JWT access secret is not configured." }, 500);
   }
 
@@ -671,7 +676,7 @@ async function handleApiRefresh(request: Request, env: Env): Promise<Response> {
     user.id,
     user.org_id ?? "NO_TENANT",
     user.role,
-    env.JWT_ACCESS_SECRET,
+    accessSecret,
   );
 
   await logAuthEvent(
@@ -921,6 +926,16 @@ export default {
     const employeeDeleteMatch = pathname.match(/^\/api\/employees\/([^/]+)$/);
     if (method === "DELETE" && employeeDeleteMatch) {
       return handleApiDeleteEmployee(employeeDeleteMatch[1], request, env);
+    }
+
+    const coreHrmsResponse = await handleCoreHrmsApi(request, env);
+    if (coreHrmsResponse) {
+      return coreHrmsResponse;
+    }
+
+    const schemaCoreResponse = await handleSchemaCoreApi(request, env);
+    if (schemaCoreResponse) {
+      return schemaCoreResponse;
     }
 
     return requestHandler(request, {

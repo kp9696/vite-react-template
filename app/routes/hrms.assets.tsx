@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { useLoaderData } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.assets";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 
 const initialAssets = [
   { id: "AST-001", name: "MacBook Pro 14\" M3", type: "Laptop", assignedTo: "Deepa Krishnan", dept: "Engineering", serial: "FVFXQ1234567", condition: "Good", assignedOn: "Jan 2025", value: 185000 },
@@ -25,24 +26,160 @@ const typeIcons: Record<string, string> = {
 
 const fmt = (n: number) => `₹${n.toLocaleString("en-IN")}`;
 
+interface ApiAssetRow {
+  id?: string;
+  asset_tag?: string;
+  name?: string;
+  category?: string;
+  serial_no?: string;
+  condition?: string;
+  status?: string;
+  assigned_to_name?: string;
+}
+
+function mapApiAsset(row: ApiAssetRow) {
+  const isAssigned = (row.status || "").toLowerCase() === "assigned";
+  return {
+    id: row.id || row.asset_tag || "AST-000",
+    name: row.name || "Asset",
+    type: row.category || "Peripheral",
+    assignedTo: isAssigned ? row.assigned_to_name || "Assigned" : null,
+    dept: isAssigned ? "-" : null,
+    serial: row.serial_no || "-",
+    condition: row.condition || "Good",
+    assignedOn: isAssigned ? "-" : null,
+    value: 0,
+  };
+}
+
+interface AssetActionResult {
+  ok: boolean;
+  message?: string;
+  id?: string;
+}
+
 export function meta() {
   return [{ title: "JWithKP HRMS - Assets" }];
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  return { currentUser };
+
+  const assetResponse = await callCoreHrmsApi<{ assets?: ApiAssetRow[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/assets",
+  });
+
+  return {
+    currentUser,
+    apiAssets: (assetResponse?.assets || []).map(mapApiAsset),
+  };
+}
+
+export async function action({ request, context }: Route.ActionArgs): Promise<AssetActionResult> {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+
+  if (intent === "create-asset") {
+    const name = String(formData.get("name") || "").trim();
+    const type = String(formData.get("type") || "").trim();
+    const serial = String(formData.get("serial") || "").trim();
+    const condition = String(formData.get("condition") || "Good").trim();
+
+    if (!name || !type || !serial) {
+      return { ok: false, message: "Name, type, and serial are required." };
+    }
+
+    const assetTag = `AST-${Date.now().toString().slice(-6)}`;
+    const response = await callCoreHrmsApi<{ ok?: boolean; id?: string; error?: string }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/assets",
+      method: "POST",
+      body: {
+        assetTag,
+        name,
+        category: type,
+        serialNo: serial,
+        condition,
+      },
+    });
+
+    if (!response?.ok) {
+      return { ok: false, message: response?.error || "Failed to create asset." };
+    }
+
+    return { ok: true, id: response.id };
+  }
+
+  if (intent === "assign-asset") {
+    const assetId = String(formData.get("assetId") || "").trim();
+    const assigneeName = String(formData.get("assigneeName") || "").trim();
+
+    if (!assetId || !assigneeName) {
+      return { ok: false, message: "Asset and assignee are required." };
+    }
+
+    const response = await callCoreHrmsApi<{ ok?: boolean; error?: string }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: `/api/assets/${encodeURIComponent(assetId)}/assign`,
+      method: "POST",
+      body: { assigneeName },
+    });
+
+    if (!response?.ok) {
+      return { ok: false, message: response?.error || "Failed to assign asset." };
+    }
+
+    return { ok: true, id: assetId };
+  }
+
+  if (intent === "revoke-asset") {
+    const assetId = String(formData.get("assetId") || "").trim();
+    if (!assetId) {
+      return { ok: false, message: "Asset is required." };
+    }
+
+    const response = await callCoreHrmsApi<{ ok?: boolean; error?: string }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: `/api/assets/${encodeURIComponent(assetId)}/revoke`,
+      method: "POST",
+      body: { reason: "Retrieved from UI" },
+    });
+
+    if (!response?.ok) {
+      return { ok: false, message: response?.error || "Failed to retrieve asset." };
+    }
+
+    return { ok: true, id: assetId };
+  }
+
+  return { ok: false, message: "Unsupported action." };
 }
 
 export default function Assets() {
-  const { currentUser } = useLoaderData<typeof loader>();
-  const [assets, setAssets] = useState(initialAssets);
+  const { currentUser, apiAssets } = useLoaderData<typeof loader>();
+  const createFetcher = useFetcher<AssetActionResult>();
+  const assignFetcher = useFetcher<AssetActionResult>();
+  const revokeFetcher = useFetcher<AssetActionResult>();
+  const [assets, setAssets] = useState(apiAssets.length > 0 ? apiAssets : initialAssets);
   const [filter, setFilter] = useState("All");
   const [showForm, setShowForm] = useState(false);
   const [assignTarget, setAssignTarget] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", type: "Laptop", serial: "", value: "", condition: "Good" });
   const [assignName, setAssignName] = useState("");
+  const [pendingCreate, setPendingCreate] = useState<{ name: string; type: string; serial: string; value: number; condition: string } | null>(null);
+  const [pendingAssign, setPendingAssign] = useState<{ assetId: string; assigneeName: string } | null>(null);
+  const [pendingRevoke, setPendingRevoke] = useState<{ assetId: string; name: string } | null>(null);
 
   const types = ["All", "Laptop", "Monitor", "Phone", "Peripheral", "Tablet"];
 
@@ -51,6 +188,68 @@ export default function Assets() {
     const timeout = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (!createFetcher.data || !pendingCreate) return;
+    if (!createFetcher.data.ok) {
+      setToast(createFetcher.data.message || "Failed to create asset.");
+      setPendingCreate(null);
+      return;
+    }
+
+    const newAsset = {
+      id: createFetcher.data.id || `AST-${String(assets.length + 1).padStart(3, "0")}`,
+      name: pendingCreate.name,
+      type: pendingCreate.type,
+      assignedTo: null,
+      dept: null,
+      serial: pendingCreate.serial,
+      condition: pendingCreate.condition,
+      assignedOn: null,
+      value: pendingCreate.value,
+    };
+
+    setAssets((prev) => [newAsset, ...prev]);
+    setForm({ name: "", type: "Laptop", serial: "", value: "", condition: "Good" });
+    setShowForm(false);
+    setToast(`Asset "${pendingCreate.name}" registered successfully.`);
+    setPendingCreate(null);
+  }, [createFetcher.data, pendingCreate, assets.length]);
+
+  useEffect(() => {
+    if (!assignFetcher.data || !pendingAssign) return;
+    if (!assignFetcher.data.ok) {
+      setToast(assignFetcher.data.message || "Failed to assign asset.");
+      setPendingAssign(null);
+      return;
+    }
+
+    setAssets((prev) => prev.map((asset) =>
+      asset.id === pendingAssign.assetId
+        ? { ...asset, assignedTo: pendingAssign.assigneeName, dept: "-", assignedOn: "Apr 2026", condition: "Good" }
+        : asset,
+    ));
+    setAssignTarget(null);
+    setToast(`Asset assigned to ${pendingAssign.assigneeName}.`);
+    setPendingAssign(null);
+  }, [assignFetcher.data, pendingAssign]);
+
+  useEffect(() => {
+    if (!revokeFetcher.data || !pendingRevoke) return;
+    if (!revokeFetcher.data.ok) {
+      setToast(revokeFetcher.data.message || "Failed to retrieve asset.");
+      setPendingRevoke(null);
+      return;
+    }
+
+    setAssets((prev) => prev.map((asset) =>
+      asset.id === pendingRevoke.assetId
+        ? { ...asset, assignedTo: null, dept: null, assignedOn: null, condition: "Available" }
+        : asset,
+    ));
+    setToast(`"${pendingRevoke.name}" retrieved and marked available.`);
+    setPendingRevoke(null);
+  }, [revokeFetcher.data, pendingRevoke]);
 
   const filtered = filter === "All" ? assets : assets.filter((asset) => asset.type === filter);
   const available = assets.filter((asset) => !asset.assignedTo).length;
@@ -63,42 +262,45 @@ export default function Assets() {
       return;
     }
 
-    const newAsset = {
-      id: `AST-${String(assets.length + 1).padStart(3, "0")}`,
+    const payload = new FormData();
+    payload.set("intent", "create-asset");
+    payload.set("name", form.name);
+    payload.set("type", form.type);
+    payload.set("serial", form.serial);
+    payload.set("condition", form.condition);
+
+    setPendingCreate({
       name: form.name,
       type: form.type,
-      assignedTo: null,
-      dept: null,
       serial: form.serial,
-      condition: form.condition,
-      assignedOn: null,
       value: Number(form.value) || 0,
-    };
-
-    setAssets((prev) => [...prev, newAsset]);
-    setForm({ name: "", type: "Laptop", serial: "", value: "", condition: "Good" });
-    setShowForm(false);
-    setToast(`Asset "${form.name}" registered successfully.`);
+      condition: form.condition,
+    });
+    createFetcher.submit(payload, { method: "POST" });
   };
 
   const handleAssign = () => {
-    if (!assignName) {
+    if (!assignName || !assignTarget) {
       setToast("Please enter an employee name.");
       return;
     }
 
-    setAssets((prev) => prev.map((asset) =>
-      asset.id === assignTarget ? { ...asset, assignedTo: assignName, dept: "-", assignedOn: "Apr 2026", condition: "Good" } : asset,
-    ));
-    setAssignTarget(null);
-    setToast(`Asset assigned to ${assignName}.`);
+    const payload = new FormData();
+    payload.set("intent", "assign-asset");
+    payload.set("assetId", assignTarget);
+    payload.set("assigneeName", assignName.trim());
+
+    setPendingAssign({ assetId: assignTarget, assigneeName: assignName.trim() });
+    assignFetcher.submit(payload, { method: "POST" });
   };
 
   const handleRetrieve = (id: string, name: string) => {
-    setAssets((prev) => prev.map((asset) =>
-      asset.id === id ? { ...asset, assignedTo: null, dept: null, assignedOn: null, condition: "Available" } : asset,
-    ));
-    setToast(`"${name}" retrieved and marked available.`);
+    const payload = new FormData();
+    payload.set("intent", "revoke-asset");
+    payload.set("assetId", id);
+
+    setPendingRevoke({ assetId: id, name });
+    revokeFetcher.submit(payload, { method: "POST" });
   };
 
   return (

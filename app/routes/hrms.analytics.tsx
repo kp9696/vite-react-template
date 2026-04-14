@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { Route } from "./+types/hrms.analytics";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 
 const attritionByDept = [
   { dept: "Engineering", rate: 8.2,  headcount: 412 },
@@ -42,13 +43,29 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  return { currentUser };
+
+  const summary = await callCoreHrmsApi<{
+    totalEmployees?: number;
+    attendanceSummary?: { present?: number };
+    pendingApprovals?: number;
+  }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/dashboard/summary",
+  });
+
+  return { currentUser, summary };
 }
 
 export default function Analytics() {
-  const { currentUser } = useLoaderData<typeof loader>();
+  const { currentUser, summary } = useLoaderData<typeof loader>();
   const [hoveredBar, setHoveredBar] = useState<string | null>(null);
   const [hoveredSalary, setHoveredSalary] = useState<string | null>(null);
+
+  const totalEmployees = summary?.totalEmployees ?? 0;
+  const presentToday = summary?.attendanceSummary?.present ?? 0;
+  const pendingApprovals = summary?.pendingApprovals ?? 0;
 
   return (
     <HRMSLayout currentUser={currentUser}>
@@ -58,9 +75,9 @@ export default function Analytics() {
       {/* KPI cards */}
       <div className="stat-grid">
         {[
-          { label: "Attrition Rate",    value: "9.1%",   sub: "↓ 1.4pts vs last year", good: true,  color: "var(--green)"  },
-          { label: "Time to Hire",      value: "23 days", sub: "↓ 3 days vs Q3",        good: true,  color: "var(--accent)" },
-          { label: "Offer Acceptance",  value: "84%",     sub: "↑ 6% vs last year",     good: true,  color: "var(--blue, #3b82f6)" },
+          { label: "Total Employees",   value: String(totalEmployees), sub: "Live from dashboard API", good: true, color: "var(--green)"  },
+          { label: "Present Today",     value: String(presentToday),   sub: "Live attendance summary",  good: true, color: "var(--accent)" },
+          { label: "Pending Approvals", value: String(pendingApprovals), sub: "Live leave queue",       good: true, color: "var(--blue, #3b82f6)" },
           { label: "eNPS Score",        value: "+42",     sub: "Promoters 68%",          good: true,  color: "var(--amber)"  },
         ].map((s) => (
           <div className="stat-card" key={s.label} style={{ borderTop: `3px solid ${s.color}` }}>

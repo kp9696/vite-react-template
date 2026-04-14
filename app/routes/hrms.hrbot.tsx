@@ -3,6 +3,7 @@ import { useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.hrbot";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 
 interface Message {
   role: "user" | "assistant";
@@ -21,7 +22,13 @@ const suggestions = [
 
 const now = () => new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
 
-function getBotReply(text: string): string {
+function getBotReply(
+  text: string,
+  liveContext: {
+    leaveBalanceSummary: string;
+    presentCount: number;
+  },
+): string {
   const message = text.toLowerCase();
 
   if (message.includes("leave")) {
@@ -32,7 +39,7 @@ function getBotReply(text: string): string {
 - Casual Leave: 6 days
 - Leave year: April to March
 
-For your exact remaining balance, connect this page to your employee leave data in D1 or confirm with HR.`;
+Your current live balance snapshot: ${liveContext.leaveBalanceSummary}`;
   }
 
   if (message.includes("wfh") || message.includes("work from home")) {
@@ -92,7 +99,7 @@ I can still help summarize the request before you send it.`;
 - Travel reimbursement
 - Performance review guidance
 
-If your question needs company-specific records, contact HR or connect this module to live policy data in D1.`;
+Today, currently marked present: ${liveContext.presentCount}.`;
 }
 
 export function meta() {
@@ -101,11 +108,38 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  return { currentUser };
+
+  const [balances, summary] = await Promise.all([
+    callCoreHrmsApi<{ balances?: Array<{ leave_type?: string; remaining?: number }> }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/leaves/balance",
+    }),
+    callCoreHrmsApi<{ attendanceSummary?: { present?: number } }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/dashboard/summary",
+    }),
+  ]);
+
+  const leaveBalanceSummary = (balances?.balances || [])
+    .slice(0, 3)
+    .map((row) => `${row.leave_type || "Leave"}: ${Number(row.remaining ?? 0)} left`)
+    .join(" | ") || "No leave balances available yet.";
+
+  return {
+    currentUser,
+    liveContext: {
+      leaveBalanceSummary,
+      presentCount: Number(summary?.attendanceSummary?.present ?? 0),
+    },
+  };
 }
 
 export default function HRBot() {
-  const { currentUser } = useLoaderData<typeof loader>();
+  const { currentUser, liveContext } = useLoaderData<typeof loader>();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -135,7 +169,7 @@ export default function HRBot() {
         ...current,
         {
           role: "assistant",
-          content: getBotReply(text),
+          content: getBotReply(text, liveContext),
           ts: now(),
         },
       ]);

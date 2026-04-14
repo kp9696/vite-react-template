@@ -1,13 +1,15 @@
-import { useLoaderData } from "react-router";
-import { useState } from "react";
+import { useFetcher, useLoaderData } from "react-router";
+import { useEffect, useState } from "react";
 import type { Route } from "./+types/hrms.leave";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 import { avatarColor, getInitials } from "../lib/hrms.shared";
 
 type LeaveStatus = "Pending" | "Approved" | "Rejected";
 
 interface LeaveRequest {
+  id?: string;
   name: string;
   type: string;
   from: string;
@@ -17,6 +19,24 @@ interface LeaveRequest {
   reason: string;
   fromDate: Date;
   toDate: Date;
+}
+
+interface ApiLeaveRow {
+  id?: string;
+  name?: string;
+  leave_type?: string;
+  start_date?: string;
+  end_date?: string;
+  total_days?: number;
+  status?: string;
+  reason?: string;
+}
+
+interface ApiLeaveBalanceRow {
+  leave_type?: string;
+  total?: number;
+  used?: number;
+  remaining?: number;
 }
 
 const LEAVE_TYPE_COLORS: Record<string, string> = {
@@ -59,25 +79,187 @@ function computeBalance(requests: LeaveRequest[]) {
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
+function mapApiStatus(status?: string): LeaveStatus {
+  const value = (status || "").toLowerCase();
+  if (value === "approved") return "Approved";
+  if (value === "rejected") return "Rejected";
+  return "Pending";
+}
+
+function mapApiLeave(row: ApiLeaveRow): LeaveRequest {
+  const fromDate = row.start_date ? new Date(row.start_date) : new Date();
+  const toDate = row.end_date ? new Date(row.end_date) : fromDate;
+  const formatDay = (d: Date) => d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
+
+  return {
+    id: row.id,
+    name: row.name || "Employee",
+    type: row.leave_type || "Annual Leave",
+    from: formatDay(fromDate),
+    to: formatDay(toDate),
+    days: Number(row.total_days ?? 1),
+    status: mapApiStatus(row.status),
+    reason: row.reason || "",
+    fromDate,
+    toDate,
+  };
+}
+
+interface LeaveActionResult {
+  ok: boolean;
+  message?: string;
+  intent?: "apply" | "decision";
+  id?: string;
+  status?: LeaveStatus;
+}
+
 export function meta() {
   return [{ title: "JWithKP HRMS - Leave" }];
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  return { currentUser };
+
+  const leaveResponse = await callCoreHrmsApi<{ leaves?: ApiLeaveRow[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/leaves",
+  });
+
+  const balanceResponse = await callCoreHrmsApi<{ balances?: ApiLeaveBalanceRow[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/leaves/balance",
+  });
+
+  const apiRequests = (leaveResponse?.leaves || []).map(mapApiLeave);
+  const apiBalances = (balanceResponse?.balances || []).map((row) => ({
+    type: row.leave_type || "Annual Leave",
+    total: Number(row.total ?? 0),
+    used: Number(row.used ?? 0),
+    remaining: Number(row.remaining ?? 0),
+  }));
+
+  return {
+    currentUser,
+    apiRequests,
+    apiBalances,
+  };
+}
+
+export async function action({ request, context }: Route.ActionArgs): Promise<LeaveActionResult> {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+
+  if (intent === "apply-leave") {
+    const leaveType = String(formData.get("leaveType") || "").trim();
+    const startDate = String(formData.get("startDate") || "").trim();
+    const endDate = String(formData.get("endDate") || "").trim();
+    const reason = String(formData.get("reason") || "").trim();
+
+    const response = await callCoreHrmsApi<{ ok?: boolean; id?: string; error?: string }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/leaves",
+      method: "POST",
+      body: {
+        leaveType,
+        startDate,
+        endDate,
+        reason,
+      },
+    });
+
+    if (!response?.ok) {
+      return { ok: false, message: response?.error || "Failed to apply leave." };
+    }
+
+    return { ok: true, intent: "apply", id: response.id };
+  }
+
+  if (intent === "decide-leave") {
+    const id = String(formData.get("id") || "").trim();
+    const nextStatus = String(formData.get("status") || "").trim();
+
+    if (!id || (nextStatus !== "Approved" && nextStatus !== "Rejected")) {
+      return { ok: false, message: "Invalid leave decision request." };
+    }
+
+    const response = await callCoreHrmsApi<{ ok?: boolean; error?: string }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: `/api/leaves/${encodeURIComponent(id)}/decision`,
+      method: "POST",
+      body: {
+        status: nextStatus.toLowerCase(),
+      },
+    });
+
+    if (!response?.ok) {
+      return { ok: false, message: response?.error || "Failed to update leave request." };
+    }
+
+    return { ok: true, intent: "decision", id, status: nextStatus as LeaveStatus };
+  }
+
+  return { ok: false, message: "Unsupported action." };
 }
 
 export default function Leave() {
-  const { currentUser } = useLoaderData<typeof loader>();
+  const { currentUser, apiRequests, apiBalances } = useLoaderData<typeof loader>();
+  const applyFetcher = useFetcher<LeaveActionResult>();
+  const decisionFetcher = useFetcher<LeaveActionResult>();
   const [tab, setTab] = useState<"requests" | "balance" | "calendar">("requests");
-  const [requests, setRequests] = useState<LeaveRequest[]>(initialRequests);
+  const [requests, setRequests] = useState<LeaveRequest[]>(apiRequests.length > 0 ? apiRequests : initialRequests);
   const [calYear, setCalYear] = useState(2026);
   const [calMonth, setCalMonth] = useState(3); // April
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [applyForm, setApplyForm] = useState({ type: "Annual Leave", from: "", to: "", reason: "" });
+  const [pendingApply, setPendingApply] = useState<LeaveRequest | null>(null);
+  const [pendingDecision, setPendingDecision] = useState<{ id?: string; name: string; from: string; status: LeaveStatus } | null>(null);
 
-  const leaveBalance = computeBalance(requests);
+  const leaveBalance = apiBalances.length > 0 ? apiBalances : computeBalance(requests);
+
+  useEffect(() => {
+    const result = applyFetcher.data;
+    if (!result || !pendingApply) {
+      return;
+    }
+
+    if (result.ok) {
+      setRequests((prev) => [{ ...pendingApply, id: result.id }, ...prev]);
+      setApplyForm({ type: "Annual Leave", from: "", to: "", reason: "" });
+      setShowApplyModal(false);
+    }
+
+    setPendingApply(null);
+  }, [applyFetcher.data, pendingApply]);
+
+  useEffect(() => {
+    if (!decisionFetcher.data || !pendingDecision) {
+      return;
+    }
+
+    if (decisionFetcher.data.ok) {
+      setRequests((prev) =>
+        prev.map((r) => {
+          if (pendingDecision.id) {
+            return r.id === pendingDecision.id ? { ...r, status: pendingDecision.status } : r;
+          }
+          return r.name === pendingDecision.name && r.from === pendingDecision.from
+            ? { ...r, status: pendingDecision.status }
+            : r;
+        }),
+      );
+    }
+
+    setPendingDecision(null);
+  }, [decisionFetcher.data, pendingDecision]);
 
   const handleApply = () => {
     if (!applyForm.from || !applyForm.to || !applyForm.reason.trim()) return;
@@ -96,15 +278,32 @@ export default function Leave() {
       fromDate,
       toDate,
     };
-    setRequests((prev) => [newRequest, ...prev]);
-    setApplyForm({ type: "Annual Leave", from: "", to: "", reason: "" });
-    setShowApplyModal(false);
+    const payload = new FormData();
+    payload.set("intent", "apply-leave");
+    payload.set("leaveType", applyForm.type);
+    payload.set("startDate", applyForm.from);
+    payload.set("endDate", applyForm.to);
+    payload.set("reason", applyForm.reason.trim());
+
+    setPendingApply(newRequest);
+    applyFetcher.submit(payload, { method: "POST" });
   };
 
-  const handleAction = (name: string, from: string, action: LeaveStatus) => {
-    setRequests((prev) =>
-      prev.map((r) => r.name === name && r.from === from ? { ...r, status: action } : r)
-    );
+  const handleAction = (row: LeaveRequest, action: LeaveStatus) => {
+    if (!row.id) {
+      setRequests((prev) =>
+        prev.map((r) => r.name === row.name && r.from === row.from ? { ...r, status: action } : r)
+      );
+      return;
+    }
+
+    const payload = new FormData();
+    payload.set("intent", "decide-leave");
+    payload.set("id", row.id);
+    payload.set("status", action);
+
+    setPendingDecision({ id: row.id, name: row.name, from: row.from, status: action });
+    decisionFetcher.submit(payload, { method: "POST" });
   };
 
   const pendingCount = requests.filter((r) => r.status === "Pending").length;
@@ -272,12 +471,12 @@ export default function Leave() {
                         <button
                           className="btn btn-success"
                           style={{ padding: "4px 10px", fontSize: 12 }}
-                          onClick={() => handleAction(r.name, r.from, "Approved")}
+                          onClick={() => handleAction(r, "Approved")}
                         >✓ Approve</button>
                         <button
                           className="btn btn-danger"
                           style={{ padding: "4px 10px", fontSize: 12 }}
-                          onClick={() => handleAction(r.name, r.from, "Rejected")}
+                          onClick={() => handleAction(r, "Rejected")}
                         >✕ Reject</button>
                       </div>
                     )}
@@ -285,7 +484,7 @@ export default function Leave() {
                       <button
                         className="btn btn-outline"
                         style={{ padding: "4px 10px", fontSize: 11, color: "var(--ink-3)" }}
-                        onClick={() => handleAction(r.name, r.from, "Rejected")}
+                        onClick={() => handleAction(r, "Rejected")}
                       >Revoke</button>
                     )}
                   </td>
