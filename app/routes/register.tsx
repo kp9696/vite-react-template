@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
 export function meta() {
@@ -9,6 +9,15 @@ type AlertState = {
   kind: "success" | "error";
   message: string;
 };
+
+const OTP_EXPIRY_SECONDS = 300; // must match OTP_TTL_SECONDS in workers/app.ts
+const RESEND_COOLDOWN_SECONDS = 60; // must match RESEND_COOLDOWN_SECONDS in workers/app.ts
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 export default function Register() {
   const navigate = useNavigate();
@@ -22,27 +31,55 @@ export default function Register() {
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [alert, setAlert] = useState<AlertState | null>(null);
 
-  async function handleSendOtp(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  // Countdown timers
+  const [expirySeconds, setExpirySeconds] = useState(0);
+  const [resendSeconds, setResendSeconds] = useState(0);
+
+  const expiryRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const resendRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function clearTimers() {
+    if (expiryRef.current) clearInterval(expiryRef.current);
+    if (resendRef.current) clearInterval(resendRef.current);
+  }
+
+  function startTimers() {
+    clearTimers();
+
+    setExpirySeconds(OTP_EXPIRY_SECONDS);
+    setResendSeconds(RESEND_COOLDOWN_SECONDS);
+
+    expiryRef.current = setInterval(() => {
+      setExpirySeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(expiryRef.current!);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    resendRef.current = setInterval(() => {
+      setResendSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(resendRef.current!);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }
+
+  // Clean up on unmount
+  useEffect(() => () => clearTimers(), []);
+
+  async function sendOtp(isResend = false): Promise<boolean> {
     setAlert(null);
-
-    if (!name.trim() || !email.trim() || !password.trim()) {
-      setAlert({ kind: "error", message: "Name, email, and password are required." });
-      return;
-    }
-
-    if (password.trim().length < 8) {
-      setAlert({ kind: "error", message: "Password must be at least 8 characters." });
-      return;
-    }
-
     setSendingOtp(true);
     try {
       const response = await fetch("/api/send-signup-otp", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
           email: email.trim().toLowerCase(),
@@ -53,16 +90,45 @@ export default function Register() {
       const payload = (await response.json()) as { success?: boolean; error?: string };
       if (!response.ok || !payload.success) {
         setAlert({ kind: "error", message: payload.error ?? "Failed to send OTP." });
-        return;
+        return false;
       }
 
+      startTimers();
       setOtpRequested(true);
-      setAlert({ kind: "success", message: `OTP sent to ${email.trim().toLowerCase()}.` });
+      setAlert({
+        kind: "success",
+        message: isResend
+          ? `New OTP sent to ${email.trim().toLowerCase()}.`
+          : `OTP sent to ${email.trim().toLowerCase()}.`,
+      });
+      return true;
     } catch {
       setAlert({ kind: "error", message: "Unable to reach the server. Please try again." });
+      return false;
     } finally {
       setSendingOtp(false);
     }
+  }
+
+  async function handleSendOtp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      setAlert({ kind: "error", message: "Name, email, and password are required." });
+      return;
+    }
+    if (password.trim().length < 8) {
+      setAlert({ kind: "error", message: "Password must be at least 8 characters." });
+      return;
+    }
+
+    await sendOtp(false);
+  }
+
+  async function handleResendOtp() {
+    if (resendSeconds > 0 || sendingOtp) return;
+    setOtp("");
+    await sendOtp(true);
   }
 
   async function handleVerifyOtp(event: React.FormEvent<HTMLFormElement>) {
@@ -78,9 +144,7 @@ export default function Register() {
     try {
       const response = await fetch("/api/verify-signup-otp", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
           otp: otp.trim(),
@@ -93,6 +157,7 @@ export default function Register() {
         return;
       }
 
+      clearTimers();
       setAlert({ kind: "success", message: "Email verified. Redirecting to login..." });
       setTimeout(() => navigate("/login"), 700);
     } catch {
@@ -101,6 +166,15 @@ export default function Register() {
       setVerifyingOtp(false);
     }
   }
+
+  function handleEditDetails() {
+    clearTimers();
+    setOtpRequested(false);
+    setOtp("");
+    setAlert(null);
+  }
+
+  const otpExpired = otpRequested && expirySeconds === 0;
 
   return (
     <div className="reg-root">
@@ -125,7 +199,7 @@ export default function Register() {
           <div className="reg-steps">
             {[
               { n: "1", title: "Enter details", desc: "Name, email, and password" },
-              { n: "2", title: "Verify email", desc: "Receive 6-digit OTP" },
+              { n: "2", title: "Verify email", desc: "Receive 6-digit OTP via Microsoft 365" },
               { n: "3", title: "Sign in", desc: "Use your verified account" },
             ].map((step) => (
               <div key={step.n} className="reg-step">
@@ -145,6 +219,7 @@ export default function Register() {
 
       <div className="reg-right">
         <div className="reg-form-wrap">
+          {/* Progress indicator */}
           <div className="reg-progress">
             <div className={`reg-progress-step ${!otpRequested ? "active" : "done"}`}>
               <div className="reg-prog-dot">{otpRequested ? "✓" : "1"}</div>
@@ -167,9 +242,10 @@ export default function Register() {
           </div>
 
           <div className="reg-info-card">
-            OTP emails are sent through your Microsoft 365 SMTP bridge from <strong>info@jwithkp.com</strong>.
+            OTP emails are sent via <strong>Microsoft 365</strong> from <strong>info@jwithkp.com</strong>.
           </div>
 
+          {/* ── Step 1: collect details ── */}
           {!otpRequested ? (
             <form onSubmit={handleSendOtp} className="reg-form">
               <div className="reg-field">
@@ -177,7 +253,7 @@ export default function Register() {
                 <input
                   name="name"
                   value={name}
-                  onChange={(event) => setName(event.target.value)}
+                  onChange={(e) => setName(e.target.value)}
                   placeholder="Keshav Pandit"
                   className="reg-input"
                   autoComplete="name"
@@ -189,7 +265,7 @@ export default function Register() {
                 <input
                   name="email"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(e) => setEmail(e.target.value)}
                   type="email"
                   placeholder="you@company.com"
                   className="reg-input"
@@ -202,7 +278,7 @@ export default function Register() {
                 <input
                   name="password"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(e) => setPassword(e.target.value)}
                   type="password"
                   placeholder="At least 8 characters"
                   className="reg-input"
@@ -210,42 +286,95 @@ export default function Register() {
                 />
               </div>
 
-              {alert?.kind === "error" ? <div className="reg-error">{alert.message}</div> : null}
-              {alert?.kind === "success" ? <div className="reg-success">{alert.message}</div> : null}
+              {alert?.kind === "error" && <div className="reg-error">{alert.message}</div>}
+              {alert?.kind === "success" && <div className="reg-success">{alert.message}</div>}
 
               <div className="reg-actions">
                 <button type="submit" className="reg-btn-primary" disabled={sendingOtp}>
-                  {sendingOtp ? "Sending OTP..." : "Verify Email"}
+                  {sendingOtp ? "Sending OTP…" : "Verify Email"}
                 </button>
                 <a href="/login" className="reg-btn-ghost">Back to login</a>
               </div>
             </form>
+
+          /* ── Step 2: enter OTP ── */
           ) : (
             <form onSubmit={handleVerifyOtp} className="reg-form">
+
+              {/* Expiry countdown bar */}
+              {!otpExpired && (
+                <div className="reg-timer-row">
+                  <span className="reg-timer-label">Code expires in</span>
+                  <span className={`reg-timer-value ${expirySeconds <= 60 ? "reg-timer-warn" : ""}`}>
+                    {formatTime(expirySeconds)}
+                  </span>
+                  <div className="reg-timer-track">
+                    <div
+                      className="reg-timer-fill"
+                      style={{ width: `${(expirySeconds / OTP_EXPIRY_SECONDS) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {otpExpired && (
+                <div className="reg-expired-banner">
+                  OTP expired — request a new code below.
+                </div>
+              )}
+
               <div className="reg-field">
                 <label className="reg-label">6-digit OTP</label>
                 <input
                   name="otp"
                   value={otp}
-                  onChange={(event) => setOtp(event.target.value)}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
                   placeholder="000000"
                   className="reg-input reg-input-otp"
                   maxLength={6}
                   autoFocus
                   autoComplete="one-time-code"
+                  inputMode="numeric"
+                  disabled={otpExpired}
                 />
               </div>
 
-              {alert?.kind === "error" ? <div className="reg-error">{alert.message}</div> : null}
-              {alert?.kind === "success" ? <div className="reg-success">{alert.message}</div> : null}
+              {alert?.kind === "error" && <div className="reg-error">{alert.message}</div>}
+              {alert?.kind === "success" && <div className="reg-success">{alert.message}</div>}
 
               <div className="reg-actions">
-                <button type="submit" className="reg-btn-primary" disabled={verifyingOtp}>
-                  {verifyingOtp ? "Verifying..." : "Confirm OTP"}
+                <button
+                  type="submit"
+                  className="reg-btn-primary"
+                  disabled={verifyingOtp || otpExpired}
+                >
+                  {verifyingOtp ? "Verifying…" : "Confirm OTP"}
                 </button>
-                <button type="button" className="reg-btn-ghost" onClick={() => setOtpRequested(false)}>
+                <button
+                  type="button"
+                  className="reg-btn-ghost"
+                  onClick={handleEditDetails}
+                >
                   Edit details
                 </button>
+              </div>
+
+              {/* Resend row */}
+              <div className="reg-resend-row">
+                {resendSeconds > 0 ? (
+                  <span className="reg-resend-wait">
+                    Resend available in <strong>{resendSeconds}s</strong>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="reg-resend-btn"
+                    onClick={handleResendOtp}
+                    disabled={sendingOtp}
+                  >
+                    {sendingOtp ? "Sending…" : "Resend OTP"}
+                  </button>
+                )}
               </div>
             </form>
           )}
@@ -263,6 +392,7 @@ export default function Register() {
           -webkit-font-smoothing: antialiased;
         }
 
+        /* ── Left panel ── */
         .reg-left {
           flex: 1; background: #141929;
           position: relative; overflow: hidden;
@@ -313,6 +443,7 @@ export default function Register() {
           background-size: 44px 44px;
         }
 
+        /* ── Right panel ── */
         .reg-right {
           width: 520px; flex-shrink: 0;
           display: flex; align-items: center; justify-content: center;
@@ -320,13 +451,14 @@ export default function Register() {
         }
         .reg-form-wrap { width: 100%; max-width: 400px; }
 
+        /* ── Progress ── */
         .reg-progress { display: flex; align-items: center; margin-bottom: 32px; }
         .reg-progress-step {
           display: flex; align-items: center; gap: 8px;
           font-size: 12.5px; font-weight: 600; color: #94a3b8;
         }
         .reg-progress-step.active { color: #6366f1; }
-        .reg-progress-step.done { color: #10b981; }
+        .reg-progress-step.done  { color: #10b981; }
         .reg-prog-dot {
           width: 26px; height: 26px; border-radius: 50%;
           background: #e2e8f0; color: #94a3b8;
@@ -334,20 +466,23 @@ export default function Register() {
           display: grid; place-items: center; flex-shrink: 0;
         }
         .reg-progress-step.active .reg-prog-dot { background: #6366f1; color: white; box-shadow: 0 2px 10px rgba(99,102,241,0.4); }
-        .reg-progress-step.done .reg-prog-dot { background: #10b981; color: white; }
+        .reg-progress-step.done  .reg-prog-dot  { background: #10b981; color: white; }
         .reg-progress-line { flex: 1; height: 2px; background: #e2e8f0; margin: 0 12px; }
 
+        /* ── Form header ── */
         .reg-form-header { margin-bottom: 22px; }
         .reg-form-header h2 { font-size: 23px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; margin-bottom: 6px; }
-        .reg-form-header p { font-size: 13.5px; color: #64748b; line-height: 1.55; }
+        .reg-form-header p  { font-size: 13.5px; color: #64748b; line-height: 1.55; }
 
+        /* ── Info card ── */
         .reg-info-card {
           background: #eef2ff; border: 1px solid #c7d2fe;
           border-radius: 10px; padding: 12px 14px;
           color: #3730a3; font-size: 12.5px; line-height: 1.65; margin-bottom: 22px;
         }
 
-        .reg-form { display: flex; flex-direction: column; }
+        /* ── Fields ── */
+        .reg-form  { display: flex; flex-direction: column; }
         .reg-field { margin-bottom: 15px; }
         .reg-label { display: block; font-size: 12.5px; font-weight: 600; color: #374151; margin-bottom: 6px; letter-spacing: 0.1px; }
         .reg-input {
@@ -359,11 +494,38 @@ export default function Register() {
         }
         .reg-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.13); }
         .reg-input:hover:not(:focus) { border-color: #c7d2fe; }
+        .reg-input:disabled { background: #f8fafc; color: #94a3b8; cursor: not-allowed; }
         .reg-input-otp {
-          font-size: 24px; font-weight: 800; letter-spacing: 8px;
+          font-size: 28px; font-weight: 800; letter-spacing: 10px;
           text-align: center; color: #6366f1; padding: 14px;
         }
 
+        /* ── Countdown timer ── */
+        .reg-timer-row {
+          display: flex; align-items: center; gap: 8px;
+          margin-bottom: 16px; flex-wrap: wrap;
+        }
+        .reg-timer-label { font-size: 12px; color: #64748b; font-weight: 500; }
+        .reg-timer-value { font-size: 13px; font-weight: 700; color: #4f46e5; min-width: 38px; }
+        .reg-timer-value.reg-timer-warn { color: #dc2626; }
+        .reg-timer-track {
+          flex: 1; height: 4px; background: #e2e8f0; border-radius: 99px;
+          min-width: 80px; overflow: hidden;
+        }
+        .reg-timer-fill {
+          height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6);
+          border-radius: 99px; transition: width 1s linear;
+        }
+
+        /* ── Expired banner ── */
+        .reg-expired-banner {
+          background: #fff7ed; border: 1px solid #fed7aa;
+          border-radius: 10px; padding: 11px 14px;
+          color: #c2410c; font-size: 13px; font-weight: 500;
+          margin-bottom: 16px;
+        }
+
+        /* ── Alerts ── */
         .reg-success {
           background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;
           padding: 12px 14px; color: #15803d; font-size: 13px;
@@ -375,6 +537,7 @@ export default function Register() {
           border-radius: 10px; margin-top: 4px; margin-bottom: 8px; font-weight: 500;
         }
 
+        /* ── Actions ── */
         .reg-actions { display: flex; gap: 10px; margin-top: 22px; }
         .reg-btn-primary {
           flex: 1; border: none; border-radius: 10px; padding: 13px 18px;
@@ -394,9 +557,22 @@ export default function Register() {
           font-family: 'Inter', sans-serif;
           text-decoration: none; text-align: center;
           display: flex; align-items: center; justify-content: center;
-          transition: all 0.18s;
+          transition: all 0.18s; cursor: pointer;
         }
         .reg-btn-ghost:hover { background: #eef2ff; border-color: #c7d2fe; }
+
+        /* ── Resend ── */
+        .reg-resend-row { display: flex; justify-content: center; margin-top: 18px; }
+        .reg-resend-wait { font-size: 12.5px; color: #94a3b8; }
+        .reg-resend-btn {
+          border: none; background: none; padding: 0;
+          color: #6366f1; font-size: 13px; font-weight: 600;
+          cursor: pointer; text-decoration: underline;
+          font-family: 'Inter', sans-serif;
+          transition: color 0.15s;
+        }
+        .reg-resend-btn:hover:not(:disabled) { color: #4f46e5; }
+        .reg-resend-btn:disabled { color: #94a3b8; cursor: not-allowed; text-decoration: none; }
 
         @media (max-width: 960px) { .reg-left { display: none; } .reg-right { width: 100%; } }
         @media (max-width: 480px) { .reg-right { padding: 32px 20px; } }
