@@ -3,7 +3,9 @@
 	"name": "vite-react-template",
 	"main": "./workers/app.ts",
 	"compatibility_date": "2025-10-08",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"d1_databases": [
 		{
 			"binding": "HRMS",
@@ -16,7 +18,8 @@
 	"kv_namespaces": [
 		{
 			"binding": "OTP_STORE",
-			"id": "your-kv-id"
+			"id": "450d95de2b7547d895ab8b19843ec36d",
+			"preview_id": "2689163fb37d41b0ba5c8af6f899adbc"
 		}
 	],
 	"observability": {
