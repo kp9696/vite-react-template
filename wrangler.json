@@ -13,6 +13,12 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "OTP_STORE",
+			"id": "your-kv-id"
+		}
+	],
 	"observability": {
 		"enabled": true
 	},

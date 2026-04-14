@@ -1,120 +1,109 @@
-import { Form, redirect, useActionData, useNavigation } from "react-router";
-import type { Route } from "./+types/register";
-import { createSessionCookie } from "../lib/session.server";
-import { registerOrganization } from "../lib/hrms.server";
-import { isWorkEmail } from "../lib/hrms.shared";
-import { createRegistrationOtp, verifyRegistrationOtp } from "../lib/registration-otp.server";
-import { sendRegistrationOtpEmail } from "../lib/auth-email.server";
-
-type ActionData = {
-  error?: string;
-  success?: string;
-  step?: "request" | "verify";
-  email?: string;
-  organizationName?: string;
-  adminName?: string;
-  department?: string;
-};
+import { useState } from "react";
+import { useNavigate } from "react-router";
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Create Account" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
-  const url = new URL(request.url);
-  return {
-    email: url.searchParams.get("email") ?? "",
-  };
-}
+type AlertState = {
+  kind: "success" | "error";
+  message: string;
+};
 
-export async function action({ request, context }: Route.ActionArgs) {
-  const formData = await request.formData();
-  const intent = String(formData.get("intent") || "");
-  const email = String(formData.get("email") || "").trim().toLowerCase();
-  const organizationName = String(formData.get("organizationName") || "").trim();
-  const adminName = String(formData.get("adminName") || "").trim();
-  const department = String(formData.get("department") || "Founders").trim();
+export default function Register() {
+  const navigate = useNavigate();
 
-  if (intent === "request-otp") {
-    if (!email || !organizationName || !adminName) {
-      return { error: "Organization name, admin name, and email are required." } satisfies ActionData;
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [otpRequested, setOtpRequested] = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
+  const [alert, setAlert] = useState<AlertState | null>(null);
+
+  async function handleSendOtp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAlert(null);
+
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      setAlert({ kind: "error", message: "Name, email, and password are required." });
+      return;
     }
 
-    if (!isWorkEmail(email)) {
-      return { error: "Please register with a Gmail or company email address." } satisfies ActionData;
+    if (password.trim().length < 8) {
+      setAlert({ kind: "error", message: "Password must be at least 8 characters." });
+      return;
     }
 
+    setSendingOtp(true);
     try {
-      const payload = { organizationName, adminName, email, department };
-      const otpCode = await createRegistrationOtp(context.cloudflare.env.HRMS, payload);
-      await sendRegistrationOtpEmail(context.cloudflare.env, payload, otpCode);
-
-      return {
-        success: `OTP sent to ${email}. Enter it below to verify your account.`,
-        step: "verify",
-        email,
-        organizationName,
-        adminName,
-        department,
-      } satisfies ActionData;
-    } catch (error) {
-      return {
-        error: error instanceof Error ? error.message : "Failed to send OTP.",
-        step: "request",
-        email,
-        organizationName,
-        adminName,
-        department,
-      } satisfies ActionData;
-    }
-  }
-
-  if (intent === "verify-otp") {
-    const otpCode = String(formData.get("otpCode") || "").trim();
-    if (!email || !otpCode) {
-      return {
-        error: "Email and OTP are required.",
-        step: "verify",
-        email,
-        organizationName,
-        adminName,
-        department,
-      } satisfies ActionData;
-    }
-
-    try {
-      const payload = await verifyRegistrationOtp(context.cloudflare.env.HRMS, email, otpCode);
-      await registerOrganization(context.cloudflare.env.HRMS, payload);
-
-      return redirect("/hrms/users", {
+      const response = await fetch("/api/send-signup-otp", {
+        method: "POST",
         headers: {
-          "Set-Cookie": await createSessionCookie(context.cloudflare.env.HRMS, email, request.url),
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          password,
+        }),
       });
-    } catch (error) {
-      return {
-        error: error instanceof Error ? error.message : "OTP verification failed.",
-        step: "verify",
-        email,
-        organizationName,
-        adminName,
-        department,
-      } satisfies ActionData;
+
+      const payload = (await response.json()) as { success?: boolean; error?: string };
+      if (!response.ok || !payload.success) {
+        setAlert({ kind: "error", message: payload.error ?? "Failed to send OTP." });
+        return;
+      }
+
+      setOtpRequested(true);
+      setAlert({ kind: "success", message: `OTP sent to ${email.trim().toLowerCase()}.` });
+    } catch {
+      setAlert({ kind: "error", message: "Unable to reach the server. Please try again." });
+    } finally {
+      setSendingOtp(false);
     }
   }
 
-  return { error: "Unsupported registration action." } satisfies ActionData;
-}
+  async function handleVerifyOtp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAlert(null);
 
-export default function Register({ loaderData }: Route.ComponentProps) {
-  const actionData = useActionData<typeof action>();
-  const navigation = useNavigation();
-  const submitting = navigation.state !== "idle";
-  const currentStep = actionData?.step ?? "request";
+    if (!otp.trim()) {
+      setAlert({ kind: "error", message: "Enter the 6-digit OTP." });
+      return;
+    }
+
+    setVerifyingOtp(true);
+    try {
+      const response = await fetch("/api/verify-signup-otp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          otp: otp.trim(),
+        }),
+      });
+
+      const payload = (await response.json()) as { success?: boolean; error?: string };
+      if (!response.ok || !payload.success) {
+        setAlert({ kind: "error", message: payload.error ?? "OTP verification failed." });
+        return;
+      }
+
+      setAlert({ kind: "success", message: "Email verified. Redirecting to login..." });
+      setTimeout(() => navigate("/login"), 700);
+    } catch {
+      setAlert({ kind: "error", message: "Unable to reach the server. Please try again." });
+    } finally {
+      setVerifyingOtp(false);
+    }
+  }
 
   return (
     <div className="reg-root">
-      {/* ── Left Panel ── */}
       <div className="reg-left">
         <div className="reg-left-inner">
           <div className="reg-brand">
@@ -126,18 +115,18 @@ export default function Register({ loaderData }: Route.ComponentProps) {
           </div>
 
           <h1 className="reg-headline">
-            Set up your<br />
-            <span className="reg-accent">workspace.</span>
+            Verify signup<br />
+            <span className="reg-accent">before access.</span>
           </h1>
           <p className="reg-sub">
-            OTP-verified onboarding keeps your org secure from day one. Your admin account is created only after email verification.
+            New accounts are activated only after OTP confirmation. This keeps registration secure and prevents unauthorized signups.
           </p>
 
           <div className="reg-steps">
             {[
-              { n: "1", title: "Fill in details", desc: "Org name, your name, and work email" },
-              { n: "2", title: "Receive OTP", desc: "6-digit code sent to your email" },
-              { n: "3", title: "Verify & launch", desc: "Admin dashboard opens immediately" },
+              { n: "1", title: "Enter details", desc: "Name, email, and password" },
+              { n: "2", title: "Verify email", desc: "Receive 6-digit OTP" },
+              { n: "3", title: "Sign in", desc: "Use your verified account" },
             ].map((step) => (
               <div key={step.n} className="reg-step">
                 <div className="reg-step-num">{step.n}</div>
@@ -154,90 +143,111 @@ export default function Register({ loaderData }: Route.ComponentProps) {
         <div className="reg-deco-grid" />
       </div>
 
-      {/* ── Right Panel ── */}
       <div className="reg-right">
         <div className="reg-form-wrap">
-          {/* Step progress */}
           <div className="reg-progress">
-            <div className={`reg-progress-step ${currentStep === "request" ? "active" : "done"}`}>
-              <div className="reg-prog-dot">{currentStep === "verify" ? "✓" : "1"}</div>
-              <span>Details</span>
+            <div className={`reg-progress-step ${!otpRequested ? "active" : "done"}`}>
+              <div className="reg-prog-dot">{otpRequested ? "✓" : "1"}</div>
+              <span>Verify Email</span>
             </div>
             <div className="reg-progress-line" />
-            <div className={`reg-progress-step ${currentStep === "verify" ? "active" : ""}`}>
+            <div className={`reg-progress-step ${otpRequested ? "active" : ""}`}>
               <div className="reg-prog-dot">2</div>
-              <span>Verify OTP</span>
+              <span>Confirm OTP</span>
             </div>
           </div>
 
           <div className="reg-form-header">
-            <h2>{currentStep === "request" ? "Create your workspace" : "Verify your email"}</h2>
+            <h2>{otpRequested ? "Confirm your OTP" : "Create account"}</h2>
             <p>
-              {currentStep === "request"
-                ? "Enter your organisation details to receive a verification OTP."
-                : `Enter the 6-digit code sent to ${actionData?.email ?? "your email"}.`}
+              {otpRequested
+                ? `Enter the 6-digit code sent to ${email.trim().toLowerCase() || "your email"}.`
+                : "Submit your details to receive a one-time password for email verification."}
             </p>
           </div>
 
           <div className="reg-info-card">
-            OTP is sent via Gmail. Sender defaults to <strong>jjk.mratunjay@gmail.com</strong> when <code>GMAIL_FROM_EMAIL</code> is not configured.
+            OTP emails are sent through your Microsoft 365 SMTP bridge from <strong>info@jwithkp.com</strong>.
           </div>
 
-          {currentStep === "request" ? (
-            <Form method="post" className="reg-form">
-              <input type="hidden" name="intent" value="request-otp" />
-
+          {!otpRequested ? (
+            <form onSubmit={handleSendOtp} className="reg-form">
               <div className="reg-field">
-                <label className="reg-label">Organisation Name</label>
-                <input name="organizationName" defaultValue={actionData?.organizationName} placeholder="Acme Technologies" className="reg-input" />
-              </div>
-              <div className="reg-field">
-                <label className="reg-label">Admin Name</label>
-                <input name="adminName" defaultValue={actionData?.adminName} placeholder="Kiran Pandit" className="reg-input" />
-              </div>
-              <div className="reg-field">
-                <label className="reg-label">Work Email</label>
-                <input name="email" type="email" defaultValue={actionData?.email || loaderData.email} placeholder="admin@gmail.com or admin@company.com" className="reg-input" />
-              </div>
-              <div className="reg-field">
-                <label className="reg-label">Department <span className="reg-label-hint">(optional)</span></label>
-                <input name="department" defaultValue={actionData?.department || "Founders"} placeholder="Founders" className="reg-input" />
+                <label className="reg-label">Name</label>
+                <input
+                  name="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="Keshav Pandit"
+                  className="reg-input"
+                  autoComplete="name"
+                />
               </div>
 
-              {actionData?.error ? <div className="reg-error">{actionData.error}</div> : null}
+              <div className="reg-field">
+                <label className="reg-label">Email</label>
+                <input
+                  name="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  placeholder="you@company.com"
+                  className="reg-input"
+                  autoComplete="email"
+                />
+              </div>
+
+              <div className="reg-field">
+                <label className="reg-label">Password</label>
+                <input
+                  name="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  type="password"
+                  placeholder="At least 8 characters"
+                  className="reg-input"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              {alert?.kind === "error" ? <div className="reg-error">{alert.message}</div> : null}
+              {alert?.kind === "success" ? <div className="reg-success">{alert.message}</div> : null}
 
               <div className="reg-actions">
-                <button type="submit" className="reg-btn-primary" disabled={submitting}>
-                  {submitting ? "Sending OTP…" : "Send OTP →"}
+                <button type="submit" className="reg-btn-primary" disabled={sendingOtp}>
+                  {sendingOtp ? "Sending OTP..." : "Verify Email"}
                 </button>
                 <a href="/login" className="reg-btn-ghost">Back to login</a>
               </div>
-            </Form>
+            </form>
           ) : (
-            <Form method="post" className="reg-form">
-              <input type="hidden" name="intent" value="verify-otp" />
-              <input type="hidden" name="email" value={actionData?.email} />
-              <input type="hidden" name="organizationName" value={actionData?.organizationName} />
-              <input type="hidden" name="adminName" value={actionData?.adminName} />
-              <input type="hidden" name="department" value={actionData?.department} />
-
-              {actionData?.success ? (
-                <div className="reg-success">{actionData.success}</div>
-              ) : null}
-
+            <form onSubmit={handleVerifyOtp} className="reg-form">
               <div className="reg-field">
                 <label className="reg-label">6-digit OTP</label>
-                <input name="otpCode" placeholder="· · · · · ·" className="reg-input reg-input-otp" maxLength={6} autoFocus autoComplete="one-time-code" />
+                <input
+                  name="otp"
+                  value={otp}
+                  onChange={(event) => setOtp(event.target.value)}
+                  placeholder="000000"
+                  className="reg-input reg-input-otp"
+                  maxLength={6}
+                  autoFocus
+                  autoComplete="one-time-code"
+                />
               </div>
 
-              {actionData?.error ? <div className="reg-error">{actionData.error}</div> : null}
+              {alert?.kind === "error" ? <div className="reg-error">{alert.message}</div> : null}
+              {alert?.kind === "success" ? <div className="reg-success">{alert.message}</div> : null}
 
               <div className="reg-actions">
-                <button type="submit" className="reg-btn-primary" disabled={submitting}>
-                  {submitting ? "Verifying…" : "Verify & Create Account →"}
+                <button type="submit" className="reg-btn-primary" disabled={verifyingOtp}>
+                  {verifyingOtp ? "Verifying..." : "Confirm OTP"}
+                </button>
+                <button type="button" className="reg-btn-ghost" onClick={() => setOtpRequested(false)}>
+                  Edit details
                 </button>
               </div>
-            </Form>
+            </form>
           )}
         </div>
       </div>
@@ -253,7 +263,6 @@ export default function Register({ loaderData }: Route.ComponentProps) {
           -webkit-font-smoothing: antialiased;
         }
 
-        /* ── Left ── */
         .reg-left {
           flex: 1; background: #141929;
           position: relative; overflow: hidden;
@@ -304,7 +313,6 @@ export default function Register({ loaderData }: Route.ComponentProps) {
           background-size: 44px 44px;
         }
 
-        /* ── Right ── */
         .reg-right {
           width: 520px; flex-shrink: 0;
           display: flex; align-items: center; justify-content: center;
@@ -338,12 +346,10 @@ export default function Register({ loaderData }: Route.ComponentProps) {
           border-radius: 10px; padding: 12px 14px;
           color: #3730a3; font-size: 12.5px; line-height: 1.65; margin-bottom: 22px;
         }
-        .reg-info-card code { background: #c7d2fe; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; font-weight: 600; }
 
         .reg-form { display: flex; flex-direction: column; }
         .reg-field { margin-bottom: 15px; }
         .reg-label { display: block; font-size: 12.5px; font-weight: 600; color: #374151; margin-bottom: 6px; letter-spacing: 0.1px; }
-        .reg-label-hint { color: #94a3b8; font-weight: 400; }
         .reg-input {
           width: 100%; padding: 11px 14px;
           border: 1.5px solid #e2e8f0; border-radius: 10px;
