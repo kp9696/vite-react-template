@@ -464,7 +464,7 @@ async function handleListAssets(request: Request, env: Env, user: ApiUser): Prom
         AND asset_assignments.status = 'assigned'
        LEFT JOIN users
          ON users.id = asset_assignments.user_id
-       WHERE org_id = ?
+       WHERE assets.org_id = ?
        ORDER BY datetime(assets.created_at) DESC`,
     )
     .bind(user.tenantId)
