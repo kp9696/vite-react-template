@@ -146,7 +146,30 @@ export async function requireSignedInUser(request: Request, db: D1Database) {
     return DEMO_USER;
   }
 
-  const user = await getUserByEmail(db, email);
+  let user = await getUserByEmail(db, email);
+
+  // Auto-repair: user exists in auth_users (verified) but has no users row yet.
+  // This can happen when accounts were created before the dual-insert fix was deployed.
+  if (!user) {
+    const authUser = await db
+      .prepare(`SELECT name FROM auth_users WHERE lower(email) = lower(?) AND is_verified = 1 LIMIT 1`)
+      .bind(email)
+      .first<{ name: string }>();
+
+    if (authUser) {
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      await db
+        .prepare(
+          `INSERT OR IGNORE INTO users (id, name, email, role, department, status, joined_on, created_at, updated_at)
+           VALUES (?, ?, ?, 'Employee', 'General', 'Active', ?, ?, ?)`,
+        )
+        .bind(id, authUser.name, email.trim().toLowerCase(), now, now, now)
+        .run();
+      user = await getUserByEmail(db, email);
+    }
+  }
+
   if (!user) {
     await destroySession(request, db);
     throw redirect("/login", {
