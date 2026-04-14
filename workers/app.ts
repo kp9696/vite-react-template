@@ -118,6 +118,17 @@ async function ensureAuthUsersTable(db: D1Database): Promise<void> {
     .run();
 }
 
+async function usersTableHasOrgId(db: D1Database): Promise<boolean> {
+  try {
+    const column = await db
+      .prepare(`SELECT 1 AS has_col FROM pragma_table_info('users') WHERE name = 'org_id' LIMIT 1`)
+      .first<{ has_col: number }>();
+    return Boolean(column?.has_col);
+  } catch {
+    return false;
+  }
+}
+
 async function getOrCreateCompany(
   db: D1Database,
   ownerEmail: string,
@@ -462,17 +473,31 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
   }
 
   const userId = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
-  const userInsert = await env.HRMS
-    .prepare(
-      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
-    )
-    .bind(userId, orgId, pending.name, email, now, now, now)
-    .run()
-    .catch((err) => ({ error: err }));
+  const hasOrgId = await usersTableHasOrgId(env.HRMS);
+  const userInsert = hasOrgId
+    ? await env.HRMS
+      .prepare(
+        `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
+      )
+      .bind(userId, orgId, pending.name, email, now, now, now)
+      .run()
+      .catch((err) => ({ error: err }))
+    : await env.HRMS
+      .prepare(
+        `INSERT INTO users (id, name, email, role, department, status, joined_on, created_at, updated_at)
+         VALUES (?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
+      )
+      .bind(userId, pending.name, email, now, now, now)
+      .run()
+      .catch((err) => ({ error: err }));
 
   if ("error" in userInsert) {
     await env.HRMS.prepare(`DELETE FROM auth_users WHERE lower(email) = lower(?)`).bind(email).run();
+    const msg = userInsert.error instanceof Error ? userInsert.error.message : "Failed to create HRMS profile.";
+    if (msg.includes("UNIQUE")) {
+      return apiJson(request, env, { error: "Email already exists in HRMS users. Please sign in." }, 409);
+    }
     return apiJson(request, env, { error: "Failed to create HRMS profile." }, 500);
   }
 
@@ -513,10 +538,17 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
     return apiJson(request, env, { error: "Invalid credentials." }, 401);
   }
 
-  const hrUser = await env.HRMS
-    .prepare(`SELECT id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
-    .bind(email)
-    .first<{ id: string; org_id: string | null; role: string }>();
+  const hasOrgId = await usersTableHasOrgId(env.HRMS);
+  const hrUser = hasOrgId
+    ? await env.HRMS
+      .prepare(`SELECT id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+      .bind(email)
+      .first<{ id: string; org_id: string | null; role: string }>()
+    : await env.HRMS
+      .prepare(`SELECT id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+      .bind(email)
+      .first<{ id: string; role: string }>()
+      .then((row) => row ? ({ ...row, org_id: null }) : null);
 
   if (!hrUser) {
     return apiJson(request, env, { error: "User profile is missing. Contact support." }, 403);
