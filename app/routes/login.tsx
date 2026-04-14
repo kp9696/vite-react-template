@@ -1,4 +1,5 @@
 import { Form, redirect, useActionData, useLoaderData, useNavigation } from "react-router";
+import { useState } from "react";
 import type { Route } from "./+types/login";
 import { consumeInviteToken } from "../lib/invite-token.server";
 import { activateInvitedUser, DEMO_EMAIL, getUserById } from "../lib/hrms.server";
@@ -14,6 +15,12 @@ type LoaderData = {
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Login" }];
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const encoded = new TextEncoder().encode(password);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -49,9 +56,42 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
+  const db = context.cloudflare.env.HRMS;
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
 
+  // ── Email / password login (OTP-verified accounts) ──
+  if (intent === "email-login") {
+    const email = String(formData.get("email") || "").trim().toLowerCase();
+    const password = String(formData.get("password") || "").trim();
+
+    if (!email || !password) {
+      return { error: "Email and password are required." } satisfies ActionData;
+    }
+
+    const hash = await hashPassword(password);
+
+    const authUser = await db
+      .prepare(
+        `SELECT id FROM auth_users
+         WHERE lower(email) = lower(?) AND password = ? AND is_verified = 1
+         LIMIT 1`,
+      )
+      .bind(email, hash)
+      .first<{ id: number }>();
+
+    if (!authUser) {
+      return { error: "Invalid email or password." } satisfies ActionData;
+    }
+
+    return redirect("/hrms", {
+      headers: {
+        "Set-Cookie": await createSessionCookie(db, email, request.url),
+      },
+    });
+  }
+
+  // ── Demo login ──
   if (intent === "demo-login") {
     const username = String(formData.get("username") || "").trim().toLowerCase();
     const password = String(formData.get("password") || "").trim();
@@ -62,13 +102,14 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     return redirect("/hrms", {
       headers: {
-        "Set-Cookie": await createSessionCookie(context.cloudflare.env.HRMS, DEMO_EMAIL, request.url),
+        "Set-Cookie": await createSessionCookie(db, DEMO_EMAIL, request.url),
       },
     });
   }
 
+  // ── Logout ──
   if (intent === "logout") {
-    await destroySession(request, context.cloudflare.env.HRMS);
+    await destroySession(request, db);
     return redirect("/login", {
       headers: { "Set-Cookie": clearSessionCookie(request.url) },
     });
@@ -82,6 +123,8 @@ export default function Login() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
+
+  const [tab, setTab] = useState<"email" | "demo">("email");
 
   return (
     <div className="login-root">
@@ -130,59 +173,119 @@ export default function Login() {
           <div className="form-header">
             <div className="form-logo">JK</div>
             <h2>Welcome back</h2>
-            <p>Sign in with demo credentials or create a new workspace.</p>
-          </div>
-
-          <div className="info-card">
-            <div className="info-card-title">How access works</div>
-            Register your org with OTP · Admins land in the management dashboard · Invite team members from inside the panel.
+            <p>Sign in to your account or try the demo.</p>
           </div>
 
           {loaderData.inviteError ? (
-            <div className="error-msg" style={{ marginTop: 16 }}>{loaderData.inviteError}</div>
+            <div className="error-msg" style={{ marginTop: 0, marginBottom: 16 }}>{loaderData.inviteError}</div>
           ) : null}
 
-          <a href="/register" className="cta-link">
-            <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
-            Create workspace with OTP
-          </a>
-
-          <div className="divider"><span>or demo login</span></div>
-
-          <Form method="post">
-            <input type="hidden" name="intent" value="demo-login" />
-
-            <div className="demo-badge">
-              <span className="demo-dot" />
-              <span><strong>Demo:</strong> username <code>Demo</code> · password <code>demo</code></span>
-            </div>
-
-            <div className="field-group">
-              <label className="field-label">Username</label>
-              <div className="field-wrap">
-                <span className="field-icon">
-                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
-                </span>
-                <input name="username" type="text" placeholder="Demo" className="field-input" autoComplete="username" />
-              </div>
-            </div>
-
-            <div className="field-group">
-              <label className="field-label">Password</label>
-              <div className="field-wrap">
-                <span className="field-icon">
-                  <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                </span>
-                <input name="password" type="password" placeholder="demo" className="field-input" autoComplete="current-password" />
-              </div>
-            </div>
-
-            {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
-
-            <button type="submit" className="submit-btn" disabled={submitting}>
-              {submitting ? "Signing in…" : "Enter Demo"}
+          {/* Tabs */}
+          <div className="tabs">
+            <button
+              type="button"
+              className={`tab-btn ${tab === "email" ? "active" : ""}`}
+              onClick={() => setTab("email")}
+            >
+              Sign In
             </button>
-          </Form>
+            <button
+              type="button"
+              className={`tab-btn ${tab === "demo" ? "active" : ""}`}
+              onClick={() => setTab("demo")}
+            >
+              Demo
+            </button>
+          </div>
+
+          {/* ── Email / Password form ── */}
+          {tab === "email" && (
+            <Form method="post">
+              <input type="hidden" name="intent" value="email-login" />
+
+              <div className="field-group">
+                <label className="field-label">Email</label>
+                <div className="field-wrap">
+                  <span className="field-icon">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                  </span>
+                  <input
+                    name="email"
+                    type="email"
+                    placeholder="you@company.com"
+                    className="field-input"
+                    autoComplete="email"
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Password</label>
+                <div className="field-wrap">
+                  <span className="field-icon">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  </span>
+                  <input
+                    name="password"
+                    type="password"
+                    placeholder="Your password"
+                    className="field-input"
+                    autoComplete="current-password"
+                  />
+                </div>
+              </div>
+
+              {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
+
+              <button type="submit" className="submit-btn" disabled={submitting}>
+                {submitting ? "Signing in…" : "Sign In"}
+              </button>
+
+              <div className="form-footer">
+                Don't have an account?{" "}
+                <a href="/register" className="form-link">Create one with OTP</a>
+              </div>
+            </Form>
+          )}
+
+          {/* ── Demo form ── */}
+          {tab === "demo" && (
+            <Form method="post">
+              <input type="hidden" name="intent" value="demo-login" />
+
+              <div className="demo-badge">
+                <span className="demo-dot" />
+                <span><strong>Demo:</strong> username <code>Demo</code> · password <code>demo</code></span>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Username</label>
+                <div className="field-wrap">
+                  <span className="field-icon">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+                  </span>
+                  <input name="username" type="text" placeholder="Demo" className="field-input" autoComplete="username" />
+                </div>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Password</label>
+                <div className="field-wrap">
+                  <span className="field-icon">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  </span>
+                  <input name="password" type="password" placeholder="demo" className="field-input" autoComplete="current-password" />
+                </div>
+              </div>
+
+              {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
+
+              <button type="submit" className="submit-btn submit-btn-demo" disabled={submitting}>
+                {submitting ? "Signing in…" : "Enter Demo"}
+              </button>
+            </Form>
+          )}
 
           <div className="security-note">
             New organisations get 10 invite seats. Existing admins can invite up to 5 additional users.
@@ -201,7 +304,7 @@ export default function Login() {
           -webkit-font-smoothing: antialiased;
         }
 
-        /* ── Left Panel ───────────────── */
+        /* ── Left Panel ── */
         .login-left {
           flex: 1; background: #141929;
           position: relative; overflow: hidden;
@@ -215,8 +318,7 @@ export default function Login() {
           background: linear-gradient(135deg, #6366f1, #8b5cf6);
           border-radius: 13px; display: grid; place-items: center;
           font-weight: 800; font-size: 14px; color: white;
-          box-shadow: 0 8px 24px rgba(99,102,241,0.45);
-          letter-spacing: -0.5px;
+          box-shadow: 0 8px 24px rgba(99,102,241,0.45); letter-spacing: -0.5px;
         }
         .brand-name { font-size: 18px; font-weight: 700; color: white; letter-spacing: -0.4px; display: block; }
         .brand-tag { font-size: 10px; color: rgba(255,255,255,0.38); font-weight: 500; letter-spacing: 0.8px; text-transform: uppercase; display: block; margin-top: 2px; }
@@ -235,8 +337,7 @@ export default function Login() {
         .pill {
           background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
           color: rgba(255,255,255,0.6); padding: 6px 14px; border-radius: 99px;
-          font-size: 12px; font-weight: 500; letter-spacing: 0.1px;
-          transition: all 0.2s;
+          font-size: 12px; font-weight: 500; letter-spacing: 0.1px; transition: all 0.2s;
         }
         .pill:hover { background: rgba(99,102,241,0.18); border-color: rgba(99,102,241,0.4); color: #a5b4fc; }
 
@@ -264,7 +365,7 @@ export default function Login() {
           background-size: 44px 44px;
         }
 
-        /* ── Right Panel ──────────────── */
+        /* ── Right Panel ── */
         .login-right {
           width: 500px; flex-shrink: 0;
           display: flex; align-items: center; justify-content: center;
@@ -272,68 +373,32 @@ export default function Login() {
         }
         .form-wrapper { width: 100%; max-width: 390px; animation: fadeInRight 0.7s ease-out; }
 
-        .form-header { margin-bottom: 28px; }
+        .form-header { margin-bottom: 24px; }
         .form-logo {
           width: 40px; height: 40px; border-radius: 11px;
           background: linear-gradient(135deg, #6366f1, #8b5cf6);
           display: grid; place-items: center;
           font-weight: 800; font-size: 13px; color: white;
-          margin-bottom: 20px;
-          box-shadow: 0 4px 14px rgba(99,102,241,0.35);
-          letter-spacing: -0.5px;
+          margin-bottom: 20px; box-shadow: 0 4px 14px rgba(99,102,241,0.35); letter-spacing: -0.5px;
         }
         .form-header h2 { font-size: 26px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; margin-bottom: 6px; }
         .form-header p { font-size: 14px; color: #64748b; line-height: 1.5; }
 
-        .info-card {
-          background: #eef2ff; border: 1px solid #c7d2fe;
-          border-radius: 12px; padding: 14px 16px;
-          color: #3730a3; font-size: 13px; line-height: 1.7; margin-bottom: 4px;
+        /* ── Tabs ── */
+        .tabs {
+          display: flex; gap: 4px;
+          background: #e2e8f0; border-radius: 10px; padding: 4px;
+          margin-bottom: 24px;
         }
-        .info-card-title { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
+        .tab-btn {
+          flex: 1; border: none; background: none; padding: 9px 0;
+          font-size: 13.5px; font-weight: 600; font-family: 'Inter', sans-serif;
+          color: #64748b; border-radius: 7px; cursor: pointer; transition: all 0.18s;
+        }
+        .tab-btn.active { background: white; color: #6366f1; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+        .tab-btn:not(.active):hover { color: #334155; }
 
-        .error-msg {
-          background: #fef2f2; border: 1px solid #fecaca; color: #dc2626;
-          font-size: 13px; padding: 10px 14px; border-radius: 10px; margin-bottom: 16px;
-          font-weight: 500;
-        }
-
-        .cta-link {
-          display: inline-flex; align-items: center; gap: 7px;
-          margin-top: 16px;
-          background: white; border: 1.5px solid #c7d2fe;
-          color: #6366f1; font-weight: 700; font-size: 13.5px;
-          text-decoration: none; padding: 10px 18px; border-radius: 10px;
-          transition: all 0.18s; width: 100%; justify-content: center;
-          box-shadow: 0 1px 4px rgba(99,102,241,0.1);
-        }
-        .cta-link:hover {
-          background: #eef2ff; border-color: #818cf8;
-          box-shadow: 0 4px 14px rgba(99,102,241,0.18);
-          transform: translateY(-1px);
-        }
-
-        .divider {
-          display: flex; align-items: center; gap: 12px;
-          margin: 22px 0; color: #94a3b8;
-          font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
-        }
-        .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #e2e8f0; }
-
-        .demo-badge {
-          display: flex; align-items: center; gap: 8px;
-          background: #f0fdf4; border: 1px solid #bbf7d0;
-          border-radius: 10px; padding: 11px 14px;
-          font-size: 13px; color: #15803d; margin-bottom: 18px;
-          line-height: 1.5;
-        }
-        .demo-dot {
-          width: 8px; height: 8px; border-radius: 50%;
-          background: #22c55e; flex-shrink: 0;
-          box-shadow: 0 0 0 3px rgba(34,197,94,0.25);
-        }
-        .demo-badge code { background: #dcfce7; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-weight: 700; }
-
+        /* ── Fields ── */
         .field-group { margin-bottom: 18px; }
         .field-label { display: block; font-size: 12.5px; font-weight: 600; color: #374151; margin-bottom: 6px; letter-spacing: 0.1px; }
         .field-wrap { position: relative; }
@@ -349,22 +414,46 @@ export default function Login() {
         .field-input:hover:not(:focus) { border-color: #c7d2fe; }
         .field-wrap:focus-within .field-icon { color: #6366f1; }
 
+        /* ── Demo badge ── */
+        .demo-badge {
+          display: flex; align-items: center; gap: 8px;
+          background: #f0fdf4; border: 1px solid #bbf7d0;
+          border-radius: 10px; padding: 11px 14px;
+          font-size: 13px; color: #15803d; margin-bottom: 18px; line-height: 1.5;
+        }
+        .demo-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(34,197,94,0.25); }
+        .demo-badge code { background: #dcfce7; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-weight: 700; }
+
+        /* ── Buttons ── */
         .submit-btn {
           width: 100%; padding: 13px; margin-top: 4px;
           background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
           color: white; border: none; border-radius: 10px;
           font-size: 14.5px; font-weight: 700; font-family: 'Inter', sans-serif;
           cursor: pointer; transition: all 0.18s;
-          box-shadow: 0 4px 16px rgba(99,102,241,0.35);
-          letter-spacing: -0.1px;
+          box-shadow: 0 4px 16px rgba(99,102,241,0.35); letter-spacing: -0.1px;
         }
         .submit-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.45); }
         .submit-btn:active:not(:disabled) { transform: translateY(0); }
         .submit-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+        .submit-btn-demo { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); box-shadow: 0 4px 16px rgba(15,23,42,0.25); }
+        .submit-btn-demo:hover:not(:disabled) { box-shadow: 0 8px 24px rgba(15,23,42,0.35); }
+
+        /* ── Error ── */
+        .error-msg {
+          background: #fef2f2; border: 1px solid #fecaca; color: #dc2626;
+          font-size: 13px; padding: 10px 14px; border-radius: 10px;
+          margin-bottom: 16px; font-weight: 500;
+        }
+
+        /* ── Footer ── */
+        .form-footer { margin-top: 18px; font-size: 13px; color: #64748b; text-align: center; }
+        .form-link { color: #6366f1; font-weight: 600; text-decoration: none; }
+        .form-link:hover { text-decoration: underline; }
 
         .security-note { margin-top: 18px; font-size: 12px; color: #94a3b8; line-height: 1.65; text-align: center; }
 
-        /* ── Animations ───────────────── */
+        /* ── Animations ── */
         @keyframes fadeInLeft { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes fadeInRight { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
 

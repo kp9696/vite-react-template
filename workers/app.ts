@@ -139,6 +139,34 @@ async function setResendCooldown(kv: KVNamespace, email: string): Promise<void> 
   await kv.put(RESEND_KEY(email), "1", { expirationTtl: RESEND_COOLDOWN_SECONDS });
 }
 
+// ─── Email: Resend (primary) ──────────────────────────────────────────────────
+
+async function sendEmailViaResend(
+  env: Env,
+  input: SendSignupOtpInput,
+  otpCode: string,
+): Promise<void> {
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: env.MS_FROM_EMAIL ?? "info@jwithkp.com",
+      to: [input.email],
+      subject: "Your JWithKP HRMS verification code",
+      html: buildOtpEmailHtml(input.name, otpCode),
+      text: `Hi ${input.name}, your OTP is ${otpCode}. It expires in 5 minutes.`,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Resend error (${response.status}): ${detail}`);
+  }
+}
+
 // ─── Email: Microsoft 365 via Graph API ───────────────────────────────────────
 
 function hasMicrosoftGraphConfig(env: Env): boolean {
@@ -291,12 +319,16 @@ async function sendEmailViaLegacyBridge(
 }
 
 // ─── Email dispatcher ─────────────────────────────────────────────────────────
+// Priority: Resend → Microsoft Graph → Legacy bridge
 
 async function sendSignupOtpEmail(
   env: Env,
   input: SendSignupOtpInput,
   otpCode: string,
 ): Promise<void> {
+  if (env.RESEND_API_KEY) {
+    return sendEmailViaResend(env, input, otpCode);
+  }
   if (hasMicrosoftGraphConfig(env)) {
     return sendEmailViaMicrosoftGraph(env, input, otpCode);
   }
@@ -451,9 +483,22 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
     return jsonResponse({ error: "An account with this email already exists." }, 409);
   }
 
+  const now = new Date().toISOString();
+  const userId = crypto.randomUUID();
+
+  // Insert into auth_users (credentials store)
   await env.HRMS
     .prepare(`INSERT INTO auth_users (name, email, password, is_verified) VALUES (?, ?, ?, 1)`)
     .bind(pendingData.name, email, pendingData.password)
+    .run();
+
+  // Insert into users (HRMS user store) so the user can log in and access the dashboard
+  await env.HRMS
+    .prepare(
+      `INSERT OR IGNORE INTO users (id, name, email, role, department, status, joined_on, created_at, updated_at)
+       VALUES (?, ?, ?, 'Employee', 'General', 'Active', ?, ?, ?)`,
+    )
+    .bind(userId, pendingData.name, email, now, now, now)
     .run();
 
   // Clean up all OTP-related keys for this email

@@ -21,6 +21,9 @@ interface Env {
   GMAIL_REFRESH_TOKEN?: string;
   GMAIL_FROM_EMAIL?: string;
 
+  // ── Resend (transactional email — primary OTP sender) ────────────────────
+  RESEND_API_KEY?: string;
+
   // ── Misc ─────────────────────────────────────────────────────────────────
   HRMS_BASE_URL?: string;
 }
