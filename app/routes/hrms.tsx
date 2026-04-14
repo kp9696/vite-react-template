@@ -4,6 +4,7 @@ import type { Route } from "./+types/hrms";
 import { DEMO_USER, getDashboardData, getDemoDashboardData } from "../lib/hrms.server";
 import { isAdminRole } from "../lib/hrms.shared";
 import { requireSignedInUser } from "../lib/session.server";
+import { getCompanyByOwnerId, getSaasEmployeeCount } from "../lib/company.server";
 
 const colors = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9"];
 
@@ -17,14 +18,26 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ? getDemoDashboardData()
     : await getDashboardData(context.cloudflare.env.HRMS, currentUser.orgId ?? undefined);
 
-  return {
-    currentUser,
-    ...dashboard,
-  };
+  // SaaS company info (skip for demo)
+  let company = null;
+  let saasEmployeeCount = 0;
+  if (currentUser.id !== DEMO_USER.id && currentUser.email) {
+    company = await getCompanyByOwnerId(context.cloudflare.env.HRMS, currentUser.email);
+    if (company) {
+      saasEmployeeCount = await getSaasEmployeeCount(context.cloudflare.env.HRMS, company.id);
+    }
+  }
+
+  return { currentUser, ...dashboard, company, saasEmployeeCount };
 }
 
 export default function HRMSDashboard() {
   const data = useLoaderData<typeof loader>();
+  const { company, saasEmployeeCount } = data;
+  const usedCount = saasEmployeeCount ?? 0;
+  const limitCount = company?.employee_limit ?? 5;
+  const atLimit = usedCount >= limitCount;
+  const usagePct = company ? Math.min(100, Math.round((usedCount / limitCount) * 100)) : 0;
 
   return (
     <HRMSLayout currentUser={data.currentUser}>
@@ -34,6 +47,76 @@ export default function HRMSDashboard() {
           ? `${data.organization.name} workspace · ${isAdminRole(data.currentUser.role) ? "Admin" : "Employee"} access`
           : "Your dashboard is powered by live D1 data from Cloudflare."}
       </div>
+
+      {/* ── Company Plan Banner ──────────────────────────────────────── */}
+      {company ? (
+        <div style={{
+          background: atLimit ? "#fff7ed" : "linear-gradient(135deg,#f8fafc 0%,#eef2ff 100%)",
+          border: `1.5px solid ${atLimit ? "#fed7aa" : "#e0e7ff"}`,
+          borderRadius: 12,
+          padding: "14px 20px",
+          marginBottom: 24,
+          display: "flex",
+          alignItems: "center",
+          gap: 20,
+          flexWrap: "wrap",
+        }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>
+                {company.company_name}
+              </span>
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 99,
+                textTransform: "uppercase" as const, letterSpacing: "0.5px",
+                background: company.plan === "free" ? "#f1f5f9" : company.plan === "pro" ? "#ede9fe" : "#dcfce7",
+                color: company.plan === "free" ? "#64748b" : company.plan === "pro" ? "#7c3aed" : "#15803d",
+              }}>
+                {company.plan}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 160, height: 6, background: "#e2e8f0", borderRadius: 99, overflow: "hidden" }}>
+                <div style={{
+                  width: `${usagePct}%`, height: "100%", borderRadius: 99,
+                  background: atLimit ? "#f97316" : usagePct > 70 ? "#f59e0b" : "#6366f1",
+                  transition: "width 0.4s ease",
+                }} />
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 600, color: atLimit ? "#ea580c" : "var(--ink-2)" }}>
+                {usedCount} / {limitCount} employees
+              </span>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {atLimit ? (
+              <a
+                href="mailto:info@jwithkp.com?subject=Upgrade HRMS Plan"
+                style={{
+                  padding: "7px 16px",
+                  background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                  color: "white", borderRadius: 8, textDecoration: "none",
+                  fontSize: 12, fontWeight: 700,
+                }}
+              >
+                Upgrade Plan
+              </a>
+            ) : (
+              <Link
+                to="/hrms/employees"
+                style={{
+                  padding: "7px 16px",
+                  background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                  color: "white", borderRadius: 8, textDecoration: "none",
+                  fontSize: 12, fontWeight: 700,
+                }}
+              >
+                Manage Employees
+              </Link>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <div className="stat-grid">
         {data.stats.map((stat) => (

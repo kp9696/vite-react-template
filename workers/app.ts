@@ -16,6 +16,7 @@ const requestHandler = createRequestHandler(
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+const JWT_EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 days
 const OTP_TTL_SECONDS = 300; // 5 minutes
 const MAX_OTP_ATTEMPTS = 5;
 const LOCKOUT_TTL_SECONDS = 900; // 15 minutes after too many attempts
@@ -76,6 +77,101 @@ async function readJsonBody<T>(request: Request): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+// ─── JWT (HS256 via WebCrypto) ────────────────────────────────────────────────
+
+interface JwtPayload {
+  sub: string;   // email
+  name: string;
+  exp: number;
+  iat: number;
+}
+
+function base64UrlEncode(data: ArrayBuffer | string): string {
+  const bytes = typeof data === "string"
+    ? new TextEncoder().encode(data)
+    : new Uint8Array(data);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function base64UrlDecode(str: string): Uint8Array {
+  const padded = str.replace(/-/g, "+").replace(/_/g, "/");
+  const padLen = (4 - (padded.length % 4)) % 4;
+  const binary = atob(padded + "=".repeat(padLen));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function getHmacKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+async function signJwt(payload: JwtPayload, secret: string): Promise<string> {
+  const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const body = base64UrlEncode(JSON.stringify(payload));
+  const signingInput = `${header}.${body}`;
+  const key = await getHmacKey(secret);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput));
+  return `${signingInput}.${base64UrlEncode(sig)}`;
+}
+
+async function verifyJwt(token: string, secret: string): Promise<JwtPayload | null> {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [header, body, sig] = parts;
+  const signingInput = `${header}.${body}`;
+  const key = await getHmacKey(secret);
+  const valid = await crypto.subtle.verify("HMAC", key, base64UrlDecode(sig), new TextEncoder().encode(signingInput));
+  if (!valid) return null;
+  let payload: JwtPayload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(body))) as JwtPayload;
+  } catch {
+    return null;
+  }
+  if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload;
+}
+
+async function extractBearerPayload(request: Request, secret: string): Promise<JwtPayload | null> {
+  const auth = request.headers.get("Authorization") ?? "";
+  if (!auth.startsWith("Bearer ")) return null;
+  return verifyJwt(auth.slice(7), secret);
+}
+
+// ─── Company helpers (used by Worker endpoints) ───────────────────────────────
+
+async function getOrCreateCompany(
+  db: D1Database,
+  ownerEmail: string,
+  companyName: string,
+): Promise<{ id: string; company_name: string; plan: string; employee_limit: number }> {
+  const existing = await db
+    .prepare(`SELECT id, company_name, plan, employee_limit FROM companies WHERE owner_id = lower(?) LIMIT 1`)
+    .bind(ownerEmail)
+    .first<{ id: string; company_name: string; plan: string; employee_limit: number }>();
+  if (existing) return existing;
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO companies (id, owner_id, company_name, plan, employee_limit, created_at, updated_at)
+       VALUES (?, lower(?), ?, 'free', 5, ?, ?)`,
+    )
+    .bind(id, ownerEmail, companyName, now, now)
+    .run();
+  return { id, company_name: companyName, plan: "free", employee_limit: 5 };
 }
 
 // ─── Database ─────────────────────────────────────────────────────────────────
@@ -501,6 +597,10 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
     .bind(userId, pendingData.name, email, now, now, now)
     .run();
 
+  // Auto-create a company for the new user (SaaS multi-tenant)
+  const defaultCompanyName = `${pendingData.name}'s Organization`;
+  await getOrCreateCompany(env.HRMS, email, defaultCompanyName);
+
   // Clean up all OTP-related keys for this email
   await env.OTP_STORE.delete(email);
   await clearAttempts(env.OTP_STORE, email);
@@ -508,19 +608,165 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
   return jsonResponse({ success: true });
 }
 
+// ─── JWT API handlers ─────────────────────────────────────────────────────────
+
+async function handleApiLogin(request: Request, env: Env): Promise<Response> {
+  if (!env.JWT_SECRET) return jsonResponse({ error: "JWT_SECRET not configured." }, 500);
+  const body = await readJsonBody<{ email: string; password: string }>(request);
+  if (!body?.email || !body?.password) {
+    return jsonResponse({ error: "Email and password are required." }, 400);
+  }
+  const email = normalizeEmail(body.email);
+  const hash = await hashPassword(body.password);
+  const user = await env.HRMS
+    .prepare(`SELECT name FROM auth_users WHERE lower(email)=? AND password=? AND is_verified=1 LIMIT 1`)
+    .bind(email, hash)
+    .first<{ name: string }>();
+  if (!user) return jsonResponse({ error: "Invalid credentials." }, 401);
+
+  const now = Math.floor(Date.now() / 1000);
+  const token = await signJwt({ sub: email, name: user.name, iat: now, exp: now + JWT_EXPIRY_SECONDS }, env.JWT_SECRET);
+  return jsonResponse({ token, name: user.name, email });
+}
+
+async function handleApiGetCompany(request: Request, env: Env): Promise<Response> {
+  if (!env.JWT_SECRET) return jsonResponse({ error: "JWT_SECRET not configured." }, 500);
+  const payload = await extractBearerPayload(request, env.JWT_SECRET);
+  if (!payload) return jsonResponse({ error: "Unauthorized." }, 401);
+
+  const company = await env.HRMS
+    .prepare(`SELECT id, company_name, plan, employee_limit FROM companies WHERE owner_id=? LIMIT 1`)
+    .bind(payload.sub)
+    .first<{ id: string; company_name: string; plan: string; employee_limit: number }>();
+  if (!company) return jsonResponse({ error: "Company not found." }, 404);
+
+  const count = await env.HRMS
+    .prepare(`SELECT COUNT(*) as cnt FROM saas_employees WHERE company_id=?`)
+    .bind(company.id)
+    .first<{ cnt: number }>();
+
+  return jsonResponse({ ...company, employee_count: count?.cnt ?? 0 });
+}
+
+async function handleApiGetEmployees(request: Request, env: Env): Promise<Response> {
+  if (!env.JWT_SECRET) return jsonResponse({ error: "JWT_SECRET not configured." }, 500);
+  const payload = await extractBearerPayload(request, env.JWT_SECRET);
+  if (!payload) return jsonResponse({ error: "Unauthorized." }, 401);
+
+  const company = await env.HRMS
+    .prepare(`SELECT id FROM companies WHERE owner_id=? LIMIT 1`)
+    .bind(payload.sub)
+    .first<{ id: string }>();
+  if (!company) return jsonResponse({ error: "Company not found." }, 404);
+
+  const result = await env.HRMS
+    .prepare(`SELECT * FROM saas_employees WHERE company_id=? ORDER BY created_at DESC`)
+    .bind(company.id)
+    .all();
+  return jsonResponse({ employees: result.results });
+}
+
+async function handleApiAddEmployee(request: Request, env: Env): Promise<Response> {
+  if (!env.JWT_SECRET) return jsonResponse({ error: "JWT_SECRET not configured." }, 500);
+  const payload = await extractBearerPayload(request, env.JWT_SECRET);
+  if (!payload) return jsonResponse({ error: "Unauthorized." }, 401);
+
+  const body = await readJsonBody<{ name: string; email: string; role?: string; department?: string }>(request);
+  if (!body?.name || !body?.email) return jsonResponse({ error: "Name and email are required." }, 400);
+  if (!isValidEmail(body.email)) return jsonResponse({ error: "Invalid email address." }, 400);
+
+  const company = await env.HRMS
+    .prepare(`SELECT id, employee_limit FROM companies WHERE owner_id=? LIMIT 1`)
+    .bind(payload.sub)
+    .first<{ id: string; employee_limit: number }>();
+  if (!company) return jsonResponse({ error: "Company not found." }, 404);
+
+  const count = await env.HRMS
+    .prepare(`SELECT COUNT(*) as cnt FROM saas_employees WHERE company_id=?`)
+    .bind(company.id)
+    .first<{ cnt: number }>();
+  const current = count?.cnt ?? 0;
+  if (current >= company.employee_limit) {
+    return jsonResponse(
+      { error: `Employee limit reached (${company.employee_limit} on your plan). Upgrade to add more.` },
+      403,
+    );
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  try {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO saas_employees (id, company_id, name, email, role, department, status, joined_on, created_at)
+         VALUES (?, ?, ?, lower(?), ?, ?, 'Active', ?, ?)`,
+      )
+      .bind(id, company.id, body.name.trim(), body.email, body.role?.trim() || "Employee", body.department?.trim() || "General", now, now)
+      .run();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("UNIQUE")) return jsonResponse({ error: "This email is already added to your company." }, 409);
+    return jsonResponse({ error: "Failed to add employee." }, 500);
+  }
+
+  return jsonResponse({ ok: true, id, name: body.name.trim(), email: body.email.toLowerCase() }, 201);
+}
+
+async function handleApiDeleteEmployee(employeeId: string, request: Request, env: Env): Promise<Response> {
+  if (!env.JWT_SECRET) return jsonResponse({ error: "JWT_SECRET not configured." }, 500);
+  const payload = await extractBearerPayload(request, env.JWT_SECRET);
+  if (!payload) return jsonResponse({ error: "Unauthorized." }, 401);
+
+  const company = await env.HRMS
+    .prepare(`SELECT id FROM companies WHERE owner_id=? LIMIT 1`)
+    .bind(payload.sub)
+    .first<{ id: string }>();
+  if (!company) return jsonResponse({ error: "Company not found." }, 404);
+
+  const result = await env.HRMS
+    .prepare(`DELETE FROM saas_employees WHERE id=? AND company_id=?`)
+    .bind(employeeId, company.id)
+    .run();
+  if ((result.meta.changes ?? 0) === 0) return jsonResponse({ error: "Employee not found." }, 404);
+  return jsonResponse({ ok: true });
+}
+
 // ─── Worker entry ─────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const { method, pathname } = { method: request.method, pathname: url.pathname };
 
-    if (request.method === "POST" && url.pathname === "/api/send-signup-otp") {
-      return handleSendSignupOtp(request, env);
+    // CORS preflight for API routes
+    if (method === "OPTIONS" && pathname.startsWith("/api/")) {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        },
+      });
     }
 
-    if (request.method === "POST" && url.pathname === "/api/verify-signup-otp") {
-      return handleVerifySignupOtp(request, env);
-    }
+    // OTP signup flow
+    if (method === "POST" && pathname === "/api/send-signup-otp") return handleSendSignupOtp(request, env);
+    if (method === "POST" && pathname === "/api/verify-signup-otp") return handleVerifySignupOtp(request, env);
+
+    // JWT auth
+    if (method === "POST" && pathname === "/api/auth/login") return handleApiLogin(request, env);
+
+    // Company
+    if (method === "GET" && pathname === "/api/company") return handleApiGetCompany(request, env);
+
+    // Employees
+    if (method === "GET" && pathname === "/api/employees") return handleApiGetEmployees(request, env);
+    if (method === "POST" && pathname === "/api/employees") return handleApiAddEmployee(request, env);
+
+    // DELETE /api/employees/:id
+    const deleteMatch = pathname.match(/^\/api\/employees\/([^/]+)$/);
+    if (method === "DELETE" && deleteMatch) return handleApiDeleteEmployee(deleteMatch[1], request, env);
 
     return requestHandler(request, {
       cloudflare: { env, ctx },

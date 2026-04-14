@@ -24,6 +24,9 @@ interface Env {
   // ── Resend (transactional email — primary OTP sender) ────────────────────
   RESEND_API_KEY?: string;
 
+  // ── JWT (HS256 — used for REST API auth) ────────────────────────────────
+  JWT_SECRET?: string;
+
   // ── Misc ─────────────────────────────────────────────────────────────────
   HRMS_BASE_URL?: string;
 }
