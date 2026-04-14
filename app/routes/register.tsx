@@ -10,6 +10,11 @@ type AlertState = {
   message: string;
 };
 
+type ApiPayload = {
+  success?: boolean;
+  error?: string;
+};
+
 const OTP_EXPIRY_SECONDS = 300; // must match OTP_TTL_SECONDS in workers/app.ts
 const RESEND_COOLDOWN_SECONDS = 60; // must match RESEND_COOLDOWN_SECONDS in workers/app.ts
 
@@ -17,6 +22,20 @@ function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+async function readApiPayload(response: Response): Promise<ApiPayload> {
+  const contentType = response.headers.get("Content-Type") || "";
+  if (contentType.toLowerCase().includes("application/json")) {
+    return (await response.json()) as ApiPayload;
+  }
+
+  const text = await response.text();
+  if (text.includes("Oops!") || text.includes("unexpected error")) {
+    return { error: `Server error (${response.status}). Please retry after deployment/restart.` };
+  }
+
+  return { error: text.trim().slice(0, 200) || `Request failed with status ${response.status}.` };
 }
 
 export default function Register() {
@@ -89,7 +108,7 @@ export default function Register() {
         }),
       });
 
-      const payload = (await response.json()) as { success?: boolean; error?: string };
+      const payload = await readApiPayload(response);
       if (!response.ok || !payload.success) {
         setAlert({ kind: "error", message: payload.error ?? "Failed to send OTP." });
         return false;
@@ -105,7 +124,7 @@ export default function Register() {
       });
       return true;
     } catch {
-      setAlert({ kind: "error", message: "Unable to reach the server. Please try again." });
+      setAlert({ kind: "error", message: "Unable to reach the server. Check network/deployment and try again." });
       return false;
     } finally {
       setSendingOtp(false);
@@ -153,7 +172,7 @@ export default function Register() {
         }),
       });
 
-      const payload = (await response.json()) as { success?: boolean; error?: string };
+      const payload = await readApiPayload(response);
       if (!response.ok || !payload.success) {
         setAlert({ kind: "error", message: payload.error ?? "OTP verification failed." });
         return;
@@ -163,7 +182,7 @@ export default function Register() {
       setAlert({ kind: "success", message: "Email verified. Redirecting to login..." });
       setTimeout(() => navigate("/login"), 700);
     } catch {
-      setAlert({ kind: "error", message: "Unable to reach the server. Please try again." });
+      setAlert({ kind: "error", message: "Unable to reach the server. Check network/deployment and try again." });
     } finally {
       setVerifyingOtp(false);
     }
