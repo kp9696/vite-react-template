@@ -7,16 +7,13 @@ import {
 import type { Route } from "./+types/hrms.users";
 import HRMSLayout from "../components/HRMSLayout";
 import {
-  DEMO_ORGANIZATION,
-  DEMO_USER,
-  DEMO_USERS,
   createOrUpdateInvitedUser,
   getOrganizationById,
   getOrganizationMemberUsage,
   listUsers,
 } from "../lib/hrms.server";
 import { sendInviteEmail } from "../lib/invite-email.server";
-import { requireSignedInUser } from "../lib/session.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { isAdminRole } from "../lib/hrms.shared";
 
 const roles = ["Employee", "Manager", "HR Manager", "HR Admin", "Finance", "Payroll Manager"];
@@ -33,11 +30,7 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  if (currentUser.id === DEMO_USER.id) {
-    const memberUsage = DEMO_USERS.filter((user) => !isAdminRole(user.role)).length;
-    return { currentUser, organization: DEMO_ORGANIZATION, users: DEMO_USERS, memberUsage };
-  }
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
 
   if (!currentUser.orgId) {
     throw redirect("/hrms");
@@ -55,11 +48,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  if (currentUser.id === DEMO_USER.id) {
-    return { ok: false, type: "error", message: "Demo workspace actions are read-only." };
-  }
-
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   if (!currentUser.orgId || !isAdminRole(currentUser.role)) {
     return { ok: false, type: "error", message: "Only admins can manage users." };
   }
@@ -315,3 +304,4 @@ export default function AdminUsers() {
     </HRMSLayout>
   );
 }
+

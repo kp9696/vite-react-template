@@ -2,9 +2,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.recruitment";
 import HRMSLayout from "../components/HRMSLayout";
-import { DEMO_USER } from "../lib/hrms.server";
-import { requireSignedInUser } from "../lib/session.server";
-import { createJobOpening, getDemoRecruitmentDashboard, getRecruitmentDashboard } from "../lib/workforce.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { createJobOpening, getRecruitmentDashboard } from "../lib/workforce.server";
 import { avatarColor, getInitials } from "../lib/hrms.shared";
 
 type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
@@ -30,20 +29,15 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  const data = currentUser.id === DEMO_USER.id
-    ? getDemoRecruitmentDashboard()
-    : currentUser.orgId
-      ? await getRecruitmentDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
-      : getDemoRecruitmentDashboard();
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const data = currentUser.orgId
+    ? await getRecruitmentDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+    : { openings: [], pipeline: [] };
   return { currentUser, ...data };
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  if (currentUser.id === DEMO_USER.id) {
-    return { ok: false, type: "error", message: "Demo recruitment data is read-only." };
-  }
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   if (!currentUser.orgId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
@@ -318,3 +312,4 @@ export default function Recruitment() {
 
 const lblStyle: CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 5 };
 const inpStyle: CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", color: "var(--ink)" };
+

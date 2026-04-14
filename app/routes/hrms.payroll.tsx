@@ -1,39 +1,17 @@
-import { useLoaderData } from "react-router";
-import { useState } from "react";
+import { Form, useActionData, useLoaderData } from "react-router";
+import { useEffect, useState } from "react";
 import type { Route } from "./+types/hrms.payroll";
 import HRMSLayout from "../components/HRMSLayout";
-import { requireSignedInUser } from "../lib/session.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { avatarColor, getInitials } from "../lib/hrms.shared";
+import { getPayrollDashboard, runPayrollForMonth, type PayrollEmployee } from "../lib/payroll.server";
 
-const ALL_PAYROLL: Record<string, typeof payrollData> = {
-  "April 2026": [
-    { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, conveyance: 19200, pf: 33600, tds: 5600, pt: 2800, gross: 411200, deductions: 42000, net: 369200, status: "Processed" },
-    { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
-    { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
-    { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Pending" },
-    { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
-    { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Pending" },
-  ],
-  "March 2026": [
-    { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 280000, hra: 112000, conveyance: 19200, pf: 33600, tds: 5600, pt: 2800, gross: 411200, deductions: 42000, net: 369200, status: "Processed" },
-    { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
-    { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
-    { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Processed" },
-    { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
-    { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Processed" },
-  ],
-  "February 2026": [
-    { name: "Deepa Krishnan", id: "EMP006", dept: "Engineering", basic: 265000, hra: 106000, conveyance: 19200, pf: 31800, tds: 5200, pt: 2800, gross: 390200, deductions: 39800, net: 350400, status: "Processed" },
-    { name: "Aarav Shah",     id: "EMP001", dept: "Engineering", basic: 186667, hra: 74667,  conveyance: 19200, pf: 22400, tds: 4200, pt: 1400, gross: 280534, deductions: 28000, net: 252534, status: "Processed" },
-    { name: "Priya Nair",     id: "EMP002", dept: "Design",      basic: 146667, hra: 58667,  conveyance: 19200, pf: 17600, tds: 2800, pt: 1600, gross: 224534, deductions: 22000, net: 202534, status: "Processed" },
-    { name: "Rohan Mehta",    id: "EMP003", dept: "Analytics",   basic: 120000, hra: 48000,  conveyance: 19200, pf: 14400, tds: 2100, pt: 1500, gross: 187200, deductions: 18000, net: 169200, status: "Processed" },
-    { name: "Sneha Pillai",   id: "EMP004", dept: "People Ops",  basic: 106667, hra: 42667,  conveyance: 19200, pf: 12800, tds: 1680, pt: 1520, gross: 168534, deductions: 16000, net: 152534, status: "Processed" },
-    { name: "Arjun Gupta",    id: "EMP005", dept: "Sales",       basic: 93333,  hra: 37333,  conveyance: 19200, pf: 11200, tds: 1400, pt: 1400, gross: 149866, deductions: 14000, net: 135866, status: "Processed" },
-  ],
+type Employee = PayrollEmployee;
+
+type ActionData = {
+  ok: boolean;
+  message: string;
 };
-
-const payrollData = ALL_PAYROLL["April 2026"];
-type Employee = typeof payrollData[0];
 
 const fmt = (n: number) => "₹" + n.toLocaleString("en-IN");
 
@@ -42,8 +20,45 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  return { currentUser };
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  if (!currentUser.orgId) {
+    return { currentUser, months: [], payrollByMonth: {} as Record<string, Employee[]> };
+  }
+
+  const payroll = await getPayrollDashboard(context.cloudflare.env.HRMS, currentUser.orgId);
+  return {
+    currentUser,
+    months: payroll.months,
+    payrollByMonth: payroll.payrollByMonth,
+  };
+}
+
+export async function action({ request, context }: Route.ActionArgs): Promise<ActionData> {
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  if (!currentUser.orgId) {
+    return { ok: false, message: "Organization not found for this user." };
+  }
+
+  const formData = await request.formData();
+  const intent = String(formData.get("intent") || "");
+  if (intent !== "run-payroll") {
+    return { ok: false, message: "Unsupported payroll action." };
+  }
+
+  const month = String(formData.get("month") || "").trim();
+  if (!month) {
+    return { ok: false, message: "Payroll month is required." };
+  }
+
+  const result = await runPayrollForMonth(context.cloudflare.env.HRMS, currentUser.orgId, month);
+  if (result.processed + result.pending === 0) {
+    return { ok: false, message: `No employees found for payroll run (${result.month}).` };
+  }
+
+  return {
+    ok: true,
+    message: `Payroll generated for ${result.month}. Processed: ${result.processed}, Pending: ${result.pending}.`,
+  };
 }
 
 function PayslipModal({ emp, month, onClose }: { emp: Employee; month: string; onClose: () => void }) {
@@ -148,8 +163,10 @@ function exportCSV(rows: Employee[], month: string) {
 }
 
 export default function Payroll() {
-  const { currentUser } = useLoaderData<typeof loader>();
-  const [month, setMonth] = useState("April 2026");
+  const { currentUser, months: loaderMonths, payrollByMonth } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
+  const availableMonths = loaderMonths;
+  const [month, setMonth] = useState(availableMonths[0] ?? new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric" }).format(new Date()));
   const [selectedPayslip, setSelectedPayslip] = useState<Employee | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -158,7 +175,19 @@ export default function Payroll() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const rows = ALL_PAYROLL[month] ?? ALL_PAYROLL["April 2026"];
+  useEffect(() => {
+    if (availableMonths.length > 0 && !availableMonths.includes(month)) {
+      setMonth(availableMonths[0]);
+    }
+  }, [availableMonths, month]);
+
+  useEffect(() => {
+    if (actionData?.message) {
+      showToast(actionData.message);
+    }
+  }, [actionData?.message]);
+
+  const rows = payrollByMonth[month] ?? [];
 
   const totalGross      = rows.reduce((a, e) => a + e.gross, 0);
   const totalNet        = rows.reduce((a, e) => a + e.net, 0);
@@ -187,29 +216,24 @@ export default function Payroll() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Payroll</div>
-          <div className="page-sub">Process and manage monthly salary disbursements.</div>
+          <div className="page-sub">Process and manage monthly salary disbursements from D1 records.</div>
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
+        <Form method="post" style={{ display: "flex", gap: 10 }}>
+          <input type="hidden" name="intent" value="run-payroll" />
           <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ padding: "8px 14px", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", fontWeight: 600 }}>
-            <option>April 2026</option>
-            <option>March 2026</option>
-            <option>February 2026</option>
+            {availableMonths.length === 0 ? <option>{month}</option> : null}
+            {availableMonths.map((m) => <option key={m}>{m}</option>)}
           </select>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              if (pending === 0) { showToast(`Payroll for ${month} is already fully processed.`); return; }
-              showToast(`Payroll run started for ${month}. Processing ${pending} pending employee(s)…`);
-            }}
-          >▶ Run Payroll</button>
-        </div>
+          <input type="hidden" name="month" value={month} />
+          <button className="btn btn-primary" type="submit">▶ Run Payroll</button>
+        </Form>
       </div>
 
       <div className="stat-grid">
         <div className="stat-card" style={{ borderTop: "3px solid var(--accent)" }}>
           <div className="stat-label">Gross Payroll</div>
           <div className="stat-value" style={{ fontSize: 22 }}>{fmt(totalGross)}</div>
-          <div className="stat-delta delta-up">↑ 3.2% vs last month</div>
+          <div className="stat-delta">Generated from current payroll month rows</div>
         </div>
         <div className="stat-card" style={{ borderTop: "3px solid var(--green)" }}>
           <div className="stat-label">Net Disbursed</div>
@@ -244,7 +268,13 @@ export default function Payroll() {
               <tr><th>Employee</th><th>Department</th><th>Basic</th><th>HRA</th><th>Gross</th><th>Deductions</th><th>Net Pay</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
-              {rows.map((e) => (
+              {rows.length === 0 ? (
+                <tr>
+                  <td colSpan={9} style={{ color: "var(--ink-3)" }}>
+                    No payroll records available yet.
+                  </td>
+                </tr>
+              ) : rows.map((e) => (
                 <tr key={e.id}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -299,7 +329,9 @@ export default function Payroll() {
       <div className="card">
         <div className="card-title">Payroll by Department</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {deptSummary.sort((a, b) => b.net - a.net).map((d, i) => {
+          {deptSummary.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>No department payroll data available.</div>
+          ) : deptSummary.sort((a, b) => b.net - a.net).map((d, i) => {
             const pct = Math.round((d.net / totalNet) * 100);
             const COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6"];
             const color = COLORS[i % COLORS.length];
@@ -320,3 +352,4 @@ export default function Payroll() {
     </HRMSLayout>
   );
 }
+

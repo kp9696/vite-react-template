@@ -26,6 +26,11 @@ interface Env {
 
   // ── JWT (HS256 — used for REST API auth) ────────────────────────────────
   JWT_SECRET?: string;
+  JWT_ACCESS_SECRET?: string;
+  JWT_REFRESH_SECRET?: string;
+
+  // ── CORS ────────────────────────────────────────────────────────────────
+  CORS_ALLOWED_ORIGIN?: string;
 
   // ── Misc ─────────────────────────────────────────────────────────────────
   HRMS_BASE_URL?: string;

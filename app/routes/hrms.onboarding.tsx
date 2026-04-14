@@ -2,9 +2,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.onboarding";
 import HRMSLayout from "../components/HRMSLayout";
-import { DEMO_USER } from "../lib/hrms.server";
-import { requireSignedInUser } from "../lib/session.server";
-import { createOnboardingJoiner, getDemoOnboardingDashboard, getOnboardingDashboard, toggleOnboardingTask } from "../lib/workforce.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { createOnboardingJoiner, getOnboardingDashboard, toggleOnboardingTask } from "../lib/workforce.server";
 
 type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
 
@@ -13,21 +12,16 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  const data = currentUser.id === DEMO_USER.id
-    ? getDemoOnboardingDashboard()
-    : currentUser.orgId
-      ? await getOnboardingDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
-      : getDemoOnboardingDashboard();
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const data = currentUser.orgId
+    ? await getOnboardingDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+    : { joiners: [], stats: [] };
 
   return { currentUser, ...data };
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  if (currentUser.id === DEMO_USER.id) {
-    return { ok: false, type: "error", message: "Demo onboarding data is read-only." };
-  }
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   if (!currentUser.orgId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
@@ -196,3 +190,4 @@ export default function Onboarding() {
 }
 
 const fieldStyle: CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13 };
+

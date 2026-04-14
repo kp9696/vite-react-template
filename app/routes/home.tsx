@@ -8,3 +8,4 @@ export function loader(_: Route.LoaderArgs) {
 export default function Home() {
   return null;
 }
+

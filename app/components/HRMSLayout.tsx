@@ -9,8 +9,6 @@ interface CurrentUser {
   email: string;
 }
 
-const DEMO_USER_ID = "USRDEMO01";
-
 const navGroups = [
   {
     title: "Core",
@@ -73,23 +71,14 @@ export default function HRMSLayout({
 }) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
-  const isDemo = currentUser?.id === DEMO_USER_ID;
   const initials = currentUser ? getInitials(currentUser.name) : "?";
   const accentColor = currentUser ? avatarColor(currentUser.name) : "#6366f1";
   const currentPage = allNav.find((item) => item.path === location.pathname);
 
   return (
     <div className="hrms-shell">
-      {/* ── Demo Banner ── */}
-      {isDemo ? (
-        <div className="demo-banner">
-          Demo workspace — all data is sample data. Create your own account to manage a real team.
-          <a href="/register" className="demo-banner-link">Get started free →</a>
-        </div>
-      ) : null}
-
       {/* ── Sidebar ── */}
-      <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`} style={{ top: isDemo ? 36 : 0 }}>
+      <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`}>
         <div className="sidebar-top-strip" />
 
         <div className="sidebar-header">
@@ -101,9 +90,6 @@ export default function HRMSLayout({
               <span className="logo-text">JWithKP</span>
               <span className="logo-sub">HRMS Platform</span>
             </div>
-          ) : null}
-          {!collapsed && isDemo ? (
-            <span className="demo-pill">Demo</span>
           ) : null}
           <button className="collapse-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? "Expand" : "Collapse"}>
             {collapsed ? "›" : "‹"}
@@ -162,7 +148,7 @@ export default function HRMSLayout({
       </aside>
 
       {/* ── Main Content ── */}
-      <main className="hrms-main" style={{ marginTop: isDemo ? 36 : 0 }}>
+      <main className="hrms-main">
         <header className="hrms-topbar">
           <div className="topbar-left">
             <div className="topbar-page-icon">
@@ -258,20 +244,6 @@ export default function HRMSLayout({
         @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
         @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
 
-        /* ── Demo Banner ───────────────────────────────── */
-        .demo-banner {
-          position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-          background: linear-gradient(90deg, #6366f1, #8b5cf6, #ec4899);
-          color: white; font-size: 12px; font-weight: 600;
-          padding: 8px 20px; text-align: center; letter-spacing: 0.1px;
-          height: 36px; display: flex; align-items: center; justify-content: center; gap: 4px;
-        }
-        .demo-banner-link {
-          color: rgba(255,255,255,0.85); margin-left: 12px;
-          text-decoration: underline; font-weight: 700;
-        }
-        .demo-banner-link:hover { color: white; }
-
         /* ── Shell ─────────────────────────────────────── */
         .hrms-shell { display: flex; min-height: 100vh; }
 
@@ -312,14 +284,6 @@ export default function HRMSLayout({
           font-size: 9.5px; color: rgba(255,255,255,0.3);
           font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase;
           margin-top: 1px;
-        }
-        .demo-pill {
-          margin-left: auto; margin-right: 4px;
-          background: rgba(99,102,241,0.25); color: #a5b4fc;
-          font-size: 9px; font-weight: 700; padding: "2px 7px"; border-radius: 99px;
-          letter-spacing: 0.8px; text-transform: uppercase;
-          border: 1px solid rgba(99,102,241,0.35);
-          padding: 2px 7px;
         }
         .collapse-btn {
           margin-left: auto;

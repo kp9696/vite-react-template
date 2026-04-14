@@ -2,7 +2,7 @@ import { useLoaderData } from "react-router";
 import { useState } from "react";
 import type { Route } from "./+types/hrms.analytics";
 import HRMSLayout from "../components/HRMSLayout";
-import { requireSignedInUser } from "../lib/session.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
 
 const attritionByDept = [
   { dept: "Engineering", rate: 8.2,  headcount: 412 },
@@ -41,7 +41,7 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   return { currentUser };
 }
 
@@ -274,3 +274,4 @@ export default function Analytics() {
     </HRMSLayout>
   );
 }
+

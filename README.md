@@ -1,49 +1,49 @@
 # JWithKP HRMS on Cloudflare Workers
 
-This project is now set up as a React Router 7 app running on Cloudflare Workers with a D1-backed HRMS user module.
+React Router 7 + Cloudflare Workers app with D1, KV-backed OTP/rate-limits, and refresh-token-based auth sessions.
 
-## What is wired up
+## Key modules
 
-- Cloudflare Worker entry in [workers/app.ts](/C:/Users/Admin/Documents/vite-react-template/workers/app.ts)
-- D1 schema and seed migration in [migrations/0001_initial.sql](/C:/Users/Admin/Documents/vite-react-template/migrations/0001_initial.sql)
-- Shared D1 helpers in [app/lib/hrms.server.ts](/C:/Users/Admin/Documents/vite-react-template/app/lib/hrms.server.ts)
-- Invite mail helper in [app/lib/invite-email.server.ts](/C:/Users/Admin/Documents/vite-react-template/app/lib/invite-email.server.ts)
-- Live D1 dashboard in [app/routes/hrms.tsx](/C:/Users/Admin/Documents/vite-react-template/app/routes/hrms.tsx)
-- Live D1 user management in [app/routes/hrms.users.tsx](/C:/Users/Admin/Documents/vite-react-template/app/routes/hrms.users.tsx)
+- Worker API and SSR entry: [workers/app.ts](workers/app.ts)
+- Auth session helper for SSR routes: [app/lib/jwt-auth.server.ts](app/lib/jwt-auth.server.ts)
+- Security helpers: [workers/security/auth.ts](workers/security/auth.ts), [workers/security/rateLimiter.ts](workers/security/rateLimiter.ts), [workers/security/otp.ts](workers/security/otp.ts)
+- Auth schema migrations: [migrations/0007_auth_users.sql](migrations/0007_auth_users.sql), [migrations/0009_refresh_tokens.sql](migrations/0009_refresh_tokens.sql)
 
-## Before deploy
+## Prerequisites
 
-1. Install dependencies:
+1. Install dependencies.
 
 ```bash
 npm install
 ```
 
-2. Open [wrangler.json](/C:/Users/Admin/Documents/vite-react-template/wrangler.json) and replace:
+2. Confirm bindings in [wrangler.json](wrangler.json).
 
-- `PASTE_YOUR_D1_DATABASE_ID_HERE`
+- D1 binding: `HRMS`
+- KV binding: `OTP_STORE`
 
-You can get that value from the Cloudflare dashboard or:
-
-```bash
-npx wrangler d1 list
-```
-
-3. Apply the D1 migration:
+3. Apply D1 migrations.
 
 ```bash
 npx wrangler d1 migrations apply HRMS
 ```
 
-4. Add these Worker variables in Cloudflare if you want invite emails to send:
+## Required secrets and vars
 
-- `GMAIL_CLIENT_ID`
-- `GMAIL_CLIENT_SECRET`
-- `GMAIL_REFRESH_TOKEN`
-- `GMAIL_FROM_EMAIL`
+Set these before production deploy:
+
+- `JWT_ACCESS_SECRET`
+- `CORS_ALLOWED_ORIGIN`
+
+Email provider (choose one path):
+
+- Resend: `RESEND_API_KEY`
+- Microsoft Graph: `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_FROM_EMAIL`
+- Fallback bridge: `EMAIL_API_URL`, `API_KEY`
+
+Optional:
+
 - `HRMS_BASE_URL`
-
-Without Gmail variables, user records still save to D1 but invite delivery is skipped.
 
 ## Local commands
 
@@ -59,9 +59,9 @@ npm run build
 npm run deploy
 ```
 
-## Recommended Cloudflare flow
+## Smoke test checklist
 
-1. Bind the D1 database named `HRMS` to this Worker.
-2. Apply the migration.
-3. Deploy the Worker.
-4. Verify `/hrms` and `/hrms/users` on your production URL.
+1. Signup OTP send and verify on [app/routes/register.tsx](app/routes/register.tsx)
+2. Email login on [app/routes/login.tsx](app/routes/login.tsx)
+3. Refresh/logout API endpoints in [workers/app.ts](workers/app.ts)
+4. Protected HRMS routes (for example [app/routes/hrms.tsx](app/routes/hrms.tsx))

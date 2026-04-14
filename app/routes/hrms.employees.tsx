@@ -2,10 +2,9 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.employees";
 import HRMSLayout from "../components/HRMSLayout";
-import { DEMO_USER } from "../lib/hrms.server";
 import { avatarColor, getInitials } from "../lib/hrms.shared";
-import { requireSignedInUser } from "../lib/session.server";
-import { createEmployee, getDemoEmployeesDashboard, getEmployeesDashboard } from "../lib/workforce.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
+import { createEmployee, getEmployeesDashboard } from "../lib/workforce.server";
 import { getCompanyByOwnerId, getSaasEmployees, addSaasEmployee, deleteSaasEmployee } from "../lib/company.server";
 
 const departments = ["All", "Engineering", "Design", "Analytics", "Sales", "People Ops", "Marketing", "Finance", "Operations"];
@@ -18,17 +17,15 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  const data = currentUser.id === DEMO_USER.id
-    ? getDemoEmployeesDashboard()
-    : currentUser.orgId
-      ? await getEmployeesDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
-      : getDemoEmployeesDashboard();
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const data = currentUser.orgId
+    ? await getEmployeesDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+    : { employees: [], stats: [], view: [] };
 
-  // SaaS company + employee data (skip for demo)
+  // SaaS company + employee data
   let company = null;
   let saasEmployees: Awaited<ReturnType<typeof getSaasEmployees>> = [];
-  if (currentUser.id !== DEMO_USER.id && currentUser.email) {
+  if (currentUser.email) {
     company = await getCompanyByOwnerId(context.cloudflare.env.HRMS, currentUser.email);
     if (company) {
       saasEmployees = await getSaasEmployees(context.cloudflare.env.HRMS, company.id);
@@ -39,15 +36,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "add-legacy");
 
   // ── SaaS employee actions ───────────────────────────────────────────────────
   if (intent === "add-saas-employee" || intent === "delete-saas-employee") {
-    if (currentUser.id === DEMO_USER.id) {
-      return { ok: false, type: "error", message: "Demo workspace is read-only." };
-    }
     const db = context.cloudflare.env.HRMS;
     const company = await getCompanyByOwnerId(db, currentUser.email ?? "");
     if (!company) return { ok: false, type: "error", message: "Company not found." };
@@ -71,9 +65,6 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
   }
 
   // ── Legacy workforce actions ────────────────────────────────────────────────
-  if (currentUser.id === DEMO_USER.id) {
-    return { ok: false, type: "error", message: "Demo workspace employee records are read-only." };
-  }
   if (!currentUser.orgId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
@@ -497,3 +488,4 @@ export default function Employees() {
 
 const labelStyle: CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 5 };
 const inputStyle: CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", color: "var(--ink)" };
+

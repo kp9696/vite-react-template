@@ -1,9 +1,9 @@
 import HRMSLayout from "../components/HRMSLayout";
 import { Link, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms";
-import { DEMO_USER, getDashboardData, getDemoDashboardData } from "../lib/hrms.server";
+import { getDashboardData } from "../lib/hrms.server";
 import { isAdminRole } from "../lib/hrms.shared";
-import { requireSignedInUser } from "../lib/session.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { getCompanyByOwnerId, getSaasEmployeeCount } from "../lib/company.server";
 
 const colors = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9"];
@@ -13,15 +13,13 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
-  const dashboard = currentUser.id === DEMO_USER.id
-    ? getDemoDashboardData()
-    : await getDashboardData(context.cloudflare.env.HRMS, currentUser.orgId ?? undefined);
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const dashboard = await getDashboardData(context.cloudflare.env.HRMS, currentUser.orgId ?? undefined);
 
-  // SaaS company info (skip for demo)
+  // SaaS company info
   let company = null;
   let saasEmployeeCount = 0;
-  if (currentUser.id !== DEMO_USER.id && currentUser.email) {
+  if (currentUser.email) {
     company = await getCompanyByOwnerId(context.cloudflare.env.HRMS, currentUser.email);
     if (company) {
       saasEmployeeCount = await getSaasEmployeeCount(context.cloudflare.env.HRMS, company.id);
@@ -205,3 +203,4 @@ export default function HRMSDashboard() {
     </HRMSLayout>
   );
 }
+

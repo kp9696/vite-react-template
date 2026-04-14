@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.assets";
 import HRMSLayout from "../components/HRMSLayout";
-import { requireSignedInUser } from "../lib/session.server";
+import { requireSignedInUser } from "../lib/jwt-auth.server";
 
 const initialAssets = [
   { id: "AST-001", name: "MacBook Pro 14\" M3", type: "Laptop", assignedTo: "Deepa Krishnan", dept: "Engineering", serial: "FVFXQ1234567", condition: "Good", assignedOn: "Jan 2025", value: 185000 },
@@ -30,7 +30,7 @@ export function meta() {
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const currentUser = await requireSignedInUser(request, context.cloudflare.env.HRMS);
+  const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   return { currentUser };
 }
 
@@ -257,3 +257,4 @@ export default function Assets() {
 
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6 };
 const fieldStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" };
+

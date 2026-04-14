@@ -69,118 +69,6 @@ export interface ExitProcessRecord {
   tasks: ExitTaskRecord[];
 }
 
-export const DEMO_EMPLOYEES: EmployeeRecord[] = [
-  { id: "EMPD001", orgId: "ORGDEMOUI", name: "Deepa Krishnan", role: "Engineering Manager", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2024-08-10", salary: "INR 42L", createdAt: "2024-08-10T09:00:00.000Z" },
-  { id: "EMPD002", orgId: "ORGDEMOUI", name: "Aarav Shah", role: "Senior Engineer", department: "Engineering", location: "Bengaluru", status: "Active", joinedOn: "2025-04-02", salary: "INR 28L", createdAt: "2025-04-02T09:00:00.000Z" },
-  { id: "EMPD003", orgId: "ORGDEMOUI", name: "Vikram Joshi", role: "Backend Engineer", department: "Engineering", location: "Hyderabad", status: "Active", joinedOn: "2025-01-20", salary: "INR 22L", createdAt: "2025-01-20T09:00:00.000Z" },
-  { id: "EMPD004", orgId: "ORGDEMOUI", name: "Priya Nair", role: "Product Designer", department: "Design", location: "Mumbai", status: "Active", joinedOn: "2025-03-18", salary: "INR 22L", createdAt: "2025-03-18T09:00:00.000Z" },
-  { id: "EMPD005", orgId: "ORGDEMOUI", name: "Rohan Mehta", role: "Data Analyst", department: "Analytics", location: "Pune", status: "Onboarding", joinedOn: "2026-03-28", salary: "INR 18L", createdAt: "2026-03-28T09:00:00.000Z" },
-  { id: "EMPD006", orgId: "ORGDEMOUI", name: "Sneha Pillai", role: "HR Generalist", department: "People Ops", location: "Bengaluru", status: "Active", joinedOn: "2025-02-12", salary: "INR 16L", createdAt: "2025-02-12T09:00:00.000Z" },
-  { id: "EMPD007", orgId: "ORGDEMOUI", name: "Meera Iyer", role: "Marketing Lead", department: "Marketing", location: "Mumbai", status: "Active", joinedOn: "2025-01-12", salary: "INR 20L", createdAt: "2025-01-12T09:00:00.000Z" },
-  { id: "EMPD008", orgId: "ORGDEMOUI", name: "Arjun Gupta", role: "Sales Executive", department: "Sales", location: "Delhi", status: "Active", joinedOn: "2025-06-01", salary: "INR 14L", createdAt: "2025-06-01T09:00:00.000Z" },
-  { id: "EMPD009", orgId: "ORGDEMOUI", name: "Kavya Sharma", role: "Finance Analyst", department: "Finance", location: "Bengaluru", status: "Active", joinedOn: "2025-11-15", salary: "INR 17L", createdAt: "2025-11-15T09:00:00.000Z" },
-  { id: "EMPD010", orgId: "ORGDEMOUI", name: "Ishaan Verma", role: "ML Engineer", department: "Engineering", location: "Bengaluru", status: "Onboarding", joinedOn: "2026-04-14", salary: "INR 26L", createdAt: "2026-04-01T09:00:00.000Z" },
-];
-
-export const DEMO_OPENINGS: JobOpeningRecord[] = [
-  { id: "JOBD001", orgId: "ORGDEMOUI", title: "Senior Frontend Engineer", department: "Engineering", location: "Bengaluru", priority: "Urgent", applicantCount: 28, stage: "Applied", createdAt: "2026-04-01T09:00:00.000Z" },
-  { id: "JOBD002", orgId: "ORGDEMOUI", title: "Product Manager", department: "Product", location: "Remote", priority: "Normal", applicantCount: 12, stage: "Screening", createdAt: "2026-04-01T09:00:00.000Z" },
-  { id: "JOBD003", orgId: "ORGDEMOUI", title: "Data Scientist", department: "Analytics", location: "Hyderabad", priority: "Urgent", applicantCount: 6, stage: "Interview", createdAt: "2026-04-01T09:00:00.000Z" },
-  { id: "JOBD004", orgId: "ORGDEMOUI", title: "UX Researcher", department: "Design", location: "Mumbai", priority: "Normal", applicantCount: 2, stage: "Offer", createdAt: "2026-04-01T09:00:00.000Z" },
-];
-
-export const DEMO_JOINERS: OnboardingJoinerRecord[] = [
-  {
-    id: "ONBD001",
-    orgId: "ORGDEMOUI",
-    name: "Ishaan Verma",
-    role: "ML Engineer",
-    department: "Engineering",
-    startDate: "2026-04-14",
-    progress: 33,
-    avatar: "IV",
-    createdAt: "2026-04-01T09:00:00.000Z",
-    tasks: [
-      { id: "TSKD001", joinerId: "ONBD001", section: "Pre-joining", label: "Offer Letter Signed", done: true, sortOrder: 1 },
-      { id: "TSKD002", joinerId: "ONBD001", section: "Pre-joining", label: "Background Verification", done: true, sortOrder: 2 },
-      { id: "TSKD003", joinerId: "ONBD001", section: "Day 1 Setup", label: "Laptop Assigned", done: true, sortOrder: 3 },
-      { id: "TSKD004", joinerId: "ONBD001", section: "Day 1 Setup", label: "Email and Slack Access", done: false, sortOrder: 4 },
-      { id: "TSKD005", joinerId: "ONBD001", section: "Week 1", label: "HR Induction Session", done: false, sortOrder: 5 },
-      { id: "TSKD006", joinerId: "ONBD001", section: "30-Day Goals", label: "First Project Kickoff", done: false, sortOrder: 6 },
-    ],
-  },
-  {
-    id: "ONBD002",
-    orgId: "ORGDEMOUI",
-    name: "Pooja Hegde",
-    role: "UX Researcher",
-    department: "Design",
-    startDate: "2026-04-07",
-    progress: 67,
-    avatar: "PH",
-    createdAt: "2026-04-01T09:00:00.000Z",
-    tasks: [
-      { id: "TSKD007", joinerId: "ONBD002", section: "Pre-joining", label: "Offer Letter Signed", done: true, sortOrder: 1 },
-      { id: "TSKD008", joinerId: "ONBD002", section: "Pre-joining", label: "Background Verification", done: true, sortOrder: 2 },
-      { id: "TSKD009", joinerId: "ONBD002", section: "Day 1 Setup", label: "Laptop Assigned", done: true, sortOrder: 3 },
-      { id: "TSKD010", joinerId: "ONBD002", section: "Day 1 Setup", label: "Email and Slack Access", done: true, sortOrder: 4 },
-      { id: "TSKD011", joinerId: "ONBD002", section: "Week 1", label: "HR Induction Session", done: true, sortOrder: 5 },
-      { id: "TSKD012", joinerId: "ONBD002", section: "30-Day Goals", label: "First Project Kickoff", done: false, sortOrder: 6 },
-    ],
-  },
-];
-
-export const DEMO_EXITS: ExitProcessRecord[] = [
-  {
-    id: "EXTD001",
-    orgId: "ORGDEMOUI",
-    name: "Rajesh Kumar",
-    employeeCode: "EMP088",
-    role: "Backend Engineer",
-    department: "Engineering",
-    exitType: "Resignation",
-    noticePeriod: "60 days",
-    lastDay: "2026-05-31",
-    progress: 38,
-    reason: "Better opportunity",
-    createdAt: "2026-04-01T09:00:00.000Z",
-    tasks: [
-      { id: "XTKD001", exitId: "EXTD001", label: "Resignation Accepted", done: true, sortOrder: 1 },
-      { id: "XTKD002", exitId: "EXTD001", label: "Notice Period Confirmed", done: true, sortOrder: 2 },
-      { id: "XTKD003", exitId: "EXTD001", label: "Knowledge Transfer Plan", done: true, sortOrder: 3 },
-      { id: "XTKD004", exitId: "EXTD001", label: "Asset Retrieval", done: false, sortOrder: 4 },
-      { id: "XTKD005", exitId: "EXTD001", label: "Access Revocation", done: false, sortOrder: 5 },
-      { id: "XTKD006", exitId: "EXTD001", label: "Exit Interview", done: false, sortOrder: 6 },
-      { id: "XTKD007", exitId: "EXTD001", label: "Full & Final Settlement", done: false, sortOrder: 7 },
-      { id: "XTKD008", exitId: "EXTD001", label: "Experience Letter", done: false, sortOrder: 8 },
-    ],
-  },
-  {
-    id: "EXTD002",
-    orgId: "ORGDEMOUI",
-    name: "Aditi Sharma",
-    employeeCode: "EMP124",
-    role: "Marketing Analyst",
-    department: "Marketing",
-    exitType: "Resignation",
-    noticePeriod: "30 days",
-    lastDay: "2026-04-30",
-    progress: 75,
-    reason: "Higher studies",
-    createdAt: "2026-04-02T09:00:00.000Z",
-    tasks: [
-      { id: "XTKD009", exitId: "EXTD002", label: "Resignation Accepted", done: true, sortOrder: 1 },
-      { id: "XTKD010", exitId: "EXTD002", label: "Notice Period Confirmed", done: true, sortOrder: 2 },
-      { id: "XTKD011", exitId: "EXTD002", label: "Knowledge Transfer Plan", done: true, sortOrder: 3 },
-      { id: "XTKD012", exitId: "EXTD002", label: "Asset Retrieval", done: true, sortOrder: 4 },
-      { id: "XTKD013", exitId: "EXTD002", label: "Access Revocation", done: true, sortOrder: 5 },
-      { id: "XTKD014", exitId: "EXTD002", label: "Exit Interview", done: true, sortOrder: 6 },
-      { id: "XTKD015", exitId: "EXTD002", label: "Full & Final Settlement", done: false, sortOrder: 7 },
-      { id: "XTKD016", exitId: "EXTD002", label: "Experience Letter", done: false, sortOrder: 8 },
-    ],
-  },
-];
-
 function monthYear(value: string): string {
   return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(new Date(value));
 }
@@ -325,21 +213,6 @@ export async function getEmployeesDashboard(db: D1Database, orgId: string) {
   };
 }
 
-export function getDemoEmployeesDashboard() {
-  const active = DEMO_EMPLOYEES.filter((e) => e.status === "Active").length;
-  const onLeave = DEMO_EMPLOYEES.filter((e) => e.status === "On Leave").length;
-  const onboarding = DEMO_EMPLOYEES.filter((e) => e.status === "Onboarding").length;
-  return {
-    employees: DEMO_EMPLOYEES,
-    stats: [
-      { label: "Total", value: String(DEMO_EMPLOYEES.length), color: "#4f46e5" },
-      { label: "Active", value: String(active), color: "#10b981" },
-      { label: "On Leave", value: String(onLeave), color: "#f59e0b" },
-      { label: "Onboarding", value: String(onboarding), color: "#8b5cf6" },
-    ],
-    view: DEMO_EMPLOYEES.map((employee) => ({ ...employee, joinedLabel: monthYear(employee.joinedOn) })),
-  };
-}
 
 export async function listJobOpenings(db: D1Database, orgId: string): Promise<JobOpeningRecord[]> {
   const result = await db
@@ -401,27 +274,6 @@ export async function getRecruitmentDashboard(db: D1Database, orgId: string) {
   return { openings, pipeline };
 }
 
-export function getDemoRecruitmentDashboard() {
-  const openings = DEMO_OPENINGS;
-  const stages = ["Applied", "Screening", "Interview", "Offer"];
-  const colors = ["#7b8099", "#4f46e5", "#f59e0b", "#10b981"];
-  return {
-    openings,
-    pipeline: stages.map((stage, index) => ({
-      stage,
-      color: colors[index],
-      count: openings.filter((opening) => opening.stage === stage).length,
-      roles: openings.filter((opening) => opening.stage === stage).map((role) => ({
-        id: role.id,
-        title: role.title,
-        department: role.department,
-        location: role.location,
-        applicants: role.applicantCount,
-        priority: role.priority,
-      })),
-    })),
-  };
-}
 
 export async function listOnboardingJoiners(db: D1Database, orgId: string): Promise<OnboardingJoinerRecord[]> {
   const joinersResult = await db
@@ -557,31 +409,6 @@ export async function getOnboardingDashboard(db: D1Database, orgId: string) {
   };
 }
 
-export function getDemoOnboardingDashboard() {
-  const joiners = DEMO_JOINERS.map((joiner) => ({
-    ...joiner,
-    startDateLabel: shortDate(joiner.startDate),
-    groupedTasks: joiner.tasks.reduce<Array<{ section: string; items: OnboardingTaskRecord[] }>>((groups, task) => {
-      const existing = groups.find((group) => group.section === task.section);
-      if (existing) {
-        existing.items.push(task);
-      } else {
-        groups.push({ section: task.section, items: [task] });
-      }
-      return groups;
-    }, []),
-  }));
-
-  return {
-    joiners,
-    stats: [
-      { label: "Joining This Month", value: String(joiners.length), sub: new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(new Date()) },
-      { label: "In Progress", value: String(joiners.filter((joiner) => joiner.progress > 0 && joiner.progress < 100).length), sub: "Active onboarding" },
-      { label: "Completed", value: String(joiners.filter((joiner) => joiner.progress >= 100).length), sub: "Fully onboarded" },
-      { label: "Avg Completion", value: `${joiners.length ? Math.round(joiners.reduce((sum, joiner) => sum + joiner.progress, 0) / joiners.length) : 0}%`, sub: "Across all joiners" },
-    ],
-  };
-}
 
 export async function listExitProcesses(db: D1Database, orgId: string): Promise<ExitProcessRecord[]> {
   const exitsResult = await db
@@ -713,6 +540,3 @@ export async function getExitDashboard(db: D1Database, orgId: string) {
   return { exits };
 }
 
-export function getDemoExitDashboard() {
-  return { exits: DEMO_EXITS };
-}

@@ -22,6 +22,7 @@ function formatTime(seconds: number): string {
 export default function Register() {
   const navigate = useNavigate();
 
+  const [companyName, setCompanyName] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -81,6 +82,7 @@ export default function Register() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          companyName: companyName.trim(),
           name: name.trim(),
           email: email.trim().toLowerCase(),
           password,
@@ -113,8 +115,8 @@ export default function Register() {
   async function handleSendOtp(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!name.trim() || !email.trim() || !password.trim()) {
-      setAlert({ kind: "error", message: "Name, email, and password are required." });
+    if (!companyName.trim() || !name.trim() || !email.trim() || !password.trim()) {
+      setAlert({ kind: "error", message: "Company name, admin name, email, and password are required." });
       return;
     }
     if (password.trim().length < 8) {
@@ -198,7 +200,7 @@ export default function Register() {
 
           <div className="reg-steps">
             {[
-              { n: "1", title: "Enter details", desc: "Name, email, and password" },
+              { n: "1", title: "Enter details", desc: "Company name, admin name, email, and password" },
               { n: "2", title: "Verify email", desc: "Receive 6-digit OTP via Microsoft 365" },
               { n: "3", title: "Sign in", desc: "Use your verified account" },
             ].map((step) => (
@@ -248,6 +250,18 @@ export default function Register() {
           {/* ── Step 1: collect details ── */}
           {!otpRequested ? (
             <form onSubmit={handleSendOtp} className="reg-form">
+              <div className="reg-field">
+                <label className="reg-label">Company Name</label>
+                <input
+                  name="companyName"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  placeholder="Acme Technologies Pvt Ltd"
+                  className="reg-input"
+                  autoComplete="organization"
+                />
+              </div>
+
               <div className="reg-field">
                 <label className="reg-label">Name</label>
                 <input
@@ -580,3 +594,4 @@ export default function Register() {
     </div>
   );
 }
+
