@@ -1,0 +1,10 @@
+- [x] Add temporary dev-only login diagnostic endpoint in workers/app.ts
+- [ ] Run diagnostic request for target email to identify failure point
+- [ ] Apply minimal fix (data/password reset path) based on diagnostic result
+- [ ] Re-test POST /api/auth/login (JSON success path)
+- [ ] Re-test GET /api/company/usage with Bearer token
+- [ ] Re-test POST /api/employees under-limit success path
+- [ ] Re-test POST /api/employees free-plan limit-reached path (HTTP 400 + exact message)
+- [ ] Check invite-create flow route availability and verify pre-send limit/expiry behavior
+- [ ] Verify admin-only and company_id scoping on affected endpoints
+- [ ] Remove/disable temporary diagnostic endpoint
