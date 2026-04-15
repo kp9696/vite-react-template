@@ -797,6 +797,41 @@ async function handleApiGetCompany(request: Request, env: Env): Promise<Response
   return apiJson(request, env, { ...company, employee_count: count?.cnt ?? 0 });
 }
 
+async function handleApiCompanyUsage(request: Request, env: Env): Promise<Response> {
+  const auth = await requireApiAuth(request, env);
+  if (!auth) {
+    return apiJson(request, env, { error: "Unauthorized." }, 401);
+  }
+
+  const company = await env.HRMS
+    .prepare(
+      `SELECT id, plan, employee_limit, subscription_status
+       FROM companies WHERE owner_id = ? LIMIT 1`,
+    )
+    .bind(auth.email)
+    .first<{ id: string; plan: string; employee_limit: number; subscription_status: string }>();
+
+  if (!company) {
+    return apiJson(request, env, { error: "Company not found." }, 404);
+  }
+
+  const countRow = await env.HRMS
+    .prepare(`SELECT COUNT(*) as cnt FROM saas_employees WHERE company_id = ?`)
+    .bind(company.id)
+    .first<{ cnt: number }>();
+
+  const total_employees = countRow?.cnt ?? 0;
+  const remaining_slots = Math.max(company.employee_limit - total_employees, 0);
+
+  return apiJson(request, env, {
+    total_employees,
+    employee_limit: company.employee_limit,
+    remaining_slots,
+    plan: company.plan,
+    subscription_status: company.subscription_status,
+  });
+}
+
 async function handleApiGetEmployees(request: Request, env: Env): Promise<Response> {
   const auth = await requireApiAuth(request, env);
   if (!auth) {
@@ -836,12 +871,19 @@ async function handleApiAddEmployee(request: Request, env: Env): Promise<Respons
   }
 
   const company = await env.HRMS
-    .prepare(`SELECT id, employee_limit FROM companies WHERE owner_id = ? LIMIT 1`)
+    .prepare(
+      `SELECT id, plan, employee_limit, subscription_status
+       FROM companies WHERE owner_id = ? LIMIT 1`,
+    )
     .bind(auth.email)
-    .first<{ id: string; employee_limit: number }>();
+    .first<{ id: string; plan: string; employee_limit: number; subscription_status: string }>();
 
   if (!company) {
     return apiJson(request, env, { error: "Company not found." }, 404);
+  }
+
+  if (company.subscription_status !== "active") {
+    return apiJson(request, env, { error: "Subscription inactive. Please renew to add employees." }, 400);
   }
 
   const countRow = await env.HRMS
@@ -850,12 +892,12 @@ async function handleApiAddEmployee(request: Request, env: Env): Promise<Respons
     .first<{ cnt: number }>();
 
   const current = countRow?.cnt ?? 0;
-  if (current >= company.employee_limit) {
+  if (company.plan === "free" && current >= company.employee_limit) {
     return apiJson(
       request,
       env,
-      { error: `Employee limit reached (${company.employee_limit} on your plan).` },
-      403,
+      { error: "Employee limit reached. Upgrade to add more employees." },
+      400,
     );
   }
 
@@ -1049,6 +1091,10 @@ export default {
 
     if (method === "GET" && pathname === "/api/company") {
       return handleApiGetCompany(request, env);
+    }
+
+    if (method === "GET" && pathname === "/api/company/usage") {
+      return handleApiCompanyUsage(request, env);
     }
 
     if (method === "GET" && pathname === "/api/employees") {

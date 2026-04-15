@@ -47,73 +47,68 @@ export default function HRMSDashboard() {
           : "Your dashboard is powered by live D1 data from Cloudflare."}
       </div>
 
-      {/* ── Company Plan Banner ──────────────────────────────────────── */}
+      {/* ── Company Plan / Employee Usage Card ──────────────────────── */}
       {company ? (
-        <div style={{
-          background: atLimit ? "#fff7ed" : "linear-gradient(135deg,#f8fafc 0%,#eef2ff 100%)",
-          border: `1.5px solid ${atLimit ? "#fed7aa" : "#e0e7ff"}`,
-          borderRadius: 12,
-          padding: "14px 20px",
-          marginBottom: 24,
-          display: "flex",
-          alignItems: "center",
-          gap: 20,
-          flexWrap: "wrap",
-        }}>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>
-                {company.company_name}
-              </span>
-              <span style={{
-                fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 99,
-                textTransform: "uppercase" as const, letterSpacing: "0.5px",
-                background: company.plan === "free" ? "#f1f5f9" : company.plan === "pro" ? "#ede9fe" : "#dcfce7",
-                color: company.plan === "free" ? "#64748b" : company.plan === "pro" ? "#7c3aed" : "#15803d",
-              }}>
+        <div
+          className={`mb-6 rounded-xl bg-white p-4 shadow flex flex-wrap items-center gap-5 border ${
+            atLimit ? "border-red-200 bg-red-50" : "border-slate-200"
+          }`}
+        >
+          <div className="flex-1 min-w-[240px]">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-sm font-bold text-slate-800">{company.company_name}</span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                  company.plan === "free"
+                    ? "bg-slate-100 text-slate-600"
+                    : company.plan === "pro"
+                    ? "bg-violet-100 text-violet-700"
+                    : "bg-emerald-100 text-emerald-700"
+                }`}
+              >
                 {company.plan}
               </span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 160, height: 6, background: "#e2e8f0", borderRadius: 99, overflow: "hidden" }}>
-                <div style={{
-                  width: `${usagePct}%`, height: "100%", borderRadius: 99,
-                  background: atLimit ? "#f97316" : usagePct > 70 ? "#f59e0b" : "#6366f1",
-                  transition: "width 0.4s ease",
-                }} />
+
+            <div className="text-xs font-semibold text-slate-700 mb-1">Employee Usage</div>
+            <div className="flex items-center gap-3">
+              <div className="w-40 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-300 ${
+                    atLimit ? "bg-orange-500" : usagePct > 70 ? "bg-amber-500" : "bg-indigo-500"
+                  }`}
+                  style={{ width: `${usagePct}%` }}
+                />
               </div>
-              <span style={{ fontSize: 12, fontWeight: 600, color: atLimit ? "#ea580c" : "var(--ink-2)" }}>
-                {usedCount} / {limitCount} employees
+              <span
+                className={`text-xs font-semibold ${
+                  atLimit ? "text-orange-600" : "text-slate-600"
+                }`}
+              >
+                {usedCount} / {limitCount} employees used
               </span>
             </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {atLimit ? (
-              <a
-                href="mailto:info@jwithkp.com?subject=Upgrade HRMS Plan"
-                style={{
-                  padding: "7px 16px",
-                  background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
-                  color: "white", borderRadius: 8, textDecoration: "none",
-                  fontSize: 12, fontWeight: 700,
-                }}
-              >
-                Upgrade Plan
-              </a>
-            ) : (
-              <Link
-                to="/hrms/employees"
-                style={{
-                  padding: "7px 16px",
-                  background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
-                  color: "white", borderRadius: 8, textDecoration: "none",
-                  fontSize: 12, fontWeight: 700,
-                }}
-              >
-                Manage Employees
-              </Link>
+
+            {atLimit && (
+              <p className="text-red-500 text-sm mt-2">You have reached your employee limit</p>
             )}
           </div>
+
+          {atLimit ? (
+            <a
+              href="mailto:info@jwithkp.com?subject=Upgrade HRMS Plan"
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-semibold text-xs no-underline"
+            >
+              Upgrade Plan
+            </a>
+          ) : (
+            <Link
+              to="/hrms/employees"
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-semibold text-xs no-underline"
+            >
+              Manage Employees
+            </Link>
+          )}
         </div>
       ) : null}
 

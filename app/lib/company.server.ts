@@ -130,19 +130,26 @@ export async function addSaasEmployee(
   db: D1Database,
   input: AddSaasEmployeeInput,
 ): Promise<{ ok: true; employee: SaasEmployee } | { ok: false; error: string }> {
-  // Check limit
+  // Check plan, subscription, and employee limit
   const company = await db
-    .prepare(`SELECT employee_limit FROM companies WHERE id = ? LIMIT 1`)
+    .prepare(
+      `SELECT plan, employee_limit, subscription_status
+       FROM companies WHERE id = ? LIMIT 1`,
+    )
     .bind(input.companyId)
-    .first<{ employee_limit: number }>();
+    .first<{ plan: string; employee_limit: number; subscription_status: string }>();
 
   if (!company) return { ok: false, error: "Company not found." };
 
+  if (company.subscription_status !== "active") {
+    return { ok: false, error: "Subscription inactive. Please renew to add employees." };
+  }
+
   const count = await getSaasEmployeeCount(db, input.companyId);
-  if (count >= company.employee_limit) {
+  if (company.plan === "free" && count >= company.employee_limit) {
     return {
       ok: false,
-      error: `Employee limit reached (${company.employee_limit} on your current plan). Please upgrade to add more.`,
+      error: "Employee limit reached. Upgrade to add more employees.",
     };
   }
 

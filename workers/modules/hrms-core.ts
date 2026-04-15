@@ -644,9 +644,40 @@ async function handleCreateInvitation(request: Request, env: Env, user: ApiUser)
     return json(request, env, { error: "Valid email is required." }, 400);
   }
 
+  // ── SaaS free-plan employee-limit enforcement ──
+  const company = await env.HRMS
+    .prepare(
+      `SELECT id, plan, employee_limit, subscription_status
+       FROM companies WHERE owner_id = ? LIMIT 1`,
+    )
+    .bind(user.email)
+    .first<{ id: string; plan: string; employee_limit: number; subscription_status: string }>();
+
+  if (company) {
+    if (company.subscription_status !== "active") {
+      return json(request, env, { error: "Subscription inactive. Please renew to invite employees." }, 400);
+    }
+
+    const countRow = await env.HRMS
+      .prepare(`SELECT COUNT(*) as cnt FROM saas_employees WHERE company_id = ?`)
+      .bind(company.id)
+      .first<{ cnt: number }>();
+
+    const current = countRow?.cnt ?? 0;
+    if (company.plan === "free" && current >= company.employee_limit) {
+      return json(
+        request,
+        env,
+        { error: "Employee limit reached. Upgrade to add more employees." },
+        400,
+      );
+    }
+  }
+  // ── end enforcement ──
+
   const role = body?.role?.trim() || "Employee";
   const department = body?.department?.trim() || "General";
-  const expiresHours = Math.min(Math.max(Math.floor(body?.expiresHours ?? 48), 1), 168);
+  const expiresHours = Math.min(Math.max(Math.floor(body?.expiresHours ?? 24), 1), 168);
   const nowEpoch = Math.floor(Date.now() / 1000);
   const expiresAt = nowEpoch + expiresHours * 60 * 60;
 
