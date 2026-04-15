@@ -5,15 +5,14 @@ interface LimitState {
   retryAfter: number;
 }
 
-// Cloudflare KV requires expiration_ttl to be at least 60 seconds.
-const LOCK_TTL_SECONDS = 60;
-const LOCK_RETRIES = 3;
-
 function windowKey(prefix: string, identifier: string, windowSeconds: number): string {
   const bucket = Math.floor(Date.now() / 1000 / windowSeconds);
   return `${prefix}:${identifier}:${bucket}`;
 }
 
+// Best-effort read-modify-write counter. Cloudflare KV is eventually consistent,
+// so we intentionally avoid a mutex — rate limits tolerate small over/undercounts
+// under concurrent load, and a KV-based CAS lock produces spurious 429s.
 async function hitWindow(
   kv: KVNamespace,
   prefix: string,
@@ -22,34 +21,11 @@ async function hitWindow(
   limit: number,
 ): Promise<LimitState> {
   const key = windowKey(prefix, identifier, windowSeconds);
-  const lockKey = `${key}:lock`;
-  const owner = crypto.randomUUID();
-
-  let acquired = false;
-  for (let i = 0; i < LOCK_RETRIES; i++) {
-    await kv.put(lockKey, owner, { expirationTtl: LOCK_TTL_SECONDS });
-    const lockValue = await kv.get(lockKey);
-    if (lockValue === owner) {
-      acquired = true;
-      break;
-    }
-  }
-
-  if (!acquired) {
-    return {
-      allowed: false,
-      limit,
-      count: limit + 1,
-      retryAfter: LOCK_TTL_SECONDS,
-    };
-  }
-
   const raw = await kv.get(key);
   const current = raw ? parseInt(raw, 10) : 0;
   const next = current + 1;
 
   await kv.put(key, String(next), { expirationTtl: windowSeconds + 30 });
-  await kv.delete(lockKey);
 
   return {
     allowed: next <= limit,

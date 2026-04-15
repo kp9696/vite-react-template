@@ -234,6 +234,120 @@ function buildOtpEmailHtml(name: string, otpCode: string): string {
 </html>`;
 }
 
+function buildResetEmailHtml(name: string, otpCode: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f1f5fd;font-family:Arial,'Helvetica Neue',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5fd;padding:48px 20px;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:520px;" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="background:linear-gradient(135deg,#141929 0%,#1e2640 100%);padding:28px 32px;border-radius:16px 16px 0 0;text-align:center;">
+            <div style="display:inline-block;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;font-weight:800;font-size:16px;padding:10px 20px;border-radius:10px;">JK</div>
+            <div style="color:rgba(255,255,255,0.5);font-size:11px;margin-top:8px;letter-spacing:1.5px;text-transform:uppercase;">JWithKP HRMS</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:white;padding:36px 32px;border-radius:0 0 16px 16px;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+            <h1 style="margin:0 0 10px;font-size:22px;color:#0f172a;font-weight:800;">Reset your password</h1>
+            <p style="margin:0 0 28px;color:#64748b;line-height:1.75;font-size:14px;">Hi <strong>${name}</strong>, use the one-time code below to reset your JWithKP HRMS password. If you did not request this, you can safely ignore this email.</p>
+            <div style="background:#eef2ff;border:1.5px solid #c7d2fe;border-radius:14px;padding:22px;text-align:center;margin-bottom:24px;">
+              <div style="font-size:38px;letter-spacing:12px;font-weight:800;color:#4f46e5;font-family:'Courier New',monospace;">${otpCode}</div>
+            </div>
+            <p style="margin:0;color:#64748b;font-size:12.5px;line-height:1.7;">This code expires in <strong>5 minutes</strong>.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+async function sendResetPasswordEmail(
+  env: Env,
+  name: string,
+  email: string,
+  otpCode: string,
+): Promise<void> {
+  const subject = "Your JWithKP HRMS password reset code";
+  const html = buildResetEmailHtml(name, otpCode);
+  const text = `Hi ${name}, your password reset code is ${otpCode}. It expires in 5 minutes. If you did not request this, please ignore this email.`;
+
+  if (env.RESEND_API_KEY) {
+    const resendResponse = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: env.MS_FROM_EMAIL ?? "info@jwithkp.com",
+        to: [email],
+        subject,
+        html,
+        text,
+      }),
+    });
+
+    if (!resendResponse.ok) {
+      throw new Error(`Resend error: ${await resendResponse.text()}`);
+    }
+    return;
+  }
+
+  if (hasMicrosoftGraphConfig(env)) {
+    const token = await getMicrosoftGraphToken(env);
+    const from = env.MS_FROM_EMAIL ?? "info@jwithkp.com";
+
+    const response = await fetch(`https://graph.microsoft.com/v1.0/users/${from}/sendMail`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: {
+          subject,
+          body: { contentType: "HTML", content: html },
+          toRecipients: [{ emailAddress: { address: email } }],
+        },
+        saveToSentItems: false,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Microsoft Graph email error: ${await response.text()}`);
+    }
+    return;
+  }
+
+  if (!env.EMAIL_API_URL || !env.API_KEY) {
+    throw new Error("No email provider configured.");
+  }
+
+  const bridgeResponse = await fetch(env.EMAIL_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${env.API_KEY}`,
+      "x-api-key": env.API_KEY,
+    },
+    body: JSON.stringify({
+      from: "info@jwithkp.com",
+      to: email,
+      subject,
+      text,
+      html,
+    }),
+  });
+
+  if (!bridgeResponse.ok) {
+    throw new Error(`Email bridge error: ${await bridgeResponse.text()}`);
+  }
+}
+
 async function sendSignupOtpEmail(
   env: Env,
   input: SendSignupOtpInput,
@@ -933,6 +1047,14 @@ async function handleApiAddEmployee(request: Request, env: Env): Promise<Respons
 }
 
 async function handleForgotPassword(request: Request, env: Env): Promise<Response> {
+  const ip = extractClientIp(request);
+  const ipLimit = await enforceOtpIpRateLimit(env.OTP_STORE, ip);
+  if (!ipLimit.ok) {
+    return apiJson(request, env, { error: ipLimit.message }, 429, {
+      "Retry-After": String(ipLimit.retryAfter),
+    });
+  }
+
   const body = await readJsonBody<{ email: string }>(request);
   const email = normalizeEmail(body?.email ?? "");
 
@@ -964,11 +1086,7 @@ async function handleForgotPassword(request: Request, env: Env): Promise<Respons
   await startResetResendCooldown(env.OTP_STORE, email);
 
   try {
-    await sendSignupOtpEmail(
-      env,
-      { name: authUser.name, companyName: "", email, password: "" },
-      otp,
-    );
+    await sendResetPasswordEmail(env, authUser.name, email, otp);
   } catch {
     await deleteResetOtp(env.OTP_STORE, email);
     return apiJson(request, env, { error: "Failed to send reset code. Please try again." }, 502);
@@ -978,6 +1096,14 @@ async function handleForgotPassword(request: Request, env: Env): Promise<Respons
 }
 
 async function handleResetPassword(request: Request, env: Env): Promise<Response> {
+  const ip = extractClientIp(request);
+  const ipLimit = await enforceOtpIpRateLimit(env.OTP_STORE, ip);
+  if (!ipLimit.ok) {
+    return apiJson(request, env, { error: ipLimit.message }, 429, {
+      "Retry-After": String(ipLimit.retryAfter),
+    });
+  }
+
   const body = await readJsonBody<{ email: string; otp: string; password: string }>(request);
   const email = normalizeEmail(body?.email ?? "");
   const otp = (body?.otp ?? "").trim();
