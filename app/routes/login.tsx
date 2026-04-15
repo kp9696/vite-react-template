@@ -2,7 +2,7 @@ import { Form, redirect, useActionData, useLoaderData, useNavigation } from "rea
 import type { Route } from "./+types/login";
 import { consumeInviteToken } from "../lib/invite-token.server";
 import { activateInvitedUser, getUserById } from "../lib/hrms.server";
-import { clearRefreshCookie, createAuthSessionCookie, destroyAuthSession } from "../lib/jwt-auth.server";
+import { clearRefreshCookie, createAuthSessionCookie, destroyAuthSession, loginWithPassword } from "../lib/jwt-auth.server";
 
 type ActionData = {
   error?: string;
@@ -58,31 +58,19 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { error: "Email and password are required." } satisfies ActionData;
     }
 
-    const apiResponse = await fetch(new URL("/api/auth/login", request.url).toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": request.headers.get("User-Agent") || "",
-        "CF-Connecting-IP": request.headers.get("CF-Connecting-IP") || "",
-        "X-Forwarded-For": request.headers.get("X-Forwarded-For") || "",
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    const result = await loginWithPassword(
+      context.cloudflare.env,
+      email,
+      password,
+      request,
+    );
 
-    const payload = (await apiResponse.json().catch(() => ({}))) as { error?: string };
-    if (!apiResponse.ok) {
-      return { error: payload.error || `Login failed (status ${apiResponse.status}). Please try again.` } satisfies ActionData;
-    }
-
-    const setCookie = apiResponse.headers.get("Set-Cookie");
-    if (!setCookie) {
-      return { error: "Login session could not be established." } satisfies ActionData;
+    if (!result.ok) {
+      return { error: result.error } satisfies ActionData;
     }
 
     return redirect("/hrms", {
-      headers: {
-        "Set-Cookie": setCookie,
-      },
+      headers: { "Set-Cookie": result.setCookie },
     });
   }
 
