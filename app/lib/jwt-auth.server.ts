@@ -228,21 +228,31 @@ export async function loginWithPassword(
     return { ok: false, error: "Invalid credentials.", status: 401 };
   }
 
+  const companyCol = await env.HRMS
+    .prepare(`SELECT 1 AS c FROM pragma_table_info('users') WHERE name='company_id' LIMIT 1`)
+    .first<{ c: number }>();
   const orgCol = await env.HRMS
     .prepare(`SELECT 1 AS c FROM pragma_table_info('users') WHERE name='org_id' LIMIT 1`)
     .first<{ c: number }>();
+  const hasCompanyId = Boolean(companyCol?.c);
   const hasOrgId = Boolean(orgCol?.c);
 
-  const hrUser = hasOrgId
+  const hrUser = hasCompanyId
     ? await env.HRMS
-        .prepare(`SELECT id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+        .prepare(`SELECT id, company_id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
         .bind(normalizedEmail)
-        .first<{ id: string; org_id: string | null; role: string }>()
-    : await env.HRMS
-        .prepare(`SELECT id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
-        .bind(normalizedEmail)
-        .first<{ id: string; role: string }>()
-        .then(r => r ? { ...r, org_id: null } : null);
+        .first<{ id: string; company_id: string | null; org_id: string | null; role: string }>()
+    : hasOrgId
+      ? await env.HRMS
+          .prepare(`SELECT id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+          .bind(normalizedEmail)
+          .first<{ id: string; org_id: string | null; role: string }>()
+          .then((r) => (r ? { ...r, company_id: r.org_id ?? null } : null))
+      : await env.HRMS
+          .prepare(`SELECT id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+          .bind(normalizedEmail)
+          .first<{ id: string; role: string }>()
+          .then((r) => (r ? { ...r, org_id: null, company_id: null } : null));
 
   if (!hrUser) {
     return { ok: false, error: "User profile is missing. Contact support.", status: 403 };
@@ -253,7 +263,7 @@ export async function loginWithPassword(
     return { ok: false, error: "Invalid credentials.", status: 401 };
   }
 
-  const tenantId = hrUser.org_id ?? "NO_TENANT";
+  const tenantId = hrUser.company_id ?? hrUser.org_id ?? "NO_TENANT";
   const accessToken = await createAccessToken(
     normalizedEmail, authUser.name, hrUser.id, tenantId, hrUser.role, secret,
   );

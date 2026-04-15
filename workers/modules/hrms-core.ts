@@ -106,10 +106,21 @@ async function usersTableHasOrgId(db: D1Database): Promise<boolean> {
   }
 }
 
-async function getEmployeeCount(db: D1Database, orgId: string): Promise<number> {
+async function usersTableHasCompanyId(db: D1Database): Promise<boolean> {
+  try {
+    const column = await db
+      .prepare("SELECT 1 AS has_col FROM pragma_table_info('users') WHERE name = 'company_id' LIMIT 1")
+      .first<{ has_col: number }>();
+    return Boolean(column?.has_col);
+  } catch {
+    return false;
+  }
+}
+
+async function getEmployeeCount(db: D1Database, companyId: string): Promise<number> {
   const row = await db
-    .prepare("SELECT COUNT(*) as cnt FROM employees WHERE org_id = ?")
-    .bind(orgId)
+    .prepare("SELECT COUNT(*) as cnt FROM employees WHERE COALESCE(company_id, org_id) = ?")
+    .bind(companyId)
     .first<{ cnt: number }>();
 
   if (typeof row?.cnt === "number") {
@@ -117,8 +128,8 @@ async function getEmployeeCount(db: D1Database, orgId: string): Promise<number> 
   }
 
   const fallback = await db
-    .prepare("SELECT COUNT(*) as cnt FROM users WHERE org_id = ?")
-    .bind(orgId)
+    .prepare("SELECT COUNT(*) as cnt FROM users WHERE COALESCE(company_id, org_id) = ?")
+    .bind(companyId)
     .first<{ cnt: number }>();
 
   return fallback?.cnt ?? 0;
@@ -130,11 +141,11 @@ async function handleDashboardSummary(request: Request, env: Env, user: ApiUser)
   const [employees, present, pendingLeaves, assetsAssigned] = await Promise.all([
     getEmployeeCount(env.HRMS, user.tenantId),
     env.HRMS
-      .prepare("SELECT COUNT(*) as cnt FROM attendance WHERE org_id = ? AND attendance_date = ?")
+      .prepare("SELECT COUNT(*) as cnt FROM attendance WHERE COALESCE(company_id, org_id) = ? AND attendance_date = ?")
       .bind(user.tenantId, date)
       .first<{ cnt: number }>(),
     env.HRMS
-      .prepare("SELECT COUNT(*) as cnt FROM leaves WHERE org_id = ? AND status = 'pending'")
+      .prepare("SELECT COUNT(*) as cnt FROM leaves WHERE COALESCE(company_id, org_id) = ? AND status = 'pending'")
       .bind(user.tenantId)
       .first<{ cnt: number }>(),
     env.HRMS
@@ -162,7 +173,7 @@ async function handleAttendanceCheckIn(request: Request, env: Env, user: ApiUser
   const geo = payload?.geo?.trim() || null;
 
   const existing = await env.HRMS
-    .prepare("SELECT id, check_in_at FROM attendance WHERE org_id = ? AND user_id = ? AND attendance_date = ? LIMIT 1")
+    .prepare("SELECT id, check_in_at FROM attendance WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND attendance_date = ? LIMIT 1")
     .bind(user.tenantId, user.userId, date)
     .first<{ id: string; check_in_at: string | null }>();
 
@@ -182,10 +193,10 @@ async function handleAttendanceCheckIn(request: Request, env: Env, user: ApiUser
   } else {
     await env.HRMS
       .prepare(
-        `INSERT INTO attendance (id, org_id, user_id, attendance_date, check_in_at, check_in_ip, check_in_geo, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?, ?)`,
+        `INSERT INTO attendance (id, company_id, org_id, user_id, attendance_date, check_in_at, check_in_ip, check_in_geo, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'present', ?, ?)`,
       )
-      .bind(crypto.randomUUID(), user.tenantId, user.userId, date, now, ip, geo, now, now)
+      .bind(crypto.randomUUID(), user.tenantId, user.tenantId, user.userId, date, now, ip, geo, now, now)
       .run();
   }
 
@@ -200,7 +211,7 @@ async function handleAttendanceCheckOut(request: Request, env: Env, user: ApiUse
   const geo = payload?.geo?.trim() || null;
 
   const existing = await env.HRMS
-    .prepare("SELECT id, check_in_at, check_out_at FROM attendance WHERE org_id = ? AND user_id = ? AND attendance_date = ? LIMIT 1")
+    .prepare("SELECT id, check_in_at, check_out_at FROM attendance WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND attendance_date = ? LIMIT 1")
     .bind(user.tenantId, user.userId, date)
     .first<{ id: string; check_in_at: string | null; check_out_at: string | null }>();
 
@@ -237,7 +248,7 @@ async function handleAttendanceToday(request: Request, env: Env, user: ApiUser):
               users.name, users.email
        FROM attendance
        LEFT JOIN users ON users.id = attendance.user_id
-       WHERE attendance.org_id = ? AND attendance.attendance_date = ?
+      WHERE COALESCE(attendance.company_id, attendance.org_id) = ? AND attendance.attendance_date = ?
        ORDER BY attendance.check_in_at DESC`,
     )
     .bind(user.tenantId, date)
@@ -248,7 +259,7 @@ async function handleAttendanceToday(request: Request, env: Env, user: ApiUser):
 
 async function upsertLeaveBalance(
   db: D1Database,
-  orgId: string,
+  companyId: string,
   userId: string,
   leaveType: string,
   year: number,
@@ -256,12 +267,12 @@ async function upsertLeaveBalance(
   const total = DEFAULT_LEAVE_TOTALS[leaveType] ?? 12;
   await db
     .prepare(
-      `INSERT INTO leave_balances (id, org_id, user_id, leave_type, year, total, used, pending, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)
+      `INSERT INTO leave_balances (id, company_id, org_id, user_id, leave_type, year, total, used, pending, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
        ON CONFLICT(org_id, user_id, leave_type, year)
        DO NOTHING`,
     )
-    .bind(crypto.randomUUID(), orgId, userId, leaveType, year, total, nowIso())
+    .bind(crypto.randomUUID(), companyId, companyId, userId, leaveType, year, total, nowIso())
     .run();
 }
 
@@ -298,12 +309,13 @@ async function handleApplyLeave(request: Request, env: Env, user: ApiUser): Prom
   await env.HRMS
     .prepare(
       `INSERT INTO leaves (
-         id, org_id, user_id, leave_type, start_date, end_date, total_days, reason,
+         id, company_id, org_id, user_id, leave_type, start_date, end_date, total_days, reason,
          status, approver_user_id, decision_note, decided_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)`,
     )
     .bind(
       leaveId,
+      user.tenantId,
       user.tenantId,
       effectiveUserId,
       body.leaveType.trim(),
@@ -320,7 +332,7 @@ async function handleApplyLeave(request: Request, env: Env, user: ApiUser): Prom
     .prepare(
       `UPDATE leave_balances
        SET pending = pending + ?, updated_at = ?
-       WHERE org_id = ? AND user_id = ? AND leave_type = ? AND year = ?`,
+        WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND leave_type = ? AND year = ?`,
     )
     .bind(totalDays, now, user.tenantId, effectiveUserId, body.leaveType.trim(), year)
     .run();
@@ -341,7 +353,7 @@ async function handleListLeaves(request: Request, env: Env, user: ApiUser): Prom
             leaves.created_at, users.name, users.email
      FROM leaves
      LEFT JOIN users ON users.id = leaves.user_id
-     WHERE leaves.org_id = ?`;
+    WHERE COALESCE(leaves.company_id, leaves.org_id) = ?`;
 
   const binds: Array<string | number> = [user.tenantId];
 
@@ -380,12 +392,12 @@ async function handleLeaveDecision(
 
   const leave = await env.HRMS
     .prepare(
-      `SELECT id, org_id, user_id, leave_type, start_date, total_days, status
+      `SELECT id, company_id, org_id, user_id, leave_type, start_date, total_days, status
        FROM leaves
-       WHERE id = ? AND org_id = ? LIMIT 1`,
+       WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`,
     )
     .bind(leaveId, user.tenantId)
-    .first<{ id: string; org_id: string; user_id: string; leave_type: string; start_date: string; total_days: number; status: string }>();
+     .first<{ id: string; company_id: string | null; org_id: string; user_id: string; leave_type: string; start_date: string; total_days: number; status: string }>();
 
   if (!leave) {
     return json(request, env, { error: "Leave request not found." }, 404);
@@ -415,7 +427,7 @@ async function handleLeaveDecision(
          SET pending = CASE WHEN pending >= ? THEN pending - ? ELSE 0 END,
              used = used + ?,
              updated_at = ?
-         WHERE org_id = ? AND user_id = ? AND leave_type = ? AND year = ?`,
+         WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND leave_type = ? AND year = ?`,
       )
       .bind(leave.total_days, leave.total_days, leave.total_days, now, user.tenantId, leave.user_id, leave.leave_type, year)
       .run();
@@ -425,7 +437,7 @@ async function handleLeaveDecision(
         `UPDATE leave_balances
          SET pending = CASE WHEN pending >= ? THEN pending - ? ELSE 0 END,
              updated_at = ?
-         WHERE org_id = ? AND user_id = ? AND leave_type = ? AND year = ?`,
+         WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND leave_type = ? AND year = ?`,
       )
       .bind(leave.total_days, leave.total_days, now, user.tenantId, leave.user_id, leave.leave_type, year)
       .run();
@@ -443,7 +455,7 @@ async function handleLeaveBalance(request: Request, env: Env, user: ApiUser): Pr
     .prepare(
       `SELECT leave_type, total, used, pending, (total - used - pending) AS remaining
        FROM leave_balances
-       WHERE org_id = ? AND user_id = ? AND year = ?
+        WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND year = ?
        ORDER BY leave_type ASC`,
     )
     .bind(user.tenantId, targetUserId, year)
@@ -464,7 +476,7 @@ async function handleListAssets(request: Request, env: Env, user: ApiUser): Prom
         AND asset_assignments.status = 'assigned'
        LEFT JOIN users
          ON users.id = asset_assignments.user_id
-       WHERE assets.org_id = ?
+       WHERE COALESCE(assets.company_id, assets.org_id) = ?
        ORDER BY datetime(assets.created_at) DESC`,
     )
     .bind(user.tenantId)
@@ -497,11 +509,12 @@ async function handleCreateAsset(request: Request, env: Env, user: ApiUser): Pro
   try {
     await env.HRMS
       .prepare(
-        `INSERT INTO assets (id, org_id, asset_tag, name, category, serial_no, purchase_date, status, condition, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, ?)`,
+        `INSERT INTO assets (id, company_id, org_id, asset_tag, name, category, serial_no, purchase_date, status, condition, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, ?)`,
       )
       .bind(
         id,
+        user.tenantId,
         user.tenantId,
         body.assetTag.trim(),
         body.name.trim(),
@@ -537,7 +550,7 @@ async function handleAssignAsset(assetId: string, request: Request, env: Env, us
       .prepare(
         `SELECT id
          FROM users
-         WHERE org_id = ? AND lower(name) = lower(?)
+        WHERE COALESCE(company_id, org_id) = ? AND lower(name) = lower(?)
          LIMIT 1`,
       )
       .bind(user.tenantId, body.assigneeName.trim())
@@ -551,7 +564,7 @@ async function handleAssignAsset(assetId: string, request: Request, env: Env, us
 
   const now = nowIso();
   const asset = await env.HRMS
-    .prepare("SELECT id, status FROM assets WHERE id = ? AND org_id = ? LIMIT 1")
+    .prepare("SELECT id, status FROM assets WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1")
     .bind(assetId, user.tenantId)
     .first<{ id: string; status: string }>();
 
@@ -565,10 +578,10 @@ async function handleAssignAsset(assetId: string, request: Request, env: Env, us
 
   await env.HRMS
     .prepare(
-      `INSERT INTO asset_assignments (id, org_id, asset_id, user_id, assigned_by, assigned_at, revoked_at, revoke_reason, status)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'assigned')`,
+      `INSERT INTO asset_assignments (id, company_id, org_id, asset_id, user_id, assigned_by, assigned_at, revoked_at, revoke_reason, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'assigned')`,
     )
-    .bind(crypto.randomUUID(), user.tenantId, assetId, targetUserId, user.userId, now)
+    .bind(crypto.randomUUID(), user.tenantId, user.tenantId, assetId, targetUserId, user.userId, now)
     .run();
 
   await env.HRMS
@@ -591,7 +604,7 @@ async function handleRevokeAsset(assetId: string, request: Request, env: Env, us
     .prepare(
       `SELECT id
        FROM asset_assignments
-       WHERE asset_id = ? AND org_id = ? AND status = 'assigned'
+       WHERE asset_id = ? AND COALESCE(company_id, org_id) = ? AND status = 'assigned'
        ORDER BY datetime(assigned_at) DESC
        LIMIT 1`,
     )
@@ -645,10 +658,10 @@ async function handleCreateInvitation(request: Request, env: Env, user: ApiUser)
     await env.HRMS
       .prepare(
         `INSERT INTO invitations (
-           id, org_id, email, role, department, token_hash, expires_at, accepted_at, status, invited_by, created_at, updated_at
-         ) VALUES (?, ?, lower(?), ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`,
+           id, company_id, org_id, email, role, department, token_hash, expires_at, accepted_at, status, invited_by, created_at, updated_at
+         ) VALUES (?, ?, ?, lower(?), ?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), user.tenantId, email, role, department, tokenHash, expiresAt, user.userId, now, now)
+      .bind(crypto.randomUUID(), user.tenantId, user.tenantId, email, role, department, tokenHash, expiresAt, user.userId, now, now)
       .run();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -676,13 +689,13 @@ async function handleAcceptInvitation(request: Request, env: Env): Promise<Respo
   const tokenHash = await sha256Hex(rawToken);
   const invite = await env.HRMS
     .prepare(
-      `SELECT id, org_id, email, role, department, expires_at, status
+      `SELECT id, company_id, org_id, email, role, department, expires_at, status
        FROM invitations
        WHERE token_hash = ?
        LIMIT 1`,
     )
     .bind(tokenHash)
-    .first<{ id: string; org_id: string; email: string; role: string; department: string; expires_at: number; status: string }>();
+    .first<{ id: string; company_id: string | null; org_id: string; email: string; role: string; department: string; expires_at: number; status: string }>();
 
   if (!invite || invite.status !== "pending") {
     return json(request, env, { error: "Invitation is invalid or already used." }, 400);
@@ -713,15 +726,16 @@ async function handleAcceptInvitation(request: Request, env: Env): Promise<Respo
     .run();
 
   const userId = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const hasCompanyId = await usersTableHasCompanyId(env.HRMS);
   const hasOrgId = await usersTableHasOrgId(env.HRMS);
 
-  if (hasOrgId) {
+  if (hasCompanyId || hasOrgId) {
     await env.HRMS
       .prepare(
-        `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
-         VALUES (?, ?, ?, lower(?), ?, ?, 'Active', ?, ?, ?)`,
+        `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+         VALUES (?, ?, ?, ?, lower(?), ?, ?, 'Active', ?, ?, ?)`,
       )
-      .bind(userId, invite.org_id, name, email, invite.role, invite.department, now, now, now)
+      .bind(userId, invite.company_id ?? invite.org_id, invite.org_id, name, email, invite.role, invite.department, now, now, now)
       .run();
   } else {
     await env.HRMS
@@ -767,10 +781,10 @@ async function handleCreateWebhook(request: Request, env: Env, user: ApiUser): P
   const now = nowIso();
   await env.HRMS
     .prepare(
-      `INSERT INTO notification_webhooks (id, org_id, provider, webhook_url, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO notification_webhooks (id, company_id, org_id, provider, webhook_url, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
     )
-    .bind(crypto.randomUUID(), user.tenantId, provider, webhookUrl, now, now)
+    .bind(crypto.randomUUID(), user.tenantId, user.tenantId, provider, webhookUrl, now, now)
     .run();
 
   return json(request, env, { ok: true }, 201);
@@ -785,7 +799,7 @@ async function handleListWebhooks(request: Request, env: Env, user: ApiUser): Pr
     .prepare(
       `SELECT id, provider, webhook_url, is_active, created_at, updated_at
        FROM notification_webhooks
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY datetime(created_at) DESC`,
     )
     .bind(user.tenantId)
@@ -808,7 +822,7 @@ async function handleTestWebhook(request: Request, env: Env, user: ApiUser): Pro
     .prepare(
       `SELECT provider, webhook_url, is_active
        FROM notification_webhooks
-       WHERE id = ? AND org_id = ?
+       WHERE id = ? AND COALESCE(company_id, org_id) = ?
        LIMIT 1`,
     )
     .bind(body.webhookId, user.tenantId)

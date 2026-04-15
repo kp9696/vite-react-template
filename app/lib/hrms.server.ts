@@ -12,7 +12,7 @@ export interface Organization {
 
 export interface HRMSUser {
   id: string;
-  orgId: string | null;
+  companyId: string | null;
   organizationName: string | null;
   name: string;
   email: string;
@@ -26,7 +26,7 @@ export interface HRMSUser {
 }
 
 export interface InviteUserInput {
-  orgId: string;
+  companyId: string;
   name: string;
   email: string;
   role: string;
@@ -77,9 +77,10 @@ function normalizeMonthYear(value: string | null | undefined): string {
 }
 
 function mapUser(row: Record<string, unknown>): HRMSUser {
+  const companyId = row.company_id ? String(row.company_id) : row.org_id ? String(row.org_id) : null;
   return {
     id: String(row.id),
-    orgId: row.org_id ? String(row.org_id) : null,
+    companyId,
     organizationName: row.organization_name ? String(row.organization_name) : null,
     name: String(row.name),
     email: String(row.email),
@@ -106,7 +107,7 @@ function mapOrganization(row: Record<string, unknown>): Organization {
 async function listUsersLegacy(db: D1Database): Promise<HRMSUser[]> {
   const result = await db
     .prepare(
-      `SELECT id, NULL AS org_id, NULL AS organization_name, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+      `SELECT id, NULL AS company_id, NULL AS org_id, NULL AS organization_name, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
        FROM users
        ORDER BY datetime(created_at) DESC, name ASC`,
     )
@@ -115,23 +116,23 @@ async function listUsersLegacy(db: D1Database): Promise<HRMSUser[]> {
   return result.results.map(mapUser);
 }
 
-export async function listUsers(db: D1Database, orgId?: string): Promise<HRMSUser[]> {
+export async function listUsers(db: D1Database, companyId?: string): Promise<HRMSUser[]> {
   if (!(await supportsOrganizations(db))) {
     return listUsersLegacy(db);
   }
 
-  const statement = orgId
+  const statement = companyId
     ? db.prepare(
-        `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+        `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
          FROM users
-         LEFT JOIN organizations ON organizations.id = users.org_id
-         WHERE users.org_id = ?
+         LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
+         WHERE COALESCE(users.company_id, users.org_id) = ?
          ORDER BY datetime(users.created_at) DESC, users.name ASC`,
-      ).bind(orgId)
+      ).bind(companyId)
     : db.prepare(
-        `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+        `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
          FROM users
-         LEFT JOIN organizations ON organizations.id = users.org_id
+         LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
          ORDER BY datetime(users.created_at) DESC, users.name ASC`,
       );
 
@@ -156,9 +157,9 @@ export async function getUserByEmail(db: D1Database, email: string): Promise<HRM
 
   const result = await db
     .prepare(
-      `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
        FROM users
-       LEFT JOIN organizations ON organizations.id = users.org_id
+        LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
        WHERE lower(users.email) = lower(?)
        LIMIT 1`,
     )
@@ -185,9 +186,9 @@ export async function getUserById(db: D1Database, id: string): Promise<HRMSUser 
 
   const result = await db
     .prepare(
-      `SELECT users.id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
        FROM users
-       LEFT JOIN organizations ON organizations.id = users.org_id
+        LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
        WHERE users.id = ?
        LIMIT 1`,
     )
@@ -223,7 +224,7 @@ export async function getOrganizationByDomain(db: D1Database, domain: string): P
   return result ? mapOrganization(result) : null;
 }
 
-export async function getOrganizationMemberUsage(db: D1Database, orgId: string): Promise<number> {
+export async function getOrganizationMemberUsage(db: D1Database, companyId: string): Promise<number> {
   if (!(await supportsOrganizations(db))) {
     const users = await listUsersLegacy(db);
     return users.filter((user) => !isAdminRole(user.role)).length;
@@ -233,10 +234,10 @@ export async function getOrganizationMemberUsage(db: D1Database, orgId: string):
     .prepare(
       `SELECT COUNT(*) AS count
        FROM users
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        AND lower(role) NOT LIKE '%admin%'`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .first<{ count: number | string }>();
 
   return Number(result?.count ?? 0);
@@ -258,10 +259,10 @@ export async function createOrUpdateInvitedUser(
     await db
       .prepare(
         `UPDATE users
-         SET org_id = ?, name = ?, role = ?, department = ?, status = 'Invited', invite_sent_at = ?, updated_at = ?
+        SET company_id = ?, org_id = COALESCE(org_id, ?), name = ?, role = ?, department = ?, status = 'Invited', invite_sent_at = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .bind(input.orgId, input.name.trim(), input.role.trim(), input.department.trim(), now, now, existing.id)
+      .bind(input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(), now, now, existing.id)
       .run();
 
     const updated = await getUserById(db, existing.id);
@@ -276,10 +277,10 @@ export async function createOrUpdateInvitedUser(
 
   await db
     .prepare(
-      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'Invited', ?, ?, ?, ?)`,
+      `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'Invited', ?, ?, ?, ?)`,
     )
-    .bind(id, input.orgId, input.name.trim(), email, input.role.trim(), input.department.trim(), joinedOn, now, now, now)
+    .bind(id, input.companyId, input.companyId, input.name.trim(), email, input.role.trim(), input.department.trim(), joinedOn, now, now, now)
     .run();
 
   const created = await getUserById(db, id);
@@ -319,7 +320,7 @@ export async function registerOrganization(
     );
   }
 
-  const orgId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const companyId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
   const userId = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
   const now = new Date().toISOString();
 
@@ -328,18 +329,18 @@ export async function registerOrganization(
       `INSERT INTO organizations (id, name, domain, invite_limit, created_at, updated_at)
        VALUES (?, ?, ?, 10, ?, ?)`,
     )
-    .bind(orgId, input.organizationName.trim(), organizationDomain, now, now)
+    .bind(companyId, input.organizationName.trim(), organizationDomain, now, now)
     .run();
 
   await db
     .prepare(
-      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'Admin', ?, 'Active', ?, ?, ?, ?)`,
+      `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'Admin', ?, 'Active', ?, ?, ?, ?)`,
     )
-    .bind(userId, orgId, input.adminName.trim(), email, input.department.trim(), now, now, now, now)
+    .bind(userId, companyId, companyId, input.adminName.trim(), email, input.department.trim(), now, now, now, now)
     .run();
 
-  const organization = await getOrganizationById(db, orgId);
+  const organization = await getOrganizationById(db, companyId);
   const adminUser = await getUserById(db, userId);
 
   if (!organization || !adminUser) {
@@ -377,17 +378,17 @@ export async function activateInvitedUser(db: D1Database, id: string): Promise<H
   return user;
 }
 
-export async function getDashboardData(db: D1Database, orgId?: string) {
+export async function getDashboardData(db: D1Database, companyId?: string) {
   const orgSupport = await supportsOrganizations(db);
-  const users = await listUsers(db, orgId);
-  const organization = orgSupport && orgId ? await getOrganizationById(db, orgId) : null;
+  const users = await listUsers(db, companyId);
+  const organization = orgSupport && companyId ? await getOrganizationById(db, companyId) : null;
 
   const totalUsers = users.length;
   const activeUsers = users.filter((user) => user.status === "Active").length;
   const invitedUsers = users.filter((user) => user.status === "Invited").length;
   const adminUsers = users.filter((user) => isAdminRole(user.role)).length;
-  const memberUsage = orgSupport && orgId
-    ? await getOrganizationMemberUsage(db, orgId)
+  const memberUsage = orgSupport && companyId
+    ? await getOrganizationMemberUsage(db, companyId)
     : users.filter((user) => !isAdminRole(user.role)).length;
   const inviteLimit = organization?.inviteLimit ?? 0;
 

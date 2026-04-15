@@ -31,8 +31,9 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
+  const tenantId = currentUser.companyId;
 
-  if (!currentUser.orgId) {
+  if (!tenantId) {
     throw redirect("/hrms");
   }
 
@@ -40,23 +41,24 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     throw redirect("/hrms");
   }
 
-  const organization = await getOrganizationById(context.cloudflare.env.HRMS, currentUser.orgId);
-  const users = await listUsers(context.cloudflare.env.HRMS, currentUser.orgId);
-  const memberUsage = await getOrganizationMemberUsage(context.cloudflare.env.HRMS, currentUser.orgId);
+  const organization = await getOrganizationById(context.cloudflare.env.HRMS, tenantId);
+  const users = await listUsers(context.cloudflare.env.HRMS, tenantId);
+  const memberUsage = await getOrganizationMemberUsage(context.cloudflare.env.HRMS, tenantId);
 
   return { currentUser, organization, users, memberUsage };
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!currentUser.orgId || !isAdminRole(currentUser.role)) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId || !isAdminRole(currentUser.role)) {
     return { ok: false, type: "error", message: "Only admins can manage users." };
   }
 
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
   const db = context.cloudflare.env.HRMS;
-  const organization = await getOrganizationById(db, currentUser.orgId);
+  const organization = await getOrganizationById(db, tenantId);
 
   if (!organization) {
     return { ok: false, type: "error", message: "Organization not found." };
@@ -64,7 +66,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
 
   try {
     if (intent === "invite") {
-      const memberUsage = await getOrganizationMemberUsage(db, currentUser.orgId);
+      const memberUsage = await getOrganizationMemberUsage(db, tenantId);
       if (memberUsage >= organization.inviteLimit) {
         return {
           ok: false,
@@ -74,7 +76,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
       }
 
       const payload = {
-        orgId: currentUser.orgId,
+        companyId: tenantId,
         name: String(formData.get("name") || "").trim(),
         email: String(formData.get("email") || "").trim(),
         role: String(formData.get("role") || "Employee"),

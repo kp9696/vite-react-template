@@ -74,6 +74,7 @@ async function ensurePayrollTables(db: D1Database): Promise<void> {
     .prepare(
       `CREATE TABLE IF NOT EXISTS payroll_runs (
         id TEXT PRIMARY KEY,
+        company_id TEXT,
         org_id TEXT NOT NULL,
         month_key TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'processed',
@@ -91,6 +92,7 @@ async function ensurePayrollTables(db: D1Database): Promise<void> {
       `CREATE TABLE IF NOT EXISTS payroll_items (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
+        company_id TEXT,
         org_id TEXT NOT NULL,
         month_key TEXT NOT NULL,
         employee_id TEXT NOT NULL,
@@ -116,7 +118,7 @@ async function ensurePayrollTables(db: D1Database): Promise<void> {
 
 export async function runPayrollForMonth(
   db: D1Database,
-  orgId: string,
+  companyId: string,
   monthLabel: string,
 ): Promise<{ month: string; processed: number; pending: number }> {
   await ensurePayrollTables(db);
@@ -125,8 +127,8 @@ export async function runPayrollForMonth(
   const now = new Date().toISOString();
 
   const runRow = await db
-    .prepare(`SELECT id FROM payroll_runs WHERE org_id = ? AND month_key = ? LIMIT 1`)
-    .bind(orgId, monthKey)
+    .prepare(`SELECT id FROM payroll_runs WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`)
+    .bind(companyId, monthKey)
     .first<{ id: string }>();
 
   const runId = runRow?.id ?? crypto.randomUUID();
@@ -139,10 +141,10 @@ export async function runPayrollForMonth(
   } else {
     await db
       .prepare(
-        `INSERT INTO payroll_runs (id, org_id, month_key, status, processed_count, total_count, created_at, updated_at)
-         VALUES (?, ?, ?, 'processed', 0, 0, ?, ?)`,
+        `INSERT INTO payroll_runs (id, company_id, org_id, month_key, status, processed_count, total_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'processed', 0, 0, ?, ?)`,
       )
-      .bind(runId, orgId, monthKey, now, now)
+      .bind(runId, companyId, companyId, monthKey, now, now)
       .run();
   }
 
@@ -150,10 +152,10 @@ export async function runPayrollForMonth(
     .prepare(
       `SELECT id, name, department, salary, status
        FROM employees
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY name ASC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<{ id: string; name: string; department: string; salary: string; status: string }>();
 
   let processed = 0;
@@ -170,12 +172,13 @@ export async function runPayrollForMonth(
     await db
       .prepare(
         `INSERT INTO payroll_items (
-           id, run_id, org_id, month_key, employee_id, employee_name, department,
+           id, run_id, company_id, org_id, month_key, employee_id, employee_name, department,
            basic, hra, conveyance, pf, tds, pt, gross, deductions, net, status, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(org_id, month_key, employee_id)
          DO UPDATE SET
            run_id = excluded.run_id,
+           company_id = excluded.company_id,
            employee_name = excluded.employee_name,
            department = excluded.department,
            basic = excluded.basic,
@@ -193,7 +196,8 @@ export async function runPayrollForMonth(
       .bind(
         crypto.randomUUID(),
         runId,
-        orgId,
+        companyId,
+        companyId,
         monthKey,
         emp.id,
         emp.name,
@@ -232,7 +236,7 @@ export async function runPayrollForMonth(
 
 export async function getPayrollDashboard(
   db: D1Database,
-  orgId: string,
+  companyId: string,
 ): Promise<{ months: string[]; payrollByMonth: Record<string, PayrollEmployee[]> }> {
   await ensurePayrollTables(db);
 
@@ -240,10 +244,10 @@ export async function getPayrollDashboard(
     .prepare(
       `SELECT month_key
        FROM payroll_runs
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY month_key DESC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<{ month_key: string }>();
 
   const monthKeys = runs.results.map((r) => r.month_key);
@@ -259,10 +263,10 @@ export async function getPayrollDashboard(
       .prepare(
         `SELECT employee_id, employee_name, department, basic, hra, conveyance, pf, tds, pt, gross, deductions, net, status
          FROM payroll_items
-         WHERE org_id = ? AND month_key = ?
+        WHERE COALESCE(company_id, org_id) = ? AND month_key = ?
          ORDER BY employee_name ASC`,
       )
-      .bind(orgId, monthKey)
+      .bind(companyId, monthKey)
       .all<{
         employee_id: string;
         employee_name: string;

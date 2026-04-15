@@ -1,6 +1,101 @@
+// Employee Work History CRUD
+export async function listEmployeeWorkHistory(db: D1Database, employeeId: string) {
+  const result = await db.prepare(
+    `SELECT id, company, role, duration, description, created_at, updated_at FROM employee_work_history WHERE employee_id = ? ORDER BY created_at DESC`
+  ).bind(employeeId).all<Record<string, unknown>>();
+  return result.results;
+}
+
+export async function addEmployeeWorkHistory(db: D1Database, employeeId: string, data: { company: string; role: string; duration: string; description?: string }) {
+  const id = `WH${crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO employee_work_history (id, employee_id, company, role, duration, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, employeeId, data.company, data.role, data.duration, data.description || '', now, now).run();
+}
+
+// Employee Custom Fields CRUD
+export async function listEmployeeCustomFields(db: D1Database, employeeId: string) {
+  const result = await db.prepare(
+    `SELECT id, field_name, field_value, created_at, updated_at FROM employee_custom_fields WHERE employee_id = ? ORDER BY created_at DESC`
+  ).bind(employeeId).all<Record<string, unknown>>();
+  return result.results;
+}
+
+export async function addEmployeeCustomField(db: D1Database, employeeId: string, data: { field_name: string; field_value: string }) {
+  const id = `CF${crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO employee_custom_fields (id, employee_id, field_name, field_value, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(id, employeeId, data.field_name, data.field_value, now, now).run();
+}
+
+// Employee Documents CRUD
+export async function listEmployeeDocuments(db: D1Database, employeeId: string) {
+  const result = await db.prepare(
+    `SELECT id, doc_type, file_name, file_url, uploaded_at FROM employee_documents WHERE employee_id = ? ORDER BY uploaded_at DESC`
+  ).bind(employeeId).all<Record<string, unknown>>();
+  return result.results;
+}
+
+export async function addEmployeeDocument(db: D1Database, employeeId: string, data: { doc_type: string; file_name: string; file_url: string }) {
+  const id = `DOC${crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO employee_documents (id, employee_id, doc_type, file_name, file_url, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(id, employeeId, data.doc_type, data.file_name, data.file_url, now).run();
+}
+// Fetch a single employee by ID
+export async function getEmployeeById(db: D1Database, id: string): Promise<EmployeeRecord | null> {
+  const result = await db
+    .prepare(
+      `SELECT id, company_id, org_id, name, role, department, location, status, joined_on, salary, created_at
+       FROM employees
+       WHERE id = ?`
+    )
+    .bind(id)
+    .first<Record<string, unknown>>();
+  return result ? mapEmployee(result) : null;
+}
+
+// Update employee details (personal, employment, bank, etc.)
+export async function updateEmployee(
+  db: D1Database,
+  id: string,
+  updates: Partial<{
+    name: string;
+    dob: string;
+    gender: string;
+    address: string;
+    emergencyContact: string;
+    idProof: string;
+    designation: string;
+    grade: string;
+    reportingManager: string;
+    costCenter: string;
+    accountHolder: string;
+    bankName: string;
+    accountNumber: string;
+    ifsc: string;
+    branch: string;
+    // Add more fields as needed
+  }>
+): Promise<void> {
+  const fields = Object.keys(updates).filter((k) => updates[k as keyof typeof updates] !== undefined);
+  if (!fields.length) return;
+  const setClause = fields.map((f) => `${f} = ?`).join(", ");
+  const values = fields.map((f) => updates[f as keyof typeof updates]);
+  values.push(new Date().toISOString(), id);
+  await db
+    .prepare(
+      `UPDATE employees SET ${setClause}, updated_at = ? WHERE id = ?`
+    )
+    .bind(...values)
+    .run();
+}
 export interface EmployeeRecord {
   id: string;
-  orgId: string;
+  companyId: string;
   name: string;
   role: string;
   department: string;
@@ -13,7 +108,7 @@ export interface EmployeeRecord {
 
 export interface JobOpeningRecord {
   id: string;
-  orgId: string;
+  companyId: string;
   title: string;
   department: string;
   location: string;
@@ -34,7 +129,7 @@ export interface OnboardingTaskRecord {
 
 export interface OnboardingJoinerRecord {
   id: string;
-  orgId: string;
+  companyId: string;
   name: string;
   role: string;
   department: string;
@@ -55,7 +150,7 @@ export interface ExitTaskRecord {
 
 export interface ExitProcessRecord {
   id: string;
-  orgId: string;
+  companyId: string;
   name: string;
   employeeCode: string;
   role: string;
@@ -82,9 +177,10 @@ function initials(name: string): string {
 }
 
 function mapEmployee(row: Record<string, unknown>): EmployeeRecord {
+  const companyId = String(row.company_id ?? row.org_id ?? "");
   return {
     id: String(row.id),
-    orgId: String(row.org_id),
+    companyId,
     name: String(row.name),
     role: String(row.role),
     department: String(row.department),
@@ -96,10 +192,347 @@ function mapEmployee(row: Record<string, unknown>): EmployeeRecord {
   };
 }
 
+export interface EmployeeProfileRecord extends EmployeeRecord {
+  dob: string;
+  gender: string;
+  address: string;
+  emergencyContact: string;
+  idProof: string;
+  designation: string;
+  grade: string;
+  reportingManager: string;
+  costCenter: string;
+  accountHolder: string;
+  bankName: string;
+  accountNumber: string;
+  ifsc: string;
+  branch: string;
+  profilePhotoUrl: string;
+}
+
+function mapEmployeeProfile(row: Record<string, unknown>): EmployeeProfileRecord {
+  return {
+    ...mapEmployee(row),
+    dob: String(row.dob ?? ""),
+    gender: String(row.gender ?? ""),
+    address: String(row.address ?? ""),
+    emergencyContact: String(row.emergency_contact ?? ""),
+    idProof: String(row.id_proof ?? ""),
+    designation: String(row.designation ?? ""),
+    grade: String(row.grade ?? ""),
+    reportingManager: String(row.reporting_manager ?? ""),
+    costCenter: String(row.cost_center ?? ""),
+    accountHolder: String(row.account_holder ?? ""),
+    bankName: String(row.bank_name ?? ""),
+    accountNumber: String(row.account_number ?? ""),
+    ifsc: String(row.ifsc ?? ""),
+    branch: String(row.branch ?? ""),
+    profilePhotoUrl: String(row.profile_photo_url ?? ""),
+  };
+}
+
+export interface EmployeeWorkHistoryItem {
+  id: string;
+  company: string;
+  role: string;
+  duration: string;
+  description: string;
+}
+
+export interface EmployeeCustomFieldItem {
+  id: string;
+  fieldName: string;
+  fieldValue: string;
+}
+
+export interface EmployeeDocumentItem {
+  id: string;
+  docType: string;
+  fileName: string;
+  fileUrl: string;
+  uploadedAt: string;
+}
+
+export async function getEmployeeProfileById(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+): Promise<EmployeeProfileRecord | null> {
+  const row = await db
+    .prepare(
+      `SELECT id, company_id, org_id, name, role, department, location, status, joined_on, salary, created_at,
+              dob, gender, address, emergency_contact, id_proof,
+              designation, grade, reporting_manager, cost_center,
+              account_holder, bank_name, account_number, ifsc, branch, profile_photo_url
+       FROM employees
+       WHERE id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(employeeId, companyId)
+    .first<Record<string, unknown>>();
+
+  return row ? mapEmployeeProfile(row) : null;
+}
+
+export async function updateEmployeeProfileById(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  updates: Partial<{
+    name: string;
+    dob: string;
+    gender: string;
+    address: string;
+    emergencyContact: string;
+    idProof: string;
+    designation: string;
+    grade: string;
+    reportingManager: string;
+    costCenter: string;
+    accountHolder: string;
+    bankName: string;
+    accountNumber: string;
+    ifsc: string;
+    branch: string;
+    profilePhotoUrl: string;
+  }>,
+): Promise<void> {
+  const columnMap = {
+    name: "name",
+    dob: "dob",
+    gender: "gender",
+    address: "address",
+    emergencyContact: "emergency_contact",
+    idProof: "id_proof",
+    designation: "designation",
+    grade: "grade",
+    reportingManager: "reporting_manager",
+    costCenter: "cost_center",
+    accountHolder: "account_holder",
+    bankName: "bank_name",
+    accountNumber: "account_number",
+    ifsc: "ifsc",
+    branch: "branch",
+    profilePhotoUrl: "profile_photo_url",
+  } as const;
+
+  const entries = Object.entries(updates)
+    .filter(([, value]) => value !== undefined)
+    .filter(([key]) => key in columnMap) as Array<[keyof typeof columnMap, string]>;
+
+  if (entries.length === 0) return;
+
+  const setClause = entries.map(([key]) => `${columnMap[key]} = ?`).join(", ");
+  const values = entries.map(([, value]) => String(value).trim());
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `UPDATE employees
+       SET ${setClause}, updated_at = ?
+       WHERE id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(...values, now, employeeId, companyId)
+    .run();
+}
+
+export async function listEmployeeWorkHistoryByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+): Promise<EmployeeWorkHistoryItem[]> {
+  const result = await db
+    .prepare(
+      `SELECT h.id, h.company, h.role, h.duration, h.description
+       FROM employee_work_history h
+       JOIN employees e ON e.id = h.employee_id
+      WHERE h.employee_id = ? AND COALESCE(e.company_id, e.org_id) = ?
+       ORDER BY datetime(h.created_at) DESC`,
+    )
+    .bind(employeeId, companyId)
+    .all<Record<string, unknown>>();
+
+  return result.results.map((row) => ({
+    id: String(row.id),
+    company: String(row.company),
+    role: String(row.role),
+    duration: String(row.duration),
+    description: String(row.description ?? ""),
+  }));
+}
+
+export async function addEmployeeWorkHistoryByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  data: { company: string; role: string; duration: string; description?: string },
+): Promise<void> {
+  const exists = await db
+    .prepare(`SELECT 1 as ok FROM employees WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(employeeId, companyId)
+    .first<{ ok: number }>();
+  if (!exists) return;
+
+  const id = `WH${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO employee_work_history (id, employee_id, company, role, duration, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, employeeId, data.company.trim(), data.role.trim(), data.duration.trim(), (data.description ?? "").trim(), now, now)
+    .run();
+}
+
+export async function deleteEmployeeWorkHistoryByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  workHistoryId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `DELETE FROM employee_work_history
+       WHERE id = ?
+         AND employee_id = ?
+         AND employee_id IN (SELECT id FROM employees WHERE id = ? AND COALESCE(company_id, org_id) = ?)`,
+    )
+    .bind(workHistoryId, employeeId, employeeId, companyId)
+    .run();
+}
+
+export async function listEmployeeCustomFieldsByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+): Promise<EmployeeCustomFieldItem[]> {
+  const result = await db
+    .prepare(
+      `SELECT c.id, c.field_name, c.field_value
+       FROM employee_custom_fields c
+       JOIN employees e ON e.id = c.employee_id
+      WHERE c.employee_id = ? AND COALESCE(e.company_id, e.org_id) = ?
+       ORDER BY datetime(c.created_at) DESC`,
+    )
+    .bind(employeeId, companyId)
+    .all<Record<string, unknown>>();
+
+  return result.results.map((row) => ({
+    id: String(row.id),
+    fieldName: String(row.field_name),
+    fieldValue: String(row.field_value ?? ""),
+  }));
+}
+
+export async function addEmployeeCustomFieldByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  data: { fieldName: string; fieldValue: string },
+): Promise<void> {
+  const exists = await db
+    .prepare(`SELECT 1 as ok FROM employees WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(employeeId, companyId)
+    .first<{ ok: number }>();
+  if (!exists) return;
+
+  const id = `CF${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO employee_custom_fields (id, employee_id, field_name, field_value, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, employeeId, data.fieldName.trim(), data.fieldValue.trim(), now, now)
+    .run();
+}
+
+export async function deleteEmployeeCustomFieldByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  customFieldId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `DELETE FROM employee_custom_fields
+       WHERE id = ?
+         AND employee_id = ?
+         AND employee_id IN (SELECT id FROM employees WHERE id = ? AND COALESCE(company_id, org_id) = ?)`,
+    )
+    .bind(customFieldId, employeeId, employeeId, companyId)
+    .run();
+}
+
+export async function listEmployeeDocumentsByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+): Promise<EmployeeDocumentItem[]> {
+  const result = await db
+    .prepare(
+      `SELECT d.id, d.doc_type, d.file_name, d.file_url, d.uploaded_at
+       FROM employee_documents d
+       JOIN employees e ON e.id = d.employee_id
+      WHERE d.employee_id = ? AND COALESCE(e.company_id, e.org_id) = ?
+       ORDER BY datetime(d.uploaded_at) DESC`,
+    )
+    .bind(employeeId, companyId)
+    .all<Record<string, unknown>>();
+
+  return result.results.map((row) => ({
+    id: String(row.id),
+    docType: String(row.doc_type),
+    fileName: String(row.file_name),
+    fileUrl: String(row.file_url),
+    uploadedAt: String(row.uploaded_at),
+  }));
+}
+
+export async function addEmployeeDocumentByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  data: { docType: string; fileName: string; fileUrl: string },
+): Promise<void> {
+  const exists = await db
+    .prepare(`SELECT 1 as ok FROM employees WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(employeeId, companyId)
+    .first<{ ok: number }>();
+  if (!exists) return;
+
+  const id = `DOC${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO employee_documents (id, employee_id, doc_type, file_name, file_url, uploaded_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, employeeId, data.docType.trim(), data.fileName.trim(), data.fileUrl, now)
+    .run();
+}
+
+export async function deleteEmployeeDocumentByOrg(
+  db: D1Database,
+  companyId: string,
+  employeeId: string,
+  documentId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `DELETE FROM employee_documents
+       WHERE id = ?
+         AND employee_id = ?
+         AND employee_id IN (SELECT id FROM employees WHERE id = ? AND COALESCE(company_id, org_id) = ?)`,
+    )
+    .bind(documentId, employeeId, employeeId, companyId)
+    .run();
+}
+
 function mapOpening(row: Record<string, unknown>): JobOpeningRecord {
+  const companyId = String(row.company_id ?? row.org_id ?? "");
   return {
     id: String(row.id),
-    orgId: String(row.org_id),
+    companyId,
     title: String(row.title),
     department: String(row.department),
     location: String(row.location),
@@ -157,15 +590,15 @@ const defaultExitTemplate = [
   "Experience Letter",
 ] as const;
 
-export async function listEmployees(db: D1Database, orgId: string): Promise<EmployeeRecord[]> {
+export async function listEmployees(db: D1Database, companyId: string): Promise<EmployeeRecord[]> {
   const result = await db
     .prepare(
-      `SELECT id, org_id, name, role, department, location, status, joined_on, salary, created_at
+      `SELECT id, company_id, org_id, name, role, department, location, status, joined_on, salary, created_at
        FROM employees
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY date(joined_on) DESC, name ASC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<Record<string, unknown>>();
 
   return result.results.map(mapEmployee);
@@ -174,7 +607,7 @@ export async function listEmployees(db: D1Database, orgId: string): Promise<Empl
 export async function createEmployee(
   db: D1Database,
   input: {
-    orgId: string;
+    companyId: string;
     name: string;
     role: string;
     department: string;
@@ -189,15 +622,15 @@ export async function createEmployee(
 
   await db
     .prepare(
-      `INSERT INTO employees (id, org_id, name, role, department, location, status, joined_on, salary, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO employees (id, company_id, org_id, name, role, department, location, status, joined_on, salary, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, input.orgId, input.name.trim(), input.role.trim(), input.department.trim(), input.location.trim(), input.status.trim(), input.joinedOn, input.salary.trim(), now, now)
+    .bind(id, input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(), input.location.trim(), input.status.trim(), input.joinedOn, input.salary.trim(), now, now)
     .run();
 }
 
-export async function getEmployeesDashboard(db: D1Database, orgId: string) {
-  const employees = await listEmployees(db, orgId);
+export async function getEmployeesDashboard(db: D1Database, companyId: string) {
+  const employees = await listEmployees(db, companyId);
   return {
     employees,
     stats: [
@@ -214,15 +647,15 @@ export async function getEmployeesDashboard(db: D1Database, orgId: string) {
 }
 
 
-export async function listJobOpenings(db: D1Database, orgId: string): Promise<JobOpeningRecord[]> {
+export async function listJobOpenings(db: D1Database, companyId: string): Promise<JobOpeningRecord[]> {
   const result = await db
     .prepare(
-      `SELECT id, org_id, title, department, location, priority, applicant_count, stage, created_at
+      `SELECT id, company_id, org_id, title, department, location, priority, applicant_count, stage, created_at
        FROM job_openings
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY datetime(created_at) DESC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<Record<string, unknown>>();
 
   return result.results.map(mapOpening);
@@ -231,7 +664,7 @@ export async function listJobOpenings(db: D1Database, orgId: string): Promise<Jo
 export async function createJobOpening(
   db: D1Database,
   input: {
-    orgId: string;
+    companyId: string;
     title: string;
     department: string;
     location: string;
@@ -243,15 +676,15 @@ export async function createJobOpening(
 
   await db
     .prepare(
-      `INSERT INTO job_openings (id, org_id, title, department, location, priority, applicant_count, stage, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, 'Applied', ?, ?)`,
+      `INSERT INTO job_openings (id, company_id, org_id, title, department, location, priority, applicant_count, stage, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'Applied', ?, ?)`,
     )
-    .bind(id, input.orgId, input.title.trim(), input.department.trim(), input.location.trim(), input.priority.trim(), now, now)
+    .bind(id, input.companyId, input.companyId, input.title.trim(), input.department.trim(), input.location.trim(), input.priority.trim(), now, now)
     .run();
 }
 
-export async function getRecruitmentDashboard(db: D1Database, orgId: string) {
-  const openings = await listJobOpenings(db, orgId);
+export async function getRecruitmentDashboard(db: D1Database, companyId: string) {
+  const openings = await listJobOpenings(db, companyId);
   const stages = ["Applied", "Screening", "Interview", "Offer"];
   const pipeline = stages.map((stage, index) => {
     const roles = openings.filter((opening) => opening.stage === stage);
@@ -275,25 +708,25 @@ export async function getRecruitmentDashboard(db: D1Database, orgId: string) {
 }
 
 
-export async function listOnboardingJoiners(db: D1Database, orgId: string): Promise<OnboardingJoinerRecord[]> {
+export async function listOnboardingJoiners(db: D1Database, companyId: string): Promise<OnboardingJoinerRecord[]> {
   const joinersResult = await db
     .prepare(
-      `SELECT id, org_id, name, role, department, start_date, progress, avatar, created_at
+      `SELECT id, company_id, org_id, name, role, department, start_date, progress, avatar, created_at
        FROM onboarding_joiners
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY date(start_date) ASC, datetime(created_at) DESC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<Record<string, unknown>>();
 
   const tasksResult = await db
     .prepare(
       `SELECT id, joiner_id, section, label, done, sort_order
        FROM onboarding_tasks
-       WHERE joiner_id IN (SELECT id FROM onboarding_joiners WHERE org_id = ?)
+       WHERE joiner_id IN (SELECT id FROM onboarding_joiners WHERE COALESCE(company_id, org_id) = ?)
        ORDER BY section, sort_order ASC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<Record<string, unknown>>();
 
   const taskMap = new Map<string, OnboardingTaskRecord[]>();
@@ -306,7 +739,7 @@ export async function listOnboardingJoiners(db: D1Database, orgId: string): Prom
 
   return joinersResult.results.map((row) => ({
     id: String(row.id),
-    orgId: String(row.org_id),
+    companyId: String(row.company_id ?? row.org_id ?? ""),
     name: String(row.name),
     role: String(row.role),
     department: String(row.department),
@@ -321,7 +754,7 @@ export async function listOnboardingJoiners(db: D1Database, orgId: string): Prom
 export async function createOnboardingJoiner(
   db: D1Database,
   input: {
-    orgId: string;
+    companyId: string;
     name: string;
     role: string;
     department: string;
@@ -333,10 +766,10 @@ export async function createOnboardingJoiner(
 
   await db
     .prepare(
-      `INSERT INTO onboarding_joiners (id, org_id, name, role, department, start_date, progress, avatar, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      `INSERT INTO onboarding_joiners (id, company_id, org_id, name, role, department, start_date, progress, avatar, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
     )
-    .bind(id, input.orgId, input.name.trim(), input.role.trim(), input.department.trim(), input.startDate, initials(input.name), now, now)
+    .bind(id, input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(), input.startDate, initials(input.name), now, now)
     .run();
 
   const statements = defaultOnboardingTemplate.map(([section, label], index) =>
@@ -382,8 +815,8 @@ export async function toggleOnboardingTask(db: D1Database, joinerId: string, tas
     .run();
 }
 
-export async function getOnboardingDashboard(db: D1Database, orgId: string) {
-  const joiners = await listOnboardingJoiners(db, orgId);
+export async function getOnboardingDashboard(db: D1Database, companyId: string) {
+  const joiners = await listOnboardingJoiners(db, companyId);
   const view = joiners.map((joiner) => ({
     ...joiner,
     startDateLabel: shortDate(joiner.startDate),
@@ -410,25 +843,25 @@ export async function getOnboardingDashboard(db: D1Database, orgId: string) {
 }
 
 
-export async function listExitProcesses(db: D1Database, orgId: string): Promise<ExitProcessRecord[]> {
+export async function listExitProcesses(db: D1Database, companyId: string): Promise<ExitProcessRecord[]> {
   const exitsResult = await db
     .prepare(
-      `SELECT id, org_id, name, employee_code, role, department, exit_type, notice_period, last_day, progress, reason, created_at
+      `SELECT id, company_id, org_id, name, employee_code, role, department, exit_type, notice_period, last_day, progress, reason, created_at
        FROM exit_processes
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY date(last_day) ASC, datetime(created_at) DESC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<Record<string, unknown>>();
 
   const tasksResult = await db
     .prepare(
       `SELECT id, exit_id, label, done, sort_order
        FROM exit_tasks
-       WHERE exit_id IN (SELECT id FROM exit_processes WHERE org_id = ?)
+       WHERE exit_id IN (SELECT id FROM exit_processes WHERE COALESCE(company_id, org_id) = ?)
        ORDER BY sort_order ASC`,
     )
-    .bind(orgId)
+    .bind(companyId)
     .all<Record<string, unknown>>();
 
   const taskMap = new Map<string, ExitTaskRecord[]>();
@@ -441,7 +874,7 @@ export async function listExitProcesses(db: D1Database, orgId: string): Promise<
 
   return exitsResult.results.map((row) => ({
     id: String(row.id),
-    orgId: String(row.org_id),
+    companyId: String(row.company_id ?? row.org_id ?? ""),
     name: String(row.name),
     employeeCode: String(row.employee_code),
     role: String(row.role),
@@ -459,7 +892,7 @@ export async function listExitProcesses(db: D1Database, orgId: string): Promise<
 export async function createExitProcess(
   db: D1Database,
   input: {
-    orgId: string;
+    companyId: string;
     name: string;
     employeeCode: string;
     role: string;
@@ -474,12 +907,13 @@ export async function createExitProcess(
 
   await db
     .prepare(
-      `INSERT INTO exit_processes (id, org_id, name, employee_code, role, department, exit_type, notice_period, last_day, progress, reason, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '-', ?, ?)`,
+      `INSERT INTO exit_processes (id, company_id, org_id, name, employee_code, role, department, exit_type, notice_period, last_day, progress, reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '-', ?, ?)`,
     )
     .bind(
       id,
-      input.orgId,
+      input.companyId,
+      input.companyId,
       input.name.trim(),
       input.employeeCode.trim(),
       input.role.trim(),
@@ -535,8 +969,8 @@ export async function toggleExitTask(db: D1Database, exitId: string, taskId: str
     .run();
 }
 
-export async function getExitDashboard(db: D1Database, orgId: string) {
-  const exits = await listExitProcesses(db, orgId);
+export async function getExitDashboard(db: D1Database, companyId: string) {
+  const exits = await listExitProcesses(db, companyId);
   return { exits };
 }
 

@@ -139,6 +139,17 @@ async function usersTableHasOrgId(db: D1Database): Promise<boolean> {
   }
 }
 
+async function usersTableHasCompanyId(db: D1Database): Promise<boolean> {
+  try {
+    const column = await db
+      .prepare(`SELECT 1 AS has_col FROM pragma_table_info('users') WHERE name = 'company_id' LIMIT 1`)
+      .first<{ has_col: number }>();
+    return Boolean(column?.has_col);
+  } catch {
+    return false;
+  }
+}
+
 async function getOrCreateCompany(
   db: D1Database,
   ownerEmail: string,
@@ -458,22 +469,22 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
     ? `gmail:${email}`
     : domain;
 
-  let orgId: string;
+  let companyId: string;
   const existingOrg = await env.HRMS
     .prepare(`SELECT id FROM organizations WHERE domain = ? LIMIT 1`)
     .bind(orgDomain)
     .first<{ id: string }>();
 
   if (existingOrg) {
-    orgId = existingOrg.id;
+    companyId = existingOrg.id;
   } else {
-    orgId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    companyId = `ORG${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
     const orgInsert = await env.HRMS
       .prepare(
         `INSERT INTO organizations (id, name, domain, invite_limit, created_at, updated_at)
          VALUES (?, ?, ?, 5, ?, ?)`,
       )
-      .bind(orgId, pending.companyName, orgDomain, now, now)
+      .bind(companyId, pending.companyName, orgDomain, now, now)
       .run()
       .catch((err) => ({ error: err }));
 
@@ -484,14 +495,15 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
   }
 
   const userId = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const hasCompanyId = await usersTableHasCompanyId(env.HRMS);
   const hasOrgId = await usersTableHasOrgId(env.HRMS);
-  const userInsert = hasOrgId
+  const userInsert = (hasCompanyId || hasOrgId)
     ? await env.HRMS
       .prepare(
-        `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
+        `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'HR Admin', 'General', 'Active', ?, ?, ?)`,
       )
-      .bind(userId, orgId, pending.name, email, now, now, now)
+      .bind(userId, companyId, companyId, pending.name, email, now, now, now)
       .run()
       .catch((err) => ({ error: err }))
     : await env.HRMS
@@ -551,17 +563,24 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
     return apiJson(request, env, { error: "Invalid credentials." }, 401);
   }
 
+  const hasCompanyId = await usersTableHasCompanyId(env.HRMS);
   const hasOrgId = await usersTableHasOrgId(env.HRMS);
-  const hrUser = hasOrgId
+  const hrUser = hasCompanyId
+    ? await env.HRMS
+      .prepare(`SELECT id, company_id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+      .bind(email)
+      .first<{ id: string; company_id: string | null; org_id: string | null; role: string }>()
+    : hasOrgId
     ? await env.HRMS
       .prepare(`SELECT id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
       .bind(email)
       .first<{ id: string; org_id: string | null; role: string }>()
+      .then((row) => row ? ({ ...row, company_id: row.org_id ?? null }) : null)
     : await env.HRMS
       .prepare(`SELECT id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
       .bind(email)
       .first<{ id: string; role: string }>()
-      .then((row) => row ? ({ ...row, org_id: null }) : null);
+      .then((row) => row ? ({ ...row, org_id: null, company_id: null }) : null);
 
   if (!hrUser) {
     return apiJson(request, env, { error: "User profile is missing. Contact support." }, 403);
@@ -572,7 +591,7 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
     return apiJson(request, env, { error: "Invalid credentials." }, 401);
   }
 
-  const tenantId = hrUser.org_id ?? "NO_TENANT";
+  const tenantId = hrUser.company_id ?? hrUser.org_id ?? "NO_TENANT";
   const accessToken = await createAccessToken(
     email,
     authUser.name,
@@ -662,14 +681,14 @@ async function handleApiRefresh(request: Request, env: Env): Promise<Response> {
 
   const user = await env.HRMS
     .prepare(
-      `SELECT users.id, users.org_id, users.role, users.email, auth_users.name
+      `SELECT users.id, users.company_id, users.org_id, users.role, users.email, auth_users.name
        FROM users
        JOIN auth_users ON lower(auth_users.email) = lower(users.email)
        WHERE users.id = ?
        LIMIT 1`,
     )
     .bind(tokenRow?.user_id)
-    .first<{ id: string; org_id: string | null; role: string; email: string; name: string }>();
+    .first<{ id: string; company_id: string | null; org_id: string | null; role: string; email: string; name: string }>();
 
   if (!user) {
     await revokeRefreshTokenById(env.HRMS, tokenRow!.id);
@@ -691,7 +710,7 @@ async function handleApiRefresh(request: Request, env: Env): Promise<Response> {
     normalizeEmail(user.email),
     user.name,
     user.id,
-    user.org_id ?? "NO_TENANT",
+    user.company_id ?? user.org_id ?? "NO_TENANT",
     user.role,
     accessSecret,
   );
@@ -716,7 +735,7 @@ async function handleApiRefresh(request: Request, env: Env): Promise<Response> {
         email: normalizeEmail(user.email),
         name: user.name,
         user_id: user.id,
-        tenant_id: user.org_id ?? "NO_TENANT",
+        tenant_id: user.company_id ?? user.org_id ?? "NO_TENANT",
         role: user.role,
       },
     },

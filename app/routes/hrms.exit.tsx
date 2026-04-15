@@ -13,15 +13,17 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  const data = currentUser.orgId
-    ? await getExitDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+  const tenantId = currentUser.companyId;
+  const data = tenantId
+    ? await getExitDashboard(context.cloudflare.env.HRMS, tenantId)
     : { exits: [] };
   return { currentUser, ...data };
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!currentUser.orgId) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
 
@@ -37,7 +39,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
     }
 
     await createExitProcess(context.cloudflare.env.HRMS, {
-      orgId: currentUser.orgId,
+      companyId: tenantId,
       name,
       employeeCode,
       role,

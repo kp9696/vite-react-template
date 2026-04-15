@@ -21,11 +21,12 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!currentUser.orgId) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId) {
     return { currentUser, months: [], payrollByMonth: {} as Record<string, Employee[]> };
   }
 
-  const payroll = await getPayrollDashboard(context.cloudflare.env.HRMS, currentUser.orgId);
+  const payroll = await getPayrollDashboard(context.cloudflare.env.HRMS, tenantId);
   return {
     currentUser,
     months: payroll.months,
@@ -35,7 +36,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionData> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!currentUser.orgId) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId) {
     return { ok: false, message: "Organization not found for this user." };
   }
 
@@ -50,7 +52,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
     return { ok: false, message: "Payroll month is required." };
   }
 
-  const result = await runPayrollForMonth(context.cloudflare.env.HRMS, currentUser.orgId, month);
+  const result = await runPayrollForMonth(context.cloudflare.env.HRMS, tenantId, month);
   if (result.processed + result.pending === 0) {
     return { ok: false, message: `No employees found for payroll run (${result.month}).` };
   }

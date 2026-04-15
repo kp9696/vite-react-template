@@ -7,6 +7,7 @@ export default [
   route("forgot-password", "routes/forgot-password.tsx"),
   route("hrms", "routes/hrms.tsx"),
   route("hrms/employees", "routes/hrms.employees.tsx"),
+  route("hrms/employees/:id", "routes/hrms.employee.$id.tsx"),
   route("hrms/recruitment", "routes/hrms.recruitment.tsx"),
   route("hrms/onboarding", "routes/hrms.onboarding.tsx"),
   route("hrms/leave", "routes/hrms.leave.tsx"),

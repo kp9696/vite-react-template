@@ -135,7 +135,7 @@ async function handleCoreUsersList(request: Request, env: Env, user: ApiUser): P
               auth_users.is_verified
        FROM users
        LEFT JOIN auth_users ON lower(auth_users.email) = lower(users.email)
-       WHERE users.org_id = ?
+       WHERE COALESCE(users.company_id, users.org_id) = ?
        ORDER BY datetime(users.created_at) DESC`,
     )
     .bind(user.tenantId)
@@ -180,10 +180,10 @@ async function handleCoreUsersCreate(request: Request, env: Env, user: ApiUser):
 
   await env.HRMS
     .prepare(
-      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
-       VALUES (?, ?, ?, lower(?), ?, ?, 'Active', ?, ?, ?)`,
+      `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+       VALUES (?, ?, ?, ?, lower(?), ?, ?, 'Active', ?, ?, ?)`,
     )
-    .bind(userId, user.tenantId, name, email, role, department, now, now, now)
+    .bind(userId, user.tenantId, user.tenantId, name, email, role, department, now, now, now)
     .run();
 
   await logAudit(env.HRMS, user.userId, "user.create", "users", userId, { email, role, department });
@@ -230,9 +230,9 @@ async function handleCoreDepartmentsCreate(request: Request, env: Env, user: Api
 async function handleCoreEmployeesList(request: Request, env: Env, user: ApiUser): Promise<Response> {
   const rows = await env.HRMS
     .prepare(
-      `SELECT id, org_id, name, email, role, department, status, joined_on, created_at, updated_at
+      `SELECT id, COALESCE(company_id, org_id) AS company_id, org_id, name, email, role, department, status, joined_on, created_at, updated_at
        FROM users
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY datetime(created_at) DESC`,
     )
     .bind(user.tenantId)
@@ -272,10 +272,10 @@ async function handleCoreEmployeesCreate(request: Request, env: Env, user: ApiUs
 
   await env.HRMS
     .prepare(
-      `INSERT INTO users (id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
-       VALUES (?, ?, ?, lower(?), ?, ?, 'Active', ?, ?, ?)`,
+      `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, created_at, updated_at)
+       VALUES (?, ?, ?, ?, lower(?), ?, ?, 'Active', ?, ?, ?)`,
     )
-    .bind(userId, user.tenantId, name, email, role, department, now, now, now)
+    .bind(userId, user.tenantId, user.tenantId, name, email, role, department, now, now, now)
     .run();
 
   await logAudit(env.HRMS, user.userId, "employee.create", "employees", userId, { email, role, department });
@@ -291,7 +291,7 @@ async function handleCoreInvitationsList(request: Request, env: Env, user: ApiUs
     .prepare(
       `SELECT id, email, role, department, status, expires_at, accepted_at, created_at, updated_at
        FROM invitations
-       WHERE org_id = ?
+       WHERE COALESCE(company_id, org_id) = ?
        ORDER BY datetime(created_at) DESC`,
     )
     .bind(user.tenantId)
@@ -310,7 +310,7 @@ async function handleCoreAttendanceList(request: Request, env: Env, user: ApiUse
               attendance.status, users.name, users.email
        FROM attendance
        LEFT JOIN users ON users.id = attendance.user_id
-       WHERE attendance.org_id = ? AND attendance.attendance_date = ?
+       WHERE COALESCE(attendance.company_id, attendance.org_id) = ? AND attendance.attendance_date = ?
        ORDER BY datetime(attendance.created_at) DESC`,
     )
     .bind(user.tenantId, date)
@@ -327,7 +327,7 @@ async function handleCoreLeavesList(request: Request, env: Env, user: ApiUser): 
               users.name, users.email
        FROM leaves
        LEFT JOIN users ON users.id = leaves.user_id
-       WHERE leaves.org_id = ?
+       WHERE COALESCE(leaves.company_id, leaves.org_id) = ?
        ORDER BY datetime(leaves.created_at) DESC`,
     )
     .bind(user.tenantId)
@@ -352,7 +352,7 @@ async function handleCoreLeavesApproveOrReject(
     .prepare(
       `UPDATE leaves
        SET status = ?, approver_user_id = ?, decided_at = ?, updated_at = ?
-       WHERE id = ? AND org_id = ?`,
+       WHERE id = ? AND COALESCE(company_id, org_id) = ?`,
     )
     .bind(nextStatus, user.userId, now, now, leaveId, user.tenantId)
     .run();
@@ -373,7 +373,7 @@ async function handleCorePayrollList(request: Request, env: Env, user: ApiUser):
               users.name, users.email
        FROM payroll
        LEFT JOIN users ON users.id = payroll.user_id
-       WHERE users.org_id = ? OR payroll.user_id = ?
+       WHERE COALESCE(users.company_id, users.org_id) = ? OR payroll.user_id = ?
        ORDER BY datetime(payroll.created_at) DESC`,
     )
     .bind(user.tenantId, user.userId)
@@ -430,7 +430,7 @@ async function handleCoreAssetsList(request: Request, env: Env, user: ApiUser): 
        FROM assets
        LEFT JOIN asset_assignments ON asset_assignments.asset_id = assets.id AND asset_assignments.status = 'assigned'
        LEFT JOIN users ON users.id = asset_assignments.user_id
-       WHERE assets.org_id = ?
+       WHERE COALESCE(assets.company_id, assets.org_id) = ?
        ORDER BY datetime(assets.created_at) DESC`,
     )
     .bind(user.tenantId)

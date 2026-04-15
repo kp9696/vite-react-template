@@ -13,8 +13,9 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  const data = currentUser.orgId
-    ? await getOnboardingDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+  const tenantId = currentUser.companyId;
+  const data = tenantId
+    ? await getOnboardingDashboard(context.cloudflare.env.HRMS, tenantId)
     : { joiners: [], stats: [] };
 
   return { currentUser, ...data };
@@ -22,7 +23,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!currentUser.orgId) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
 
@@ -31,7 +33,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
 
   if (intent === "add-joiner") {
     await createOnboardingJoiner(context.cloudflare.env.HRMS, {
-      orgId: currentUser.orgId,
+      companyId: tenantId,
       name: String(formData.get("name") || "").trim(),
       role: String(formData.get("role") || "").trim(),
       department: String(formData.get("department") || "").trim(),

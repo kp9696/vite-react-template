@@ -14,7 +14,8 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  const dashboard = await getDashboardData(context.cloudflare.env.HRMS, currentUser.orgId ?? undefined);
+  const tenantId = currentUser.companyId ?? undefined;
+  const dashboard = await getDashboardData(context.cloudflare.env.HRMS, tenantId);
 
   // SaaS company info
   let company = null;

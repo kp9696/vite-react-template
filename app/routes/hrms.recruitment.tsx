@@ -30,20 +30,22 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  const data = currentUser.orgId
-    ? await getRecruitmentDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+  const tenantId = currentUser.companyId;
+  const data = tenantId
+    ? await getRecruitmentDashboard(context.cloudflare.env.HRMS, tenantId)
     : { openings: [], pipeline: [] };
   return { currentUser, ...data };
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!currentUser.orgId) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
   const formData = await request.formData();
   await createJobOpening(context.cloudflare.env.HRMS, {
-    orgId: currentUser.orgId,
+    companyId: tenantId,
     title: String(formData.get("title") || "").trim(),
     department: String(formData.get("department") || "").trim(),
     location: String(formData.get("location") || "").trim(),

@@ -1,6 +1,6 @@
 interface SignedInUserShape {
   id: string;
-  orgId: string | null;
+  companyId?: string | null;
   email: string;
   name: string;
   role: string;
@@ -43,7 +43,7 @@ async function signAccessToken(user: SignedInUserShape, secret: string): Promise
     sub: user.email.trim().toLowerCase(),
     name: user.name,
     userId: user.id,
-    tenantId: user.orgId ?? "NO_TENANT",
+    tenantId: user.companyId ?? "NO_TENANT",
     role: user.role,
     typ: "access",
     iat: now,
@@ -76,8 +76,9 @@ export async function callCoreHrmsApi<T>(params: {
 }): Promise<T | null> {
   const { request, env, currentUser, path, method = "GET", body } = params;
   const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
+  const tenantId = currentUser.companyId;
 
-  if (!accessSecret || !currentUser.orgId) {
+  if (!accessSecret || !tenantId) {
     return null;
   }
 

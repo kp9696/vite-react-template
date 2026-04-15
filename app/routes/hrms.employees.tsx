@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useFetcher, useLoaderData } from "react-router";
+import { Link, useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.employees";
 import HRMSLayout from "../components/HRMSLayout";
 import { avatarColor, getInitials } from "../lib/hrms.shared";
@@ -18,8 +18,9 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  const data = currentUser.orgId
-    ? await getEmployeesDashboard(context.cloudflare.env.HRMS, currentUser.orgId)
+  const tenantId = currentUser.companyId;
+  const data = tenantId
+    ? await getEmployeesDashboard(context.cloudflare.env.HRMS, tenantId)
     : { employees: [], stats: [], view: [] };
 
   // SaaS company + employee data
@@ -65,11 +66,12 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
   }
 
   // ── Legacy workforce actions ────────────────────────────────────────────────
-  if (!currentUser.orgId) {
+  const tenantId = currentUser.companyId;
+  if (!tenantId) {
     return { ok: false, type: "error", message: "Organization not found for this user." };
   }
   await createEmployee(context.cloudflare.env.HRMS, {
-    orgId: currentUser.orgId,
+    companyId: tenantId,
     name: String(formData.get("name") || "").trim(),
     role: String(formData.get("role") || "").trim(),
     department: String(formData.get("department") || "").trim(),
@@ -450,7 +452,9 @@ export default function Employees() {
                           {getInitials(emp.name)}
                         </span>
                         <div>
-                          <div style={{ fontWeight: 600, color: "var(--ink)" }}>{emp.name}</div>
+                          <Link to={`/hrms/employees/${emp.id}`} style={{ fontWeight: 600, color: "var(--ink)", textDecoration: "none" }}>
+                            {emp.name}
+                          </Link>
                           <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{emp.id} · {emp.role}</div>
                         </div>
                       </div>
