@@ -520,6 +520,7 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
 }
 
 async function handleApiLogin(request: Request, env: Env): Promise<Response> {
+  try {
   const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
   if (!accessSecret) {
     return apiJson(request, env, { error: "JWT access secret is not configured." }, 500);
@@ -590,7 +591,11 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
     fingerprint,
   });
 
-  await logAuthEvent(env.HRMS, "login", hrUser.id, ip, userAgent, "User login successful");
+  try {
+    await logAuthEvent(env.HRMS, "login", hrUser.id, ip, userAgent, "User login successful");
+  } catch {
+    // non-critical — don't fail login if audit log insert fails
+  }
 
   return apiJson(
     request,
@@ -612,6 +617,10 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
       "Set-Cookie": buildRefreshCookie(refreshToken, request.url),
     },
   );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return apiJson(request, env, { error: `Login failed: ${msg}` }, 500);
+  }
 }
 
 async function handleApiRefresh(request: Request, env: Env): Promise<Response> {

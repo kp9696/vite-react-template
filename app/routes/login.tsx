@@ -71,7 +71,7 @@ export async function action({ request, context }: Route.ActionArgs) {
 
     const payload = (await apiResponse.json().catch(() => ({}))) as { error?: string };
     if (!apiResponse.ok) {
-      return { error: payload.error || "Invalid email or password." } satisfies ActionData;
+      return { error: payload.error || `Login failed (status ${apiResponse.status}). Please try again.` } satisfies ActionData;
     }
 
     const setCookie = apiResponse.headers.get("Set-Cookie");
