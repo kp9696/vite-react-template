@@ -12,15 +12,23 @@ import { handleCorsPreflight, withCors } from "./security/cors";
 import { enforceLoginRateLimit, enforceOtpIpRateLimit, extractClientIp } from "./security/rateLimiter";
 import {
   clearOtpAttemptState,
+  clearResetOtpState,
   deletePendingOtp,
+  deleteResetOtp,
   generateOtpCode,
   getOtpAttemptBudget,
   isEmailLockedForOtp,
+  isResetEmailLocked,
+  isResetResendCoolingDown,
   isResendCoolingDown,
   readPendingOtp,
+  readResetOtp,
   recordOtpVerifyFailure,
+  recordResetOtpFailure,
+  saveResetOtp,
   savePendingOtp,
   startResendCooldown,
+  startResetResendCooldown,
 } from "./security/otp";
 import {
   createRefreshTokenRecord,
@@ -854,6 +862,98 @@ async function handleApiAddEmployee(request: Request, env: Env): Promise<Respons
   return apiJson(request, env, { ok: true, id, name: body.name.trim(), email: body.email.toLowerCase() }, 201);
 }
 
+async function handleForgotPassword(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody<{ email: string }>(request);
+  const email = normalizeEmail(body?.email ?? "");
+
+  if (!email || !isValidEmail(email)) {
+    return apiJson(request, env, { error: "Please provide a valid email address." }, 400);
+  }
+
+  if (await isResetEmailLocked(env.OTP_STORE, email)) {
+    return apiJson(request, env, { error: "Too many attempts. Please wait before trying again." }, 429);
+  }
+
+  if (await isResetResendCoolingDown(env.OTP_STORE, email)) {
+    return apiJson(request, env, { error: "Please wait before requesting another code." }, 429);
+  }
+
+  await ensureAuthUsersTable(env.HRMS);
+  const authUser = await env.HRMS
+    .prepare(`SELECT name FROM auth_users WHERE lower(email) = lower(?) AND is_verified = 1 LIMIT 1`)
+    .bind(email)
+    .first<{ name: string }>();
+
+  // Always return success to avoid email enumeration
+  if (!authUser) {
+    return apiJson(request, env, { success: true });
+  }
+
+  const otp = generateOtpCode();
+  await saveResetOtp(env.OTP_STORE, email, otp);
+  await startResetResendCooldown(env.OTP_STORE, email);
+
+  try {
+    await sendSignupOtpEmail(
+      env,
+      { name: authUser.name, companyName: "", email, password: "" },
+      otp,
+    );
+  } catch {
+    await deleteResetOtp(env.OTP_STORE, email);
+    return apiJson(request, env, { error: "Failed to send reset code. Please try again." }, 502);
+  }
+
+  return apiJson(request, env, { success: true });
+}
+
+async function handleResetPassword(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonBody<{ email: string; otp: string; password: string }>(request);
+  const email = normalizeEmail(body?.email ?? "");
+  const otp = (body?.otp ?? "").trim();
+  const password = (body?.password ?? "").trim();
+
+  if (!email || !otp || !password) {
+    return apiJson(request, env, { error: "Email, OTP, and new password are required." }, 400);
+  }
+
+  if (password.length < 8) {
+    return apiJson(request, env, { error: "Password must be at least 8 characters." }, 400);
+  }
+
+  if (await isResetEmailLocked(env.OTP_STORE, email)) {
+    return apiJson(request, env, { error: "Too many invalid attempts. Please request a new code." }, 429);
+  }
+
+  const stored = await readResetOtp(env.OTP_STORE, email);
+  if (!stored) {
+    return apiJson(request, env, { error: "Reset code expired or not found. Please request a new one." }, 400);
+  }
+
+  if (stored !== otp) {
+    const attempts = await recordResetOtpFailure(env.OTP_STORE, email);
+    const remaining = Math.max(getOtpAttemptBudget() - attempts, 0);
+
+    if (remaining === 0) {
+      await deleteResetOtp(env.OTP_STORE, email);
+      return apiJson(request, env, { error: "Too many invalid attempts. Please request a new reset code." }, 429);
+    }
+
+    return apiJson(request, env, { error: `Invalid code. ${remaining} attempts remaining.` }, 400);
+  }
+
+  const newHash = await hashPassword(password);
+  await env.HRMS
+    .prepare(`UPDATE auth_users SET password = ? WHERE lower(email) = lower(?)`)
+    .bind(newHash, email)
+    .run();
+
+  await deleteResetOtp(env.OTP_STORE, email);
+  await clearResetOtpState(env.OTP_STORE, email);
+
+  return apiJson(request, env, { success: true });
+}
+
 async function handleApiDeleteEmployee(employeeId: string, request: Request, env: Env): Promise<Response> {
   const auth = await requireApiAuth(request, env);
   if (!auth) {
@@ -901,6 +1001,14 @@ export default {
 
     if (method === "POST" && pathname === "/api/auth/login") {
       return handleApiLogin(request, env);
+    }
+
+    if (method === "POST" && pathname === "/api/auth/forgot-password") {
+      return handleForgotPassword(request, env);
+    }
+
+    if (method === "POST" && pathname === "/api/auth/reset-password") {
+      return handleResetPassword(request, env);
     }
 
     if (method === "POST" && pathname === "/api/auth/refresh") {

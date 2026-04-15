@@ -4,6 +4,7 @@ export default [
   index("routes/home.tsx"),
   route("login", "routes/login.tsx"),
   route("register", "routes/register.tsx"),
+  route("forgot-password", "routes/forgot-password.tsx"),
   route("hrms", "routes/hrms.tsx"),
   route("hrms/employees", "routes/hrms.employees.tsx"),
   route("hrms/recruitment", "routes/hrms.recruitment.tsx"),

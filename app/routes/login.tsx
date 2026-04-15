@@ -8,9 +8,6 @@ type ActionData = {
   error?: string;
 };
 
-type LoaderData = {
-  inviteError?: string;
-};
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Login" }];
@@ -181,7 +178,10 @@ export default function Login() {
               </div>
 
               <div className="field-group">
-                <label className="field-label">Password</label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                  <label className="field-label" style={{ marginBottom: 0 }}>Password</label>
+                  <a href="/forgot-password" className="form-link" style={{ fontSize: "12px" }}>Forgot password?</a>
+                </div>
                 <div className="field-wrap">
                   <span className="field-icon">
                     <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>

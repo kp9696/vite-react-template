@@ -91,3 +91,66 @@ export async function startResendCooldown(kv: KVNamespace, email: string): Promi
 export function getOtpAttemptBudget(): number {
   return EMAIL_MAX_VERIFY_ATTEMPTS;
 }
+
+// ── Password Reset OTP (separate key namespace) ──────────────────────────────
+
+function resetPendingKey(email: string): string {
+  return `reset:pending:${email}`;
+}
+
+function resetAttemptKey(email: string): string {
+  return `reset:attempts:${email}`;
+}
+
+function resetLockKey(email: string): string {
+  return `reset:locked:${email}`;
+}
+
+function resetResendKey(email: string): string {
+  return `reset:resend:${email}`;
+}
+
+export async function saveResetOtp(kv: KVNamespace, email: string, otp: string): Promise<void> {
+  await kv.put(resetPendingKey(email), otp, { expirationTtl: OTP_TTL_SECONDS });
+}
+
+export async function readResetOtp(kv: KVNamespace, email: string): Promise<string | null> {
+  return kv.get(resetPendingKey(email));
+}
+
+export async function deleteResetOtp(kv: KVNamespace, email: string): Promise<void> {
+  await kv.delete(resetPendingKey(email));
+}
+
+export async function isResetEmailLocked(kv: KVNamespace, email: string): Promise<boolean> {
+  return (await kv.get(resetLockKey(email))) !== null;
+}
+
+export async function recordResetOtpFailure(kv: KVNamespace, email: string): Promise<number> {
+  const raw = await kv.get(resetAttemptKey(email));
+  const attempts = (raw ? parseInt(raw, 10) : 0) + 1;
+
+  if (attempts >= EMAIL_MAX_VERIFY_ATTEMPTS) {
+    await kv.put(resetLockKey(email), "1", { expirationTtl: EMAIL_LOCKOUT_TTL_SECONDS });
+    await kv.delete(resetAttemptKey(email));
+    return attempts;
+  }
+
+  await kv.put(resetAttemptKey(email), String(attempts), { expirationTtl: OTP_TTL_SECONDS });
+  return attempts;
+}
+
+export async function clearResetOtpState(kv: KVNamespace, email: string): Promise<void> {
+  await Promise.all([
+    kv.delete(resetAttemptKey(email)),
+    kv.delete(resetLockKey(email)),
+  ]);
+}
+
+export async function isResetResendCoolingDown(kv: KVNamespace, email: string): Promise<boolean> {
+  return (await kv.get(resetResendKey(email))) !== null;
+}
+
+export async function startResetResendCooldown(kv: KVNamespace, email: string): Promise<void> {
+  await kv.put(resetResendKey(email), "1", { expirationTtl: RESEND_COOLDOWN_SECONDS });
+}
