@@ -48,33 +48,6 @@ const LEAVE_TYPE_COLORS: Record<string, string> = {
   "Casual Leave": "#f59e0b",
 };
 
-const initialRequests: LeaveRequest[] = [
-  { name: "Deepa Krishnan", type: "Annual Leave",    from: "Apr 10", to: "Apr 12", days: 3,  status: "Pending",  reason: "Family vacation",      fromDate: new Date(2026,3,10), toDate: new Date(2026,3,12) },
-  { name: "Meera Iyer",     type: "Sick Leave",      from: "Apr 8",  to: "Apr 9",  days: 2,  status: "Approved", reason: "Medical appointment",  fromDate: new Date(2026,3,8),  toDate: new Date(2026,3,9)  },
-  { name: "Vikram Joshi",   type: "WFH",             from: "Apr 14", to: "Apr 15", days: 2,  status: "Pending",  reason: "Home renovation",      fromDate: new Date(2026,3,14), toDate: new Date(2026,3,15) },
-  { name: "Priya Nair",     type: "Maternity Leave", from: "May 1",  to: "Jul 31", days: 90, status: "Approved", reason: "Maternity",            fromDate: new Date(2026,4,1),  toDate: new Date(2026,6,31) },
-  { name: "Arjun Gupta",    type: "Annual Leave",    from: "Apr 20", to: "Apr 22", days: 3,  status: "Rejected", reason: "Personal trip",        fromDate: new Date(2026,3,20), toDate: new Date(2026,3,22) },
-  { name: "Kavya Sharma",   type: "Sick Leave",      from: "Apr 7",  to: "Apr 7",  days: 1,  status: "Approved", reason: "Fever",                fromDate: new Date(2026,3,7),  toDate: new Date(2026,3,7)  },
-];
-
-const BASE_BALANCE: Record<string, { total: number; baseUsed: number }> = {
-  "Annual Leave": { total: 18, baseUsed: 7 },
-  "Sick Leave":   { total: 12, baseUsed: 2 },
-  "Casual Leave": { total: 6,  baseUsed: 3 },
-  "Comp Off":     { total: 4,  baseUsed: 0 },
-  "WFH":          { total: 30, baseUsed: 4 },
-  "Maternity Leave": { total: 90, baseUsed: 0 },
-};
-
-function computeBalance(requests: LeaveRequest[]) {
-  return Object.entries(BASE_BALANCE).map(([type, { total, baseUsed }]) => {
-    const extraUsed = requests
-      .filter((r) => r.type === type && r.status === "Approved")
-      .reduce((sum, r) => sum + r.days, 0);
-    const used = baseUsed + extraUsed;
-    return { type, total, used, remaining: Math.max(0, total - used) };
-  }).filter((b) => b.total > 0);
-}
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -215,7 +188,7 @@ export default function Leave() {
   const applyFetcher = useFetcher<LeaveActionResult>();
   const decisionFetcher = useFetcher<LeaveActionResult>();
   const [tab, setTab] = useState<"requests" | "balance" | "calendar">("requests");
-  const [requests, setRequests] = useState<LeaveRequest[]>(apiRequests.length > 0 ? apiRequests : initialRequests);
+  const [requests, setRequests] = useState<LeaveRequest[]>(apiRequests);
   const [calYear, setCalYear] = useState(2026);
   const [calMonth, setCalMonth] = useState(3); // April
   const [showApplyModal, setShowApplyModal] = useState(false);
@@ -223,7 +196,7 @@ export default function Leave() {
   const [pendingApply, setPendingApply] = useState<LeaveRequest | null>(null);
   const [pendingDecision, setPendingDecision] = useState<{ id?: string; name: string; from: string; status: LeaveStatus } | null>(null);
 
-  const leaveBalance = apiBalances.length > 0 ? apiBalances : computeBalance(requests);
+  const leaveBalance = apiBalances;
 
   useEffect(() => {
     const result = applyFetcher.data;

@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { redirect } from "react-router";
 import { getUserById } from "./hrms.server";
+import { enforceLoginRateLimit, extractClientIp } from "../../workers/security/rateLimiter";
 
 const REFRESH_COOKIE = "refresh_token";
 const REFRESH_MAX_AGE = 30 * 24 * 60 * 60;
@@ -218,6 +219,12 @@ export async function loginWithPassword(
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+
+  const ip = extractClientIp(request);
+  const rateLimit = await enforceLoginRateLimit(env.OTP_STORE, ip, normalizedEmail);
+  if (!rateLimit.ok) {
+    return { ok: false, error: rateLimit.message, status: 429 };
+  }
 
   const authUser = await env.HRMS
     .prepare(`SELECT name, password, is_verified FROM auth_users WHERE lower(email) = lower(?) LIMIT 1`)

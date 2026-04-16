@@ -5,16 +5,6 @@ import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 
-const initialAssets = [
-  { id: "AST-001", name: "MacBook Pro 14\" M3", type: "Laptop", assignedTo: "Deepa Krishnan", dept: "Engineering", serial: "FVFXQ1234567", condition: "Good", assignedOn: "Jan 2025", value: 185000 },
-  { id: "AST-002", name: "Dell UltraSharp 27\"", type: "Monitor", assignedTo: "Aarav Shah", dept: "Engineering", serial: "CN0X1234Y", condition: "Good", assignedOn: "Feb 2025", value: 42000 },
-  { id: "AST-003", name: "iPhone 15 Pro", type: "Phone", assignedTo: "Arjun Gupta", dept: "Sales", serial: "DNPXQ7654", condition: "Good", assignedOn: "Mar 2025", value: 95000 },
-  { id: "AST-004", name: "MacBook Air M2", type: "Laptop", assignedTo: "Priya Nair", dept: "Design", serial: "FVFGQ9876543", condition: "Good", assignedOn: "Mar 2025", value: 115000 },
-  { id: "AST-005", name: "Logitech MX Keys", type: "Peripheral", assignedTo: "Vikram Joshi", dept: "Engineering", serial: "LGT112233", condition: "Good", assignedOn: "Jan 2025", value: 9500 },
-  { id: "AST-006", name: "Dell Latitude 5540", type: "Laptop", assignedTo: null, dept: null, serial: "DXLAT5540X", condition: "Available", assignedOn: null, value: 72000 },
-  { id: "AST-007", name: "iPad Pro 12.9\"", type: "Tablet", assignedTo: "Meera Iyer", dept: "Marketing", serial: "DMPXQ11122", condition: "Damaged", assignedOn: "Dec 2024", value: 88000 },
-  { id: "AST-008", name: "Jabra Evolve2 85", type: "Peripheral", assignedTo: "Rohan Mehta", dept: "Analytics", serial: "JBR885566", condition: "Good", assignedOn: "Feb 2025", value: 22000 },
-];
 
 const typeIcons: Record<string, string> = {
   Laptop: "[L]",
@@ -170,7 +160,7 @@ export default function Assets() {
   const createFetcher = useFetcher<AssetActionResult>();
   const assignFetcher = useFetcher<AssetActionResult>();
   const revokeFetcher = useFetcher<AssetActionResult>();
-  const [assets, setAssets] = useState(apiAssets.length > 0 ? apiAssets : initialAssets);
+  const [assets, setAssets] = useState(apiAssets);
   const [filter, setFilter] = useState("All");
   const [showForm, setShowForm] = useState(false);
   const [assignTarget, setAssignTarget] = useState<string | null>(null);

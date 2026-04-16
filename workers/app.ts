@@ -645,6 +645,56 @@ async function handleVerifySignupOtp(request: Request, env: Env): Promise<Respon
   return apiJson(request, env, { success: true });
 }
 
+async function handleApiLoginDebug(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const email = normalizeEmail(url.searchParams.get("email") ?? "");
+  if (!email) {
+    return apiJson(request, env, { error: "email query param is required" }, 400);
+  }
+
+  const authUser = await env.HRMS
+    .prepare(`SELECT name, is_verified FROM auth_users WHERE lower(email) = lower(?) LIMIT 1`)
+    .bind(email)
+    .first<{ name: string; is_verified: number }>();
+
+  const companyCol = await env.HRMS
+    .prepare(`SELECT 1 AS c FROM pragma_table_info('users') WHERE name='company_id' LIMIT 1`)
+    .first<{ c: number }>();
+  const orgCol = await env.HRMS
+    .prepare(`SELECT 1 AS c FROM pragma_table_info('users') WHERE name='org_id' LIMIT 1`)
+    .first<{ c: number }>();
+  const hasCompanyId = Boolean(companyCol?.c);
+  const hasOrgId = Boolean(orgCol?.c);
+
+  const hrUser = hasCompanyId
+    ? await env.HRMS
+      .prepare(`SELECT id, company_id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+      .bind(email)
+      .first<{ id: string; company_id: string | null; org_id: string | null; role: string }>()
+    : hasOrgId
+    ? await env.HRMS
+      .prepare(`SELECT id, org_id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+      .bind(email)
+      .first<{ id: string; org_id: string | null; role: string }>()
+      .then((r) => (r ? { ...r, company_id: r.org_id ?? null } : null))
+    : await env.HRMS
+      .prepare(`SELECT id, role FROM users WHERE lower(email) = lower(?) LIMIT 1`)
+      .bind(email)
+      .first<{ id: string; role: string }>()
+      .then((r) => (r ? { ...r, org_id: null, company_id: null } : null));
+
+  return apiJson(request, env, {
+    email,
+    auth_user_exists: Boolean(authUser),
+    is_verified: authUser?.is_verified ?? null,
+    hr_user_exists: Boolean(hrUser),
+    hr_user_role: hrUser?.role ?? null,
+    tenant_id: (hrUser?.company_id ?? hrUser?.org_id ?? null),
+    has_company_id_column: hasCompanyId,
+    has_org_id_column: hasOrgId,
+  });
+}
+
 async function handleApiLogin(request: Request, env: Env): Promise<Response> {
   try {
   const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
@@ -1193,6 +1243,14 @@ export default {
 
     if (method === "POST" && pathname === "/api/verify-signup-otp") {
       return handleVerifySignupOtp(request, env);
+    }
+
+    if (method === "GET" && pathname === "/api/auth/login-debug") {
+      const debugEnabled = (env as unknown as Record<string, string>).LOGIN_DEBUG_ENABLED === "true";
+      if (!debugEnabled) {
+        return apiJson(request, env, { error: "Not found." }, 404);
+      }
+      return handleApiLoginDebug(request, env);
     }
 
     if (method === "POST" && pathname === "/api/auth/login") {
