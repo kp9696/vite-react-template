@@ -11,6 +11,7 @@ export default [
   route("hrms/recruitment", "routes/hrms.recruitment.tsx"),
   route("hrms/onboarding", "routes/hrms.onboarding.tsx"),
   route("hrms/leave", "routes/hrms.leave.tsx"),
+  route("hrms/attendance", "routes/hrms.attendance.tsx"),
   route("hrms/payroll", "routes/hrms.payroll.tsx"),
   route("hrms/expenses", "routes/hrms.expenses.tsx"),
   route("hrms/performance", "routes/hrms.performance.tsx"),

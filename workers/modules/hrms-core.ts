@@ -165,6 +165,181 @@ async function handleDashboardSummary(request: Request, env: Env, user: ApiUser)
   });
 }
 
+// ── Analytics handlers ────────────────────────────────────────────────────────
+
+async function handleAnalyticsHeadcount(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const [deptRows, exitRows] = await Promise.all([
+    env.HRMS
+      .prepare(
+        `SELECT department, COUNT(*) as headcount
+         FROM employees
+         WHERE COALESCE(company_id, org_id) = ? AND status = 'active'
+         GROUP BY department ORDER BY headcount DESC`,
+      )
+      .bind(user.tenantId)
+      .all<{ department: string; headcount: number }>(),
+    env.HRMS
+      .prepare(
+        `SELECT department, COUNT(*) as exits
+         FROM exit_processes
+         WHERE COALESCE(company_id, org_id) = ?
+         GROUP BY department`,
+      )
+      .bind(user.tenantId)
+      .all<{ department: string; exits: number }>(),
+  ]);
+
+  const exitByDept = Object.fromEntries(exitRows.results.map((r) => [r.department, r.exits]));
+  const depts = deptRows.results.map((r) => {
+    const exits = exitByDept[r.department] ?? 0;
+    const total = r.headcount + exits;
+    const rate = total > 0 ? Math.round((exits / total) * 1000) / 10 : 0;
+    return { dept: r.department, headcount: r.headcount, exits, rate };
+  });
+
+  return json(request, env, { depts });
+}
+
+async function handleAnalyticsHiringTrend(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  // Last 7 months of joiners from employees table
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT strftime('%Y-%m', joined_on) as month_key, COUNT(*) as hired
+       FROM employees
+       WHERE COALESCE(company_id, org_id) = ?
+         AND joined_on >= date('now', '-7 months')
+       GROUP BY month_key ORDER BY month_key ASC`,
+    )
+    .bind(user.tenantId)
+    .all<{ month_key: string; hired: number }>();
+
+  // Exits by month
+  const exitRows = await env.HRMS
+    .prepare(
+      `SELECT strftime('%Y-%m', last_day) as month_key, COUNT(*) as left_count
+       FROM exit_processes
+       WHERE COALESCE(company_id, org_id) = ?
+         AND last_day >= date('now', '-7 months')
+       GROUP BY month_key ORDER BY month_key ASC`,
+    )
+    .bind(user.tenantId)
+    .all<{ month_key: string; left_count: number }>();
+
+  // Merge into a map
+  const months: Record<string, { hired: number; left: number }> = {};
+  for (const r of rows.results) {
+    months[r.month_key] = { hired: r.hired, left: 0 };
+  }
+  for (const r of exitRows.results) {
+    if (!months[r.month_key]) months[r.month_key] = { hired: 0, left: 0 };
+    months[r.month_key].left = r.left_count;
+  }
+
+  const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const trend = Object.entries(months)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, v]) => {
+      const [, mm] = key.split("-");
+      return { month: MONTH_LABELS[parseInt(mm, 10) - 1], hired: v.hired, left: v.left };
+    });
+
+  return json(request, env, { trend });
+}
+
+async function handleAnalyticsSalary(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  // Get most recent month_key that has payroll data
+  const latestRun = await env.HRMS
+    .prepare(
+      `SELECT month_key FROM payroll_items
+       WHERE COALESCE(company_id, org_id) = ?
+       ORDER BY month_key DESC LIMIT 1`,
+    )
+    .bind(user.tenantId)
+    .first<{ month_key: string }>();
+
+  if (!latestRun) {
+    return json(request, env, { depts: [], month: null });
+  }
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT department,
+              COUNT(*) as count,
+              AVG(net) as avg_net,
+              MIN(net) as min_net,
+              MAX(net) as max_net
+       FROM payroll_items
+       WHERE COALESCE(company_id, org_id) = ? AND month_key = ?
+       GROUP BY department ORDER BY avg_net DESC`,
+    )
+    .bind(user.tenantId, latestRun.month_key)
+    .all<{ department: string; count: number; avg_net: number; min_net: number; max_net: number }>();
+
+  const depts = rows.results.map((r) => ({
+    dept: r.department,
+    count: r.count,
+    avg: Math.round(r.avg_net),
+    min: r.min_net,
+    max: r.max_net,
+  }));
+
+  return json(request, env, { depts, month: latestRun.month_key });
+}
+
+async function handleAnalyticsLeaveUtilization(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const year = new Date().getFullYear();
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT leave_type,
+              SUM(total) as total_entitled,
+              SUM(used) as total_used,
+              COUNT(*) as employee_count
+       FROM leave_balances
+       WHERE COALESCE(company_id, org_id) = ? AND year = ?
+       GROUP BY leave_type ORDER BY total_used DESC`,
+    )
+    .bind(user.tenantId, year)
+    .all<{ leave_type: string; total_entitled: number; total_used: number; employee_count: number }>();
+
+  const types = rows.results.map((r) => ({
+    type: r.leave_type,
+    entitled: r.total_entitled,
+    used: r.total_used,
+    pct: r.total_entitled > 0 ? Math.round((r.total_used / r.total_entitled) * 100) : 0,
+    employees: r.employee_count,
+  }));
+
+  return json(request, env, { types, year });
+}
+
+async function handleAnalyticsAttendanceSummary(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT status, COUNT(*) as cnt
+       FROM attendance
+       WHERE COALESCE(company_id, org_id) = ?
+         AND attendance_date >= date('now', '-30 days')
+       GROUP BY status`,
+    )
+    .bind(user.tenantId)
+    .all<{ status: string; cnt: number }>();
+
+  const summary = Object.fromEntries(rows.results.map((r) => [r.status, r.cnt]));
+  const total = rows.results.reduce((s, r) => s + r.cnt, 0);
+
+  return json(request, env, { summary, total, days: 30 });
+}
+
 async function handleAttendanceCheckIn(request: Request, env: Env, user: ApiUser): Promise<Response> {
   const payload = await readJsonBody<{ geo?: string }>(request);
   const date = todayIsoDate();
@@ -255,6 +430,24 @@ async function handleAttendanceToday(request: Request, env: Env, user: ApiUser):
     .all();
 
   return json(request, env, { date, records: rows.results });
+}
+
+async function handleAttendanceMy(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "60", 10), 120);
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, attendance_date, check_in_at, check_out_at, status
+       FROM attendance
+       WHERE COALESCE(company_id, org_id) = ? AND user_id = ?
+       ORDER BY attendance_date DESC
+       LIMIT ?`,
+    )
+    .bind(user.tenantId, user.userId, limit)
+    .all();
+
+  return json(request, env, { records: rows.results });
 }
 
 async function upsertLeaveBalance(
@@ -910,6 +1103,26 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
     return handleDashboardSummary(request, env, user!);
   }
 
+  if (method === "GET" && pathname === "/api/analytics/headcount") {
+    return handleAnalyticsHeadcount(request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/analytics/hiring-trend") {
+    return handleAnalyticsHiringTrend(request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/analytics/salary") {
+    return handleAnalyticsSalary(request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/analytics/leave-utilization") {
+    return handleAnalyticsLeaveUtilization(request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/analytics/attendance-summary") {
+    return handleAnalyticsAttendanceSummary(request, env, user!);
+  }
+
   if (method === "POST" && pathname === "/api/attendance/check-in") {
     return handleAttendanceCheckIn(request, env, user!);
   }
@@ -920,6 +1133,10 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
 
   if (method === "GET" && pathname === "/api/attendance/today") {
     return handleAttendanceToday(request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/attendance/my") {
+    return handleAttendanceMy(request, env, user!);
   }
 
   if (method === "POST" && pathname === "/api/leaves") {

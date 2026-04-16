@@ -23,6 +23,7 @@ const navGroups = [
     title: "Operations",
     items: [
       { label: "Leave",       icon: SVGCalendar,  path: "/hrms/leave" },
+      { label: "Attendance",  icon: SVGClock,     path: "/hrms/attendance" },
       { label: "Payroll",     icon: SVGCoin,      path: "/hrms/payroll" },
       { label: "Expenses",    icon: SVGReceipt,   path: "/hrms/expenses" },
       { label: "Performance", icon: SVGTrending,  path: "/hrms/performance" },
@@ -49,6 +50,7 @@ function SVGUsers() { return <svg width="15" height="15" fill="none" stroke="cur
 function SVGTarget() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>; }
 function SVGRocket() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>; }
 function SVGCalendar() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>; }
+function SVGClock() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>; }
 function SVGCoin() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v2m0 8v2m-4-5h5a2 2 0 0 0 0-4H9a2 2 0 0 1 0-4h5"/></svg>; }
 function SVGReceipt() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M16 8H8m8 4H8m5 4H8"/></svg>; }
 function SVGTrending() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>; }
