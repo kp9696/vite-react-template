@@ -1,13 +1,11 @@
+import bcrypt from "bcryptjs";
 import { Form, redirect, useActionData, useLoaderData, useNavigation } from "react-router";
 import type { Route } from "./+types/login";
-import { consumeInviteToken } from "../lib/invite-token.server";
+import { peekInviteToken, consumeInviteToken } from "../lib/invite-token.server";
 import { activateInvitedUser, getUserById } from "../lib/hrms.server";
 import { clearRefreshCookie, createAuthSessionCookie, destroyAuthSession, loginWithPassword } from "../lib/jwt-auth.server";
 
-type ActionData = {
-  error?: string;
-};
-
+type ActionData = { error?: string };
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Login" }];
@@ -17,79 +15,112 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const inviteToken = url.searchParams.get("invite");
 
-  if (!inviteToken) {
-    return {};
+  if (!inviteToken) return {};
+
+  const tokenData = await peekInviteToken(context.cloudflare.env.HRMS, inviteToken);
+
+  if (!tokenData) {
+    return { inviteError: "This invite link is invalid, has already been used, or has expired." };
   }
 
-  try {
-    const invite = await consumeInviteToken(context.cloudflare.env.HRMS, inviteToken);
-    const existingUser = await getUserById(context.cloudflare.env.HRMS, invite.userId);
-
-    if (!existingUser) {
-      return { inviteError: "This invite is no longer attached to a valid user account." };
-    }
-
-    const user = existingUser.status === "Invited"
-      ? await activateInvitedUser(context.cloudflare.env.HRMS, invite.userId)
-      : existingUser;
-
-    return redirect("/hrms", {
-      headers: {
-        "Set-Cookie": await createAuthSessionCookie(context.cloudflare.env, user.email, request),
-      },
-    });
-  } catch (error) {
-    return {
-      inviteError: error instanceof Error ? error.message : "This invite link could not be processed.",
-    };
+  const user = await getUserById(context.cloudflare.env.HRMS, tokenData.userId);
+  if (!user) {
+    return { inviteError: "This invite is no longer attached to a valid user account." };
   }
+
+  // Show the account-setup form — do NOT consume the token yet
+  return {
+    inviteSetup: true as const,
+    inviteToken,
+    invitedName: user.name,
+    invitedEmail: user.email,
+  };
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
+  const env = context.cloudflare.env;
 
-  // ── Email / password login (OTP-verified accounts) ──
+  // ── Account setup from invite link ─────────────────────────────────────────
+  if (intent === "setup-account") {
+    const inviteToken    = String(formData.get("inviteToken") || "").trim();
+    const password       = String(formData.get("password") || "");
+    const confirmPassword = String(formData.get("confirmPassword") || "");
+
+    if (!inviteToken)                      return { error: "Missing invite token. Please use the original invite link." } satisfies ActionData;
+    if (!password || password.length < 8)  return { error: "Password must be at least 8 characters." } satisfies ActionData;
+    if (password !== confirmPassword)      return { error: "Passwords do not match." } satisfies ActionData;
+
+    let invite;
+    try {
+      invite = await consumeInviteToken(env.HRMS, inviteToken);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Invalid or expired invite link." } satisfies ActionData;
+    }
+
+    const user = await getUserById(env.HRMS, invite.userId);
+    if (!user) return { error: "User account not found." } satisfies ActionData;
+
+    // Hash password and upsert into auth_users
+    const hashed = await bcrypt.hash(password, 12);
+    await env.HRMS
+      .prepare(
+        `INSERT INTO auth_users (name, email, password, is_verified, created_at)
+         VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+         ON CONFLICT(email) DO UPDATE SET
+           password    = excluded.password,
+           is_verified = 1,
+           name        = excluded.name`,
+      )
+      .bind(user.name, user.email.trim().toLowerCase(), hashed)
+      .run();
+
+    // Activate the user record
+    if (user.status === "Invited") {
+      await activateInvitedUser(env.HRMS, invite.userId);
+    }
+
+    return redirect("/hrms", {
+      headers: { "Set-Cookie": await createAuthSessionCookie(env, user.email, request) },
+    });
+  }
+
+  // ── Email / password login ──────────────────────────────────────────────────
   if (intent === "email-login") {
-    const email = String(formData.get("email") || "").trim().toLowerCase();
+    const email    = String(formData.get("email") || "").trim().toLowerCase();
     const password = String(formData.get("password") || "").trim();
 
     if (!email || !password) {
       return { error: "Email and password are required." } satisfies ActionData;
     }
 
-    const result = await loginWithPassword(
-      context.cloudflare.env,
-      email,
-      password,
-      request,
-    );
+    const result = await loginWithPassword(env, email, password, request);
+    if (!result.ok) return { error: result.error } satisfies ActionData;
 
-    if (!result.ok) {
-      return { error: result.error } satisfies ActionData;
-    }
-
-    return redirect("/hrms", {
-      headers: { "Set-Cookie": result.setCookie },
-    });
+    return redirect("/hrms", { headers: { "Set-Cookie": result.setCookie } });
   }
 
-  // ── Logout ──
+  // ── Logout ──────────────────────────────────────────────────────────────────
   if (intent === "logout") {
-    await destroyAuthSession(request, context.cloudflare.env);
-    return redirect("/login", {
-      headers: { "Set-Cookie": clearRefreshCookie(request.url) },
-    });
+    await destroyAuthSession(request, env);
+    return redirect("/login", { headers: { "Set-Cookie": clearRefreshCookie(request.url) } });
   }
 
   return { error: "Unsupported login action." } satisfies ActionData;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function Login() {
   const loaderData = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
+
+  const isSetup = "inviteSetup" in loaderData && loaderData.inviteSetup === true;
 
   return (
     <div className="login-root">
@@ -135,70 +166,143 @@ export default function Login() {
       {/* ── Right Panel ── */}
       <div className="login-right">
         <div className="form-wrapper">
-          <div className="form-header">
-            <div className="form-logo">JK</div>
-            <h2>Welcome back</h2>
-            <p>Sign in to your admin account.</p>
-          </div>
 
-          {loaderData.inviteError ? (
-            <div className="error-msg" style={{ marginTop: 0, marginBottom: 16 }}>{loaderData.inviteError}</div>
-          ) : null}
-
-          <Form method="post">
-            <input type="hidden" name="intent" value="email-login" />
-
-              <div className="field-group">
-                <label className="field-label">Email</label>
-                <div className="field-wrap">
-                  <span className="field-icon">
-                    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-                  </span>
-                  <input
-                    name="email"
-                    type="email"
-                    placeholder="you@company.com"
-                    className="field-input"
-                    autoComplete="email"
-                    autoFocus
-                  />
-                </div>
+          {/* ── Error from loader (bad/expired invite) ── */}
+          {"inviteError" in loaderData && loaderData.inviteError ? (
+            <>
+              <div className="form-header">
+                <div className="form-logo">JK</div>
+                <h2>Invite Invalid</h2>
+                <p>This invite link could not be processed.</p>
+              </div>
+              <div className="error-msg" style={{ marginTop: 0 }}>{loaderData.inviteError}</div>
+              <div className="form-footer" style={{ marginTop: 20 }}>
+                <a href="/login" className="form-link">← Back to login</a>
+              </div>
+            </>
+          ) : isSetup ? (
+            /* ── Account Setup Form ── */
+            <>
+              <div className="form-header">
+                <div className="form-logo" style={{ background: "linear-gradient(135deg,#10b981,#059669)" }}>JK</div>
+                <h2>Set Up Your Account</h2>
+                <p>Create a password to complete your onboarding.</p>
               </div>
 
-              <div className="field-group">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                  <label className="field-label" style={{ marginBottom: 0 }}>Password</label>
-                  <a href="/forgot-password" className="form-link" style={{ fontSize: "12px" }}>Forgot password?</a>
+              <div className="invite-banner">
+                <div className="invite-avatar">
+                  {loaderData.invitedName?.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2)}
                 </div>
-                <div className="field-wrap">
-                  <span className="field-icon">
-                    <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                  </span>
-                  <input
-                    name="password"
-                    type="password"
-                    placeholder="Your password"
-                    className="field-input"
-                    autoComplete="current-password"
-                  />
+                <div>
+                  <div className="invite-name">{loaderData.invitedName}</div>
+                  <div className="invite-email">{loaderData.invitedEmail}</div>
                 </div>
+                <div className="invite-badge">Invited</div>
               </div>
 
-              {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
+              <Form method="post">
+                <input type="hidden" name="intent" value="setup-account" />
+                <input type="hidden" name="inviteToken" value={loaderData.inviteToken} />
 
-              <button type="submit" className="submit-btn" disabled={submitting}>
-                {submitting ? "Signing in…" : "Sign In"}
-              </button>
+                <div className="field-group">
+                  <label className="field-label">Full Name</label>
+                  <div className="field-wrap">
+                    <span className="field-icon">
+                      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    </span>
+                    <input className="field-input field-readonly" value={loaderData.invitedName} readOnly />
+                  </div>
+                </div>
 
-            <div className="form-footer">
-              Don't have an account?{" "}
-              <a href="/register" className="form-link">Create one with OTP</a>
-            </div>
-          </Form>
+                <div className="field-group">
+                  <label className="field-label">Email Address</label>
+                  <div className="field-wrap">
+                    <span className="field-icon">
+                      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                    </span>
+                    <input className="field-input field-readonly" value={loaderData.invitedEmail} readOnly />
+                  </div>
+                </div>
 
-          <div className="security-note">
-            New organisations get 10 invite seats. Existing admins can invite up to 5 additional users.
-          </div>
+                <div className="field-group">
+                  <label className="field-label">Create Password</label>
+                  <div className="field-wrap">
+                    <span className="field-icon">
+                      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </span>
+                    <input name="password" type="password" placeholder="Min. 8 characters" className="field-input" autoFocus autoComplete="new-password" />
+                  </div>
+                </div>
+
+                <div className="field-group">
+                  <label className="field-label">Confirm Password</label>
+                  <div className="field-wrap">
+                    <span className="field-icon">
+                      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </span>
+                    <input name="confirmPassword" type="password" placeholder="Repeat your password" className="field-input" autoComplete="new-password" />
+                  </div>
+                </div>
+
+                {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
+
+                <button type="submit" className="submit-btn submit-green" disabled={submitting}>
+                  {submitting ? "Creating account…" : "Create Account & Sign In →"}
+                </button>
+              </Form>
+
+              <div className="security-note">Your password is hashed with bcrypt and never stored in plain text.</div>
+            </>
+          ) : (
+            /* ── Normal Login Form ── */
+            <>
+              <div className="form-header">
+                <div className="form-logo">JK</div>
+                <h2>Welcome back</h2>
+                <p>Sign in to your account.</p>
+              </div>
+
+              <Form method="post">
+                <input type="hidden" name="intent" value="email-login" />
+
+                <div className="field-group">
+                  <label className="field-label">Email</label>
+                  <div className="field-wrap">
+                    <span className="field-icon">
+                      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                    </span>
+                    <input name="email" type="email" placeholder="you@company.com" className="field-input" autoComplete="email" autoFocus />
+                  </div>
+                </div>
+
+                <div className="field-group">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                    <label className="field-label" style={{ marginBottom: 0 }}>Password</label>
+                    <a href="/forgot-password" className="form-link" style={{ fontSize: "12px" }}>Forgot password?</a>
+                  </div>
+                  <div className="field-wrap">
+                    <span className="field-icon">
+                      <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </span>
+                    <input name="password" type="password" placeholder="Your password" className="field-input" autoComplete="current-password" />
+                  </div>
+                </div>
+
+                {actionData?.error ? <div className="error-msg">{actionData.error}</div> : null}
+
+                <button type="submit" className="submit-btn" disabled={submitting}>
+                  {submitting ? "Signing in…" : "Sign In"}
+                </button>
+
+                <div className="form-footer">
+                  Don't have an account?{" "}
+                  <a href="/register" className="form-link">Create one with OTP</a>
+                </div>
+              </Form>
+
+              <div className="security-note">New organisations get 10 invite seats. Existing admins can invite up to 5 additional users.</div>
+            </>
+          )}
         </div>
       </div>
 
@@ -293,6 +397,28 @@ export default function Login() {
         .form-header h2 { font-size: 26px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; margin-bottom: 6px; }
         .form-header p { font-size: 14px; color: #64748b; line-height: 1.5; }
 
+        /* ── Invite Banner ── */
+        .invite-banner {
+          display: flex; align-items: center; gap: 12px;
+          background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+          border: 1px solid #a7f3d0; border-radius: 12px;
+          padding: 14px 16px; margin-bottom: 22px;
+        }
+        .invite-avatar {
+          width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
+          background: linear-gradient(135deg, #10b981, #059669);
+          display: grid; place-items: center;
+          font-size: 14px; font-weight: 800; color: white;
+          box-shadow: 0 2px 8px rgba(16,185,129,0.35);
+        }
+        .invite-name { font-size: 14px; font-weight: 700; color: #065f46; }
+        .invite-email { font-size: 12px; color: #047857; margin-top: 1px; }
+        .invite-badge {
+          margin-left: auto; background: #10b981; color: white;
+          font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px;
+          letter-spacing: 0.5px; text-transform: uppercase; flex-shrink: 0;
+        }
+
         /* ── Fields ── */
         .field-group { margin-bottom: 18px; }
         .field-label { display: block; font-size: 12.5px; font-weight: 600; color: #374151; margin-bottom: 6px; letter-spacing: 0.1px; }
@@ -306,7 +432,8 @@ export default function Login() {
           transition: all 0.18s; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
         }
         .field-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.13); }
-        .field-input:hover:not(:focus) { border-color: #c7d2fe; }
+        .field-input:hover:not(:focus):not(.field-readonly) { border-color: #c7d2fe; }
+        .field-readonly { background: #f8fafc !important; color: #64748b !important; cursor: default; }
         .field-wrap:focus-within .field-icon { color: #6366f1; }
 
         /* ── Buttons ── */
@@ -321,6 +448,12 @@ export default function Login() {
         .submit-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.45); }
         .submit-btn:active:not(:disabled) { transform: translateY(0); }
         .submit-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+        .submit-green {
+          background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+          box-shadow: 0 4px 16px rgba(16,185,129,0.35) !important;
+        }
+        .submit-green:hover:not(:disabled) { box-shadow: 0 8px 24px rgba(16,185,129,0.45) !important; }
+
         /* ── Error ── */
         .error-msg {
           background: #fef2f2; border: 1px solid #fecaca; color: #dc2626;
@@ -332,7 +465,6 @@ export default function Login() {
         .form-footer { margin-top: 18px; font-size: 13px; color: #64748b; text-align: center; }
         .form-link { color: #6366f1; font-weight: 600; text-decoration: none; }
         .form-link:hover { text-decoration: underline; }
-
         .security-note { margin-top: 18px; font-size: 12px; color: #94a3b8; line-height: 1.65; text-align: center; }
 
         /* ── Animations ── */
@@ -345,4 +477,3 @@ export default function Login() {
     </div>
   );
 }
-

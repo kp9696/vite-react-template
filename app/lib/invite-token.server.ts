@@ -62,6 +62,30 @@ export async function createInviteToken(db: D1Database, userId: string, email: s
   return token;
 }
 
+/**
+ * Validate a token and return its payload WITHOUT consuming it.
+ * Use this in the loader to pre-fill the account-setup form.
+ * Returns null if invalid or expired.
+ */
+export async function peekInviteToken(db: D1Database, token: string): Promise<InviteTokenRecord | null> {
+  await ensureInviteTokenSchema(db);
+
+  const tokenHash = await sha256Hex(token.trim());
+  const record = await db
+    .prepare(`SELECT user_id, email, expires_at FROM invite_tokens WHERE token_hash = ? LIMIT 1`)
+    .bind(tokenHash)
+    .first<{ user_id: string; email: string; expires_at: string }>();
+
+  if (!record) return null;
+
+  if (new Date(record.expires_at).getTime() < Date.now()) {
+    await db.prepare(`DELETE FROM invite_tokens WHERE token_hash = ?`).bind(tokenHash).run();
+    return null;
+  }
+
+  return { userId: record.user_id, email: record.email, expiresAt: record.expires_at };
+}
+
 export async function consumeInviteToken(db: D1Database, token: string): Promise<InviteTokenRecord> {
   await ensureInviteTokenSchema(db);
 
