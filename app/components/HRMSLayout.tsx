@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Form, Link, useLocation } from "react-router";
-import { avatarColor, getInitials } from "../lib/hrms.shared";
+import { avatarColor, getInitials, isAdminRole } from "../lib/hrms.shared";
 
 interface CurrentUser {
   id: string;
@@ -9,7 +9,7 @@ interface CurrentUser {
   email: string;
 }
 
-const navGroups = [
+const adminNavGroups = [
   {
     title: "Core",
     items: [
@@ -42,7 +42,31 @@ const navGroups = [
   },
 ];
 
-const allNav = navGroups.flatMap((g) => g.items);
+const employeeNavGroups = [
+  {
+    title: "My Work",
+    items: [
+      { label: "Dashboard",   icon: SVGGrid,      path: "/hrms" },
+      { label: "Attendance",  icon: SVGClock,     path: "/hrms/attendance" },
+      { label: "Expenses",    icon: SVGReceipt,   path: "/hrms/expenses" },
+    ],
+  },
+  {
+    title: "View Only",
+    items: [
+      { label: "Leave",       icon: SVGCalendar,  path: "/hrms/leave" },
+      { label: "Payroll",     icon: SVGCoin,      path: "/hrms/payroll" },
+      { label: "Assets",      icon: SVGLaptop,    path: "/hrms/assets" },
+    ],
+  },
+];
+
+function getNavGroups(role?: string) {
+  return role && !isAdminRole(role) ? employeeNavGroups : adminNavGroups;
+}
+
+const allAdminNav = adminNavGroups.flatMap((g) => g.items);
+const allEmployeeNav = employeeNavGroups.flatMap((g) => g.items);
 
 // ─── Inline SVG icons (16×16) ──────────────────────────────
 function SVGGrid() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>; }
@@ -75,6 +99,8 @@ export default function HRMSLayout({
   const [collapsed, setCollapsed] = useState(false);
   const initials = currentUser ? getInitials(currentUser.name) : "?";
   const accentColor = currentUser ? avatarColor(currentUser.name) : "#6366f1";
+  const navGroups = getNavGroups(currentUser?.role);
+  const allNav = currentUser && !isAdminRole(currentUser.role) ? allEmployeeNav : allAdminNav;
   const currentPage = allNav.find((item) => item.path === location.pathname);
 
   return (

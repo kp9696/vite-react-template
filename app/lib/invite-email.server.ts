@@ -9,6 +9,7 @@ interface InviteEmailPayload {
 }
 
 function hasMailConfig(env: Env): boolean {
+  if (env.RESEND_API_KEY) return true;
   return Boolean(
     env.GMAIL_CLIENT_ID &&
       env.GMAIL_CLIENT_SECRET &&
@@ -108,11 +109,10 @@ export async function sendInviteEmail(
   if (!hasMailConfig(env)) {
     return {
       delivered: false,
-      message: "User saved, but Gmail variables are not configured yet.",
+      message: "User saved, but email is not configured yet. The user record is still saved in D1.",
     };
   }
 
-  const token = await getGmailAccessToken(env);
   const inviteToken = await createInviteToken(db, userId, payload.email);
   const url = new URL(requestUrl);
   const baseUrl = env.HRMS_BASE_URL || `${url.protocol}//${url.host}`;
@@ -124,10 +124,38 @@ export async function sendInviteEmail(
     payload.department,
     inviteUrl,
   );
+  const subject = "You're invited to JWithKP HRMS";
+
+  // ── Resend (primary) ────────────────────────────────────────────────────────
+  if (env.RESEND_API_KEY) {
+    const resendResponse = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: env.MS_FROM_EMAIL ?? "info@jwithkp.com",
+        to: [payload.email],
+        subject,
+        html,
+      }),
+    });
+
+    if (!resendResponse.ok) {
+      throw new Error(`Resend error: ${await resendResponse.text()}`);
+    }
+
+    await markInviteSent(db, userId);
+    return { delivered: true, message: `Invite sent to ${payload.email}.` };
+  }
+
+  // ── Gmail OAuth (fallback) ──────────────────────────────────────────────────
+  const token = await getGmailAccessToken(env);
   const raw = buildRawEmail(
     env.GMAIL_FROM_EMAIL ?? "",
     payload.email,
-    "You're invited to JWithKP HRMS",
+    subject,
     html,
   );
 
@@ -145,9 +173,5 @@ export async function sendInviteEmail(
   }
 
   await markInviteSent(db, userId);
-
-  return {
-    delivered: true,
-    message: `Invite sent to ${payload.email}.`,
-  };
+  return { delivered: true, message: `Invite sent to ${payload.email}.` };
 }
