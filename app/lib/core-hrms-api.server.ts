@@ -1,3 +1,5 @@
+import { handleCoreHrmsApi } from "../../workers/modules/hrms-core";
+
 interface SignedInUserShape {
   id: string;
   companyId?: string | null;
@@ -66,6 +68,13 @@ async function signAccessToken(user: SignedInUserShape, secret: string): Promise
   return `${signingInput}.${arrayBufferToBase64Url(signature)}`;
 }
 
+/**
+ * Call an internal HRMS API handler directly (no HTTP self-fetch).
+ *
+ * Cloudflare Workers block loop-back subrequests to their own domain
+ * (error 1042), so we build a synthetic Request and pass it straight to
+ * handleCoreHrmsApi instead of going through fetch().
+ */
 export async function callCoreHrmsApi<T>(params: {
   request: Request;
   env: Env;
@@ -76,30 +85,42 @@ export async function callCoreHrmsApi<T>(params: {
 }): Promise<T | null> {
   const { request, env, currentUser, path, method = "GET", body } = params;
   const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
-  const tenantId = currentUser.companyId;
 
-  if (!accessSecret || !tenantId) {
+  if (!accessSecret) {
     return null;
   }
 
-  const token = await signAccessToken(currentUser, accessSecret);
+  // Ensure companyId is always set — fall back to user id so tenant-scoped
+  // queries still work for standalone admin accounts with no org.
+  const userWithTenant: SignedInUserShape = {
+    ...currentUser,
+    companyId: currentUser.companyId ?? currentUser.id,
+  };
+
+  const token = await signAccessToken(userWithTenant, accessSecret);
   const url = new URL(path, request.url);
 
-  const response = await fetch(url.toString(), {
+  // Build a synthetic Request so we can call handleCoreHrmsApi directly,
+  // avoiding the Cloudflare loop-back subrequest restriction (error 1042).
+  const syntheticRequest = new Request(url.toString(), {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
-  }).catch(() => null);
-
-  if (!response?.ok) {
-    return null;
-  }
+  });
 
   try {
-    return (await response.json()) as T;
+    const response = await handleCoreHrmsApi(syntheticRequest, env);
+
+    if (!response) {
+      // Route not matched — should not happen for known paths.
+      return null;
+    }
+
+    const data = (await response.json()) as T;
+    return data;
   } catch {
     return null;
   }

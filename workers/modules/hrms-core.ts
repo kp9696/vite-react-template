@@ -1077,6 +1077,109 @@ async function handleTestWebhook(request: Request, env: Env, user: ApiUser): Pro
   return json(request, env, { ok: true });
 }
 
+// ── Expense Claims handlers ────────────────────────────────────────────────────
+
+async function handleListExpenses(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") || "";
+  const isManager = isHrManager(user.role);
+
+  let query: string;
+  let bindings: unknown[];
+
+  if (isManager) {
+    // HR sees all claims for the tenant, optionally filtered by status
+    if (status) {
+      query = `SELECT * FROM expense_claims WHERE COALESCE(company_id, org_id) = ? AND status = ? ORDER BY created_at DESC LIMIT 200`;
+      bindings = [user.tenantId, status];
+    } else {
+      query = `SELECT * FROM expense_claims WHERE COALESCE(company_id, org_id) = ? ORDER BY created_at DESC LIMIT 200`;
+      bindings = [user.tenantId];
+    }
+  } else {
+    // Employee sees only their own claims
+    if (status) {
+      query = `SELECT * FROM expense_claims WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 100`;
+      bindings = [user.tenantId, user.userId, status];
+    } else {
+      query = `SELECT * FROM expense_claims WHERE COALESCE(company_id, org_id) = ? AND user_id = ? ORDER BY created_at DESC LIMIT 100`;
+      bindings = [user.tenantId, user.userId];
+    }
+  }
+
+  const stmt = env.HRMS.prepare(query);
+  const rows = await stmt.bind(...bindings).all();
+  return json(request, env, { claims: rows.results });
+}
+
+async function handleCreateExpense(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    category?: string;
+    description?: string;
+    amount?: number;
+    claimDate?: string;
+    hasReceipt?: boolean;
+  }>(request);
+
+  const category = body?.category?.trim() || "";
+  const description = body?.description?.trim() || "";
+  const amount = Number(body?.amount ?? 0);
+  const claimDate = body?.claimDate?.trim() || todayIsoDate();
+  const hasReceipt = body?.hasReceipt ? 1 : 0;
+
+  if (!category || !description || amount <= 0) {
+    return json(request, env, { error: "Category, description, and amount are required." }, 400);
+  }
+
+  const id = `EXP-${Date.now().toString().slice(-6)}`;
+  const now = nowIso();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO expense_claims
+         (id, company_id, org_id, user_id, user_name, category, description, amount, claim_date, has_receipt, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, user.userId, user.name, category, description, amount, claimDate, hasReceipt, now, now)
+    .run();
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleExpenseDecision(
+  claimId: string,
+  request: Request,
+  env: Env,
+  user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const body = await readJsonBody<{ status?: string; notes?: string }>(request);
+  const newStatus = (body?.status || "").toLowerCase();
+
+  if (!["approved", "rejected", "reimbursed"].includes(newStatus)) {
+    return json(request, env, { error: "Invalid status. Use: approved, rejected, reimbursed." }, 400);
+  }
+
+  const now = nowIso();
+  const result = await env.HRMS
+    .prepare(
+      `UPDATE expense_claims
+       SET status = ?, reviewed_by = ?, reviewed_at = ?, notes = ?, updated_at = ?
+       WHERE id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(newStatus, user.userId, now, body?.notes?.trim() || null, now, claimId, user.tenantId)
+    .run();
+
+  if (!result.meta.changes) {
+    return json(request, env, { error: "Claim not found." }, 404);
+  }
+
+  return json(request, env, { ok: true, id: claimId, status: newStatus });
+}
+
 export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Response | null> {
   const { method } = request;
   const { pathname } = new URL(request.url);
@@ -1172,6 +1275,19 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   const revokeMatch = pathname.match(/^\/api\/assets\/([^/]+)\/revoke$/);
   if (method === "POST" && revokeMatch) {
     return handleRevokeAsset(revokeMatch[1], request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/expenses") {
+    return handleListExpenses(request, env, user!);
+  }
+
+  if (method === "POST" && pathname === "/api/expenses") {
+    return handleCreateExpense(request, env, user!);
+  }
+
+  const expenseDecisionMatch = pathname.match(/^\/api\/expenses\/([^/]+)\/decision$/);
+  if (method === "POST" && expenseDecisionMatch) {
+    return handleExpenseDecision(expenseDecisionMatch[1], request, env, user!);
   }
 
   if (method === "POST" && pathname === "/api/invitations") {
