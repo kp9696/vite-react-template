@@ -13,7 +13,7 @@ type JsonMap = Record<string, unknown>;
 
 type LeaveStatus = "pending" | "approved" | "rejected";
 
-const HR_ROLES = new Set(["Admin", "HR", "HR Admin"]);
+const HR_ROLES = new Set(["Admin", "HR", "HR Admin", "HR Manager", "Manager", "Payroll Manager", "Finance", "admin", "hr_admin", "hr_manager"]);
 const DEFAULT_LEAVE_TOTALS: Record<string, number> = {
   "Annual Leave": 18,
   "Sick Leave": 12,
@@ -118,21 +118,13 @@ async function usersTableHasCompanyId(db: D1Database): Promise<boolean> {
 }
 
 async function getEmployeeCount(db: D1Database, companyId: string): Promise<number> {
+  // Primary source: users table (invited + active employees)
   const row = await db
-    .prepare("SELECT COUNT(*) as cnt FROM employees WHERE COALESCE(company_id, org_id) = ?")
-    .bind(companyId)
-    .first<{ cnt: number }>();
-
-  if (typeof row?.cnt === "number") {
-    return row.cnt;
-  }
-
-  const fallback = await db
     .prepare("SELECT COUNT(*) as cnt FROM users WHERE COALESCE(company_id, org_id) = ?")
     .bind(companyId)
     .first<{ cnt: number }>();
 
-  return fallback?.cnt ?? 0;
+  return row?.cnt ?? 0;
 }
 
 async function handleDashboardSummary(request: Request, env: Env, user: ApiUser): Promise<Response> {

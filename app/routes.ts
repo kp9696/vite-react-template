@@ -21,4 +21,5 @@ export default [
   route("hrms/analytics", "routes/hrms.analytics.tsx"),
   route("hrms/hrbot", "routes/hrms.hrbot.tsx"),
   route("hrms/users", "routes/hrms.users.tsx"),
+  route("hrms/profile/:userId", "routes/hrms.profile.$userId.tsx"),
 ] satisfies RouteConfig;

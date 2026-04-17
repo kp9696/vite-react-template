@@ -1,10 +1,27 @@
-- [x] Add temporary dev-only login diagnostic endpoint in workers/app.ts
-- [ ] Run diagnostic request for target email to identify failure point
-- [ ] Apply minimal fix (data/password reset path) based on diagnostic result
-- [ ] Re-test POST /api/auth/login (JSON success path)
-- [ ] Re-test GET /api/company/usage with Bearer token
-- [ ] Re-test POST /api/employees under-limit success path
-- [ ] Re-test POST /api/employees free-plan limit-reached path (HTTP 400 + exact message)
-- [ ] Check invite-create flow route availability and verify pre-send limit/expiry behavior
-- [ ] Verify admin-only and company_id scoping on affected endpoints
-- [ ] Remove/disable temporary diagnostic endpoint
+# HRMS UI Upgrades (5 Features)
+
+## Current Progress
+- [x] **Plan approved** by user
+- [x] **1. Create TODO.md** ← Completed
+
+## Implementation Steps (Execute in order)
+
+### Phase 1: Foundation (CSS + Context)
+- [ ] `app/app.css` - Dark mode vars, mobile overlay, skeleton styles ← Current step
+- [ ] `app/root.tsx` - ThemeContext provider + useEffect sync
+
+### Phase 2: Layout Enhancements
+- [ ] `app/components/HRMSLayout.tsx` 
+  - Mobile sidebar overlay + backdrop
+  - Dark mode toggle button (topbar)
+  - Quick actions dropdown (New Employee, Export, Settings)
+
+### Phase 3: Page Skeletons
+- [ ] `app/routes/hrms.tsx` - Stat cards + table skeletons
+- [ ] `app/routes/hrms.leave.tsx` - Leave table + balance cards skeletons
+
+### Phase 4: Verification
+- [ ] Static code review complete
+- [ ] User confirmation
+
+**Status**: Implementing Phase 1 (starting with `app/app.css`)
