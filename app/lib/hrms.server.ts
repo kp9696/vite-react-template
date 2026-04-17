@@ -18,6 +18,11 @@ export interface HRMSUser {
   email: string;
   role: string;
   department: string;
+  designation: string | null;
+  phone: string | null;
+  gender: string | null;
+  dob: string | null;
+  employmentType: string | null;
   status: UserStatus;
   joinedOn: string;
   inviteSentAt: string | null;
@@ -31,6 +36,12 @@ export interface InviteUserInput {
   email: string;
   role: string;
   department: string;
+  designation?: string;
+  phone?: string;
+  gender?: string;
+  dob?: string;
+  employmentType?: string;
+  joinedOn?: string;
 }
 
 export interface RegisterOrganizationInput {
@@ -86,6 +97,11 @@ function mapUser(row: Record<string, unknown>): HRMSUser {
     email: String(row.email),
     role: String(row.role),
     department: String(row.department),
+    designation: row.designation ? String(row.designation) : null,
+    phone: row.phone ? String(row.phone) : null,
+    gender: row.gender ? String(row.gender) : null,
+    dob: row.dob ? String(row.dob) : null,
+    employmentType: row.employment_type ? String(row.employment_type) : null,
     status: String(row.status) as UserStatus,
     joinedOn: normalizeMonthYear(row.joined_on as string | null | undefined),
     inviteSentAt: row.invite_sent_at ? String(row.invite_sent_at) : null,
@@ -107,7 +123,7 @@ function mapOrganization(row: Record<string, unknown>): Organization {
 async function listUsersLegacy(db: D1Database): Promise<HRMSUser[]> {
   const result = await db
     .prepare(
-      `SELECT id, NULL AS company_id, NULL AS org_id, NULL AS organization_name, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at
+      `SELECT id, NULL AS company_id, NULL AS org_id, NULL AS organization_name, name, email, role, department, designation, phone, gender, dob, employment_type, status, joined_on, invite_sent_at, created_at, updated_at
        FROM users
        ORDER BY datetime(created_at) DESC, name ASC`,
     )
@@ -123,14 +139,14 @@ export async function listUsers(db: D1Database, companyId?: string): Promise<HRM
 
   const statement = companyId
     ? db.prepare(
-        `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+        `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
          FROM users
          LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
          WHERE COALESCE(users.company_id, users.org_id) = ?
          ORDER BY datetime(users.created_at) DESC, users.name ASC`,
       ).bind(companyId)
     : db.prepare(
-        `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+        `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
          FROM users
          LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
          ORDER BY datetime(users.created_at) DESC, users.name ASC`,
@@ -157,7 +173,7 @@ export async function getUserByEmail(db: D1Database, email: string): Promise<HRM
 
   const result = await db
     .prepare(
-      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
        FROM users
         LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
        WHERE lower(users.email) = lower(?)
@@ -186,7 +202,7 @@ export async function getUserById(db: D1Database, id: string): Promise<HRMSUser 
 
   const result = await db
     .prepare(
-      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
        FROM users
         LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
        WHERE users.id = ?
@@ -255,39 +271,105 @@ export async function createOrUpdateInvitedUser(
   const now = new Date().toISOString();
   const existing = await getUserByEmail(db, email);
 
+  const desig = input.designation?.trim() || null;
+  const phone = input.phone?.trim() || null;
+  const gender = input.gender?.trim() || null;
+  const dob = input.dob?.trim() || null;
+  const empType = input.employmentType?.trim() || "Full-time";
+
   if (existing) {
     await db
       .prepare(
         `UPDATE users
-        SET company_id = ?, org_id = COALESCE(org_id, ?), name = ?, role = ?, department = ?, status = 'Invited', invite_sent_at = ?, updated_at = ?
+         SET company_id = ?, org_id = COALESCE(org_id, ?), name = ?, role = ?, department = ?,
+             designation = ?, phone = ?, gender = ?, dob = ?, employment_type = ?,
+             status = 'Invited', invite_sent_at = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .bind(input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(), now, now, existing.id)
+      .bind(input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(),
+            desig, phone, gender, dob, empType, now, now, existing.id)
       .run();
 
     const updated = await getUserById(db, existing.id);
-    if (!updated) {
-      throw new Error("Updated user could not be reloaded.");
-    }
+    if (!updated) throw new Error("Updated user could not be reloaded.");
     return updated;
   }
 
   const id = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
-  const joinedOn = new Date().toISOString();
+  const joinedOn = input.joinedOn?.trim() || new Date().toISOString();
 
   await db
     .prepare(
-      `INSERT INTO users (id, company_id, org_id, name, email, role, department, status, joined_on, invite_sent_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'Invited', ?, ?, ?, ?)`,
+      `INSERT INTO users (id, company_id, org_id, name, email, role, department,
+                          designation, phone, gender, dob, employment_type,
+                          status, joined_on, invite_sent_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Invited', ?, ?, ?, ?)`,
     )
-    .bind(id, input.companyId, input.companyId, input.name.trim(), email, input.role.trim(), input.department.trim(), joinedOn, now, now, now)
+    .bind(id, input.companyId, input.companyId, input.name.trim(), email,
+          input.role.trim(), input.department.trim(),
+          desig, phone, gender, dob, empType,
+          joinedOn, now, now, now)
     .run();
 
   const created = await getUserById(db, id);
-  if (!created) {
-    throw new Error("Created user could not be reloaded.");
-  }
+  if (!created) throw new Error("Created user could not be reloaded.");
   return created;
+}
+
+export async function updateUserDetails(
+  db: D1Database,
+  userId: string,
+  tenantId: string,
+  updates: Partial<{
+    name: string; role: string; department: string; designation: string;
+    phone: string; gender: string; dob: string; employmentType: string; joinedOn: string;
+  }>,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  const map: Record<string, string> = {
+    name: "name", role: "role", department: "department", designation: "designation",
+    phone: "phone", gender: "gender", dob: "dob", employmentType: "employment_type", joinedOn: "joined_on",
+  };
+
+  for (const [key, col] of Object.entries(map)) {
+    if (key in updates && updates[key as keyof typeof updates] !== undefined) {
+      fields.push(`${col} = ?`);
+      values.push((updates[key as keyof typeof updates] as string)?.trim() || null);
+    }
+  }
+
+  if (fields.length === 0) return;
+  fields.push("updated_at = ?");
+  values.push(now, userId, tenantId);
+
+  await db
+    .prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(...values)
+    .run();
+}
+
+export async function deleteUser(
+  db: D1Database,
+  userId: string,
+  tenantId: string,
+): Promise<void> {
+  // Look up email first for auth_users cleanup
+  const user = await db
+    .prepare(`SELECT email FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(userId, tenantId)
+    .first<{ email: string }>();
+
+  if (!user) throw new Error("User not found.");
+
+  await db.batch([
+    db.prepare(`DELETE FROM invite_tokens WHERE user_id = ?`).bind(userId),
+    db.prepare(`DELETE FROM refresh_tokens WHERE user_id = ?`).bind(userId),
+    db.prepare(`DELETE FROM auth_users WHERE lower(email) = lower(?)`).bind(user.email),
+    db.prepare(`DELETE FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ?`).bind(userId, tenantId),
+  ]);
 }
 
 export async function registerOrganization(
