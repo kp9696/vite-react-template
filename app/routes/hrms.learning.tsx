@@ -4,24 +4,16 @@ import type { Route } from "./+types/hrms.learning";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 
-const courses = [
-  { title: "Leadership Fundamentals", category: "Management", duration: "4h 30m", enrolled: 284, completion: 67, level: "Intermediate" },
-  { title: "Data Privacy & GDPR", category: "Compliance", duration: "1h 15m", enrolled: 1102, completion: 89, level: "All" },
-  { title: "Advanced TypeScript", category: "Technical", duration: "6h", enrolled: 145, completion: 42, level: "Advanced" },
-  { title: "Effective Communication", category: "Soft Skills", duration: "2h 45m", enrolled: 560, completion: 78, level: "Beginner" },
-  { title: "DEI in the Workplace", category: "Culture", duration: "1h 30m", enrolled: 980, completion: 91, level: "All" },
-  { title: "Project Management with Agile", category: "Management", duration: "5h", enrolled: 320, completion: 55, level: "Intermediate" },
-];
-
 const catColors: Record<string, string> = {
-  Management: "#6366f1",
-  Compliance: "#ef4444",
-  Technical: "#8b5cf6",
+  Management:    "#6366f1",
+  Compliance:    "#ef4444",
+  Technical:     "#8b5cf6",
   "Soft Skills": "#10b981",
-  Culture: "#f59e0b",
+  Culture:       "#f59e0b",
 };
 
 const categories = ["Management", "Compliance", "Technical", "Soft Skills", "Culture"];
+const levels = ["All", "Beginner", "Intermediate", "Advanced"];
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Learning" }];
@@ -35,22 +27,38 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export default function Learning() {
   const { currentUser } = useLoaderData<typeof loader>();
   const [showForm, setShowForm] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast]       = useState<string | null>(null);
+
+  // Form state
+  const [title, setTitle]       = useState("");
+  const [category, setCategory] = useState("Technical");
+  const [level, setLevel]       = useState("All");
+  const [duration, setDuration] = useState("");
+  const [provider, setProvider] = useState("");
+  const [desc, setDesc]         = useState("");
 
   useEffect(() => {
     if (!toast) return;
-    const timeout = setTimeout(() => setToast(null), 4000);
-    return () => clearTimeout(timeout);
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
   }, [toast]);
+
+  const handleAdd = () => {
+    if (!title.trim()) return;
+    setShowForm(false);
+    setTitle(""); setDuration(""); setProvider(""); setDesc("");
+    setToast(`"${title}" added to the course library! Full enrolment management coming soon.`);
+  };
 
   return (
     <HRMSLayout currentUser={currentUser}>
-      {toast ? (
-        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "var(--accent)", color: "white", padding: "12px 20px", borderRadius: 10, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.15)", maxWidth: 320 }}>
-          {toast}
+      {toast && (
+        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: "#0f172a", color: "white", padding: "12px 20px", borderRadius: 12, fontSize: 13, fontWeight: 600, boxShadow: "0 8px 30px rgba(0,0,0,0.2)", maxWidth: 380, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 16 }}>✓</span> {toast}
         </div>
-      ) : null}
+      )}
 
+      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Learning & Development</div>
@@ -59,111 +67,92 @@ export default function Learning() {
         <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ Add Course</button>
       </div>
 
-      {showForm ? (
+      {/* Add course form */}
+      {showForm && (
         <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--accent)" }}>
           <div className="card-title">Add New Course</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
             <div style={{ gridColumn: "1 / -1" }}>
-              <label style={labelStyle}>Course Title</label>
-              <input placeholder="e.g. Advanced Data Analysis" style={fieldStyle} />
+              <label style={labelStyle}>Course Title *</label>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Advanced Data Analysis" style={fieldStyle} />
             </div>
             <div>
               <label style={labelStyle}>Category</label>
-              <select style={fieldStyle}>
-                {categories.map((category) => <option key={category}>{category}</option>)}
+              <select value={category} onChange={(e) => setCategory(e.target.value)} style={fieldStyle}>
+                {categories.map((c) => <option key={c}>{c}</option>)}
               </select>
             </div>
             <div>
               <label style={labelStyle}>Level</label>
-              <select style={fieldStyle}>
-                <option>All</option>
-                <option>Beginner</option>
-                <option>Intermediate</option>
-                <option>Advanced</option>
+              <select value={level} onChange={(e) => setLevel(e.target.value)} style={fieldStyle}>
+                {levels.map((l) => <option key={l}>{l}</option>)}
               </select>
             </div>
             <div>
               <label style={labelStyle}>Duration</label>
-              <input placeholder="e.g. 2h 30m" style={fieldStyle} />
+              <input value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="e.g. 2h 30m" style={fieldStyle} />
             </div>
             <div>
               <label style={labelStyle}>Provider / Instructor</label>
-              <input placeholder="e.g. Internal - Sneha Pillai" style={fieldStyle} />
+              <input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="e.g. Internal — Kiran Sharma" style={fieldStyle} />
             </div>
             <div style={{ gridColumn: "1 / -1" }}>
               <label style={labelStyle}>Description</label>
-              <textarea placeholder="Brief course description..." style={{ ...fieldStyle, height: 72, resize: "vertical" }} />
+              <textarea value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Brief course description..." style={{ ...fieldStyle, height: 72, resize: "vertical" as const }} />
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            <button className="btn btn-primary" onClick={() => { setShowForm(false); setToast("Course added successfully."); }}>Add Course</button>
+            <button className="btn btn-primary" disabled={!title.trim()} onClick={handleAdd}>Add Course</button>
             <button className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
           </div>
         </div>
-      ) : null}
+      )}
 
-      <div className="stat-grid">
+      {/* Stats — real zeros */}
+      <div className="stat-grid" style={{ marginBottom: 24 }}>
         {[
-          { label: "Total Courses", value: "48", sub: "Across 6 categories" },
-          { label: "Enrollments", value: "3,391", sub: "This quarter" },
-          { label: "Avg Completion", value: "70%", sub: "up 8% vs last quarter" },
-          { label: "Certifications", value: "624", sub: "Issued this year" },
-        ].map((stat) => (
-          <div className="stat-card" key={stat.label}>
-            <div className="stat-label">{stat.label}</div>
-            <div className="stat-value" style={{ fontSize: 22 }}>{stat.value}</div>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{stat.sub}</div>
+          { label: "Total Courses",   value: "0",  sub: "Add your first course" },
+          { label: "Enrollments",     value: "0",  sub: "This quarter" },
+          { label: "Avg Completion",  value: "—",  sub: "No courses yet" },
+          { label: "Certifications",  value: "0",  sub: "Issued this year" },
+        ].map((s) => (
+          <div className="stat-card" key={s.label}>
+            <div className="stat-label">{s.label}</div>
+            <div className="stat-value" style={{ fontSize: 22 }}>{s.value}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{s.sub}</div>
           </div>
         ))}
       </div>
 
-      <div className="three-col">
-        {courses.map((course) => (
-          <div
-            key={course.title}
-            className="card"
-            style={{ margin: 0, transition: "transform 0.15s, box-shadow 0.15s" }}
-            onMouseEnter={(event) => {
-              (event.currentTarget as HTMLElement).style.transform = "translateY(-2px)";
-              (event.currentTarget as HTMLElement).style.boxShadow = "0 8px 24px rgba(0,0,0,0.08)";
-            }}
-            onMouseLeave={(event) => {
-              (event.currentTarget as HTMLElement).style.transform = "";
-              (event.currentTarget as HTMLElement).style.boxShadow = "";
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <span className="badge" style={{ background: `${catColors[course.category]}18`, color: catColors[course.category] }}>{course.category}</span>
-              <span style={{ fontSize: 11, color: "var(--ink-3)", background: "var(--surface)", padding: "3px 8px", borderRadius: 20 }}>{course.level}</span>
+      {/* Empty state */}
+      <div className="card" style={{ textAlign: "center", padding: "60px 20px" }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>📚</div>
+        <div style={{ fontWeight: 800, fontSize: 18, color: "var(--ink)", marginBottom: 8 }}>No courses yet</div>
+        <div style={{ fontSize: 14, color: "var(--ink-3)", maxWidth: 380, margin: "0 auto 28px", lineHeight: 1.6 }}>
+          Build your organisation's learning library. Add internal or external courses, assign them to teams, and track completion progress.
+        </div>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
+          <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+            + Add First Course
+          </button>
+          <button className="btn btn-outline" onClick={() => setToast("Course import from external providers coming soon!")}>
+            Import from Library
+          </button>
+        </div>
+
+        {/* Category chips preview */}
+        <div style={{ marginTop: 32, display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+          {categories.map((cat) => (
+            <div key={cat} style={{ padding: "4px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: `${catColors[cat]}18`, color: catColors[cat], border: `1px solid ${catColors[cat]}30` }}>
+              {cat}
             </div>
-            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)", marginBottom: 6 }}>{course.title}</div>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 14 }}>Duration {course.duration} - {course.enrolled} enrolled</div>
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Completion</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: catColors[course.category] }}>{course.completion}%</span>
-              </div>
-              <div style={{ background: "var(--surface)", borderRadius: 99, height: 6 }}>
-                <div style={{ width: `${course.completion}%`, background: catColors[course.category], height: "100%", borderRadius: 99 }} />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-primary" style={{ flex: 1, fontSize: 12, padding: "6px 10px" }}
-                onClick={() => setToast(`Team enrolled in "${course.title}".`)}>
-                Enroll Team
-              </button>
-              <button className="btn btn-outline" style={{ fontSize: 12, padding: "6px 10px" }}
-                onClick={() => setToast(`Viewing details for "${course.title}".`)}>
-                Details
-              </button>
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 12 }}>Supported categories</div>
       </div>
     </HRMSLayout>
   );
 }
 
 const labelStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 6 };
-const fieldStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white" };
-
+const fieldStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", fontFamily: "inherit", color: "var(--ink)", outline: "none", boxSizing: "border-box" as const };

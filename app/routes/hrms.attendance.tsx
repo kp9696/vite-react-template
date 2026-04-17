@@ -4,7 +4,7 @@ import type { Route } from "./+types/hrms.attendance";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
-import { avatarColor, getInitials } from "../lib/hrms.shared";
+import { avatarColor, getInitials, isAdminRole } from "../lib/hrms.shared";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -106,7 +106,7 @@ export function meta() {
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  const isManager = ["hr_admin", "hr_manager", "admin"].includes((currentUser.role || "").toLowerCase());
+  const isManager = isAdminRole(currentUser.role);
 
   // Today's team attendance (HR only)
   let todayRecords: AttendanceRecord[] = [];

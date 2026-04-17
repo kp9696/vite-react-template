@@ -108,12 +108,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   });
 
   const apiRequests = (leaveResponse?.leaves || []).map(mapApiLeave);
-  const apiBalances = (balanceResponse?.balances || []).map((row) => ({
+  const rawBalances = (balanceResponse?.balances || []).map((row) => ({
     type: row.leave_type || "Annual Leave",
     total: Number(row.total ?? 0),
     used: Number(row.used ?? 0),
-    remaining: Number(row.remaining ?? 0),
+    remaining: Number(row.remaining ?? row.total ?? 0),
   }));
+
+  // Fall back to org defaults when no balances have been set up yet
+  const DEFAULT_LEAVE_BALANCES = [
+    { type: "Annual Leave",  total: 18, used: 0, remaining: 18 },
+    { type: "Sick Leave",    total: 12, used: 0, remaining: 12 },
+    { type: "Casual Leave",  total: 6,  used: 0, remaining: 6  },
+    { type: "Comp Off",      total: 4,  used: 0, remaining: 4  },
+  ];
+  const apiBalances = rawBalances.length > 0 ? rawBalances : DEFAULT_LEAVE_BALANCES;
 
   return {
     currentUser,
@@ -378,7 +387,7 @@ export default function Leave() {
       <div className="stat-grid" style={{ marginBottom: 24 }}>
         {leaveBalance.filter((l) => ["Annual Leave", "Sick Leave", "Casual Leave", "Comp Off"].includes(l.type)).map((l) => {
           const color = LEAVE_TYPE_COLORS[l.type] ?? "#6b7280";
-          const usedPct = Math.round((l.used / l.total) * 100);
+          const usedPct = l.total > 0 ? Math.round((l.used / l.total) * 100) : 0;
           return (
             <div className="stat-card" key={l.type} style={{ borderLeft: `4px solid ${color}` }}>
               <div className="stat-label">{l.type}</div>
@@ -487,10 +496,10 @@ export default function Leave() {
                     </div>
                   ))}
                   <div className="progress-track" style={{ marginTop: 8 }}>
-                    <div className="progress-fill" style={{ width: `${Math.round((l.used / l.total) * 100)}%`, background: color }} />
+                    <div className="progress-fill" style={{ width: `${l.total > 0 ? Math.round((l.used / l.total) * 100) : 0}%`, background: color }} />
                   </div>
                   <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 5, textAlign: "right" }}>
-                    {Math.round((l.used / l.total) * 100)}% used
+                    {l.total > 0 ? Math.round((l.used / l.total) * 100) : 0}% used
                   </div>
                 </div>
               );
