@@ -37,7 +37,6 @@ const adminNavGroups = [
       { label: "Exit Mgmt",   icon: SVGDoor,      path: "/hrms/exit" },
       { label: "Analytics",   icon: SVGChart,     path: "/hrms/analytics" },
       { label: "HRBot AI",    icon: SVGBot,       path: "/hrms/hrbot" },
-      { label: "User Mgmt",   icon: SVGShield,    path: "/hrms/users" },
     ],
   },
 ];
