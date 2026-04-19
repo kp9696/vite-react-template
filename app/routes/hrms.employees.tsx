@@ -30,13 +30,13 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   const tenantId = currentUser.companyId;
   if (!tenantId) throw redirect("/hrms");
-  if (!isAdminRole(currentUser.role)) throw redirect("/hrms");
+  const isAdmin = isAdminRole(currentUser.role);
 
   const organization = await getOrganizationById(context.cloudflare.env.HRMS, tenantId);
   const users = await listUsers(context.cloudflare.env.HRMS, tenantId);
-  const memberUsage = await getOrganizationMemberUsage(context.cloudflare.env.HRMS, tenantId);
+  const memberUsage = isAdmin ? await getOrganizationMemberUsage(context.cloudflare.env.HRMS, tenantId) : 0;
 
-  return { currentUser, organization, users, memberUsage };
+  return { currentUser, isAdmin, organization, users, memberUsage };
 }
 
 export async function action({ request, context }: Route.ActionArgs): Promise<ActionResult> {
@@ -278,7 +278,7 @@ function DeleteModal({ user, onClose, fetcher }: { user: HRMSUser; onClose: () =
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function EmployeesPage() {
-  const { currentUser, organization, users, memberUsage } = useLoaderData<typeof loader>();
+  const { currentUser, isAdmin, organization, users, memberUsage } = useLoaderData<typeof loader>();
   const actionFetcher = useFetcher<ActionResult>();
   const resendFetcher = useFetcher<ActionResult>();
 
@@ -313,6 +313,58 @@ export default function EmployeesPage() {
     const matchStatus = filterStatus === "All" || u.status === filterStatus;
     return matchSearch && matchDept && matchStatus;
   });
+
+  // ── Employee read-only directory ──────────────────────────────────────────
+  if (!isAdmin) {
+    const filteredDir = users.filter((u) => {
+      const q = search.toLowerCase();
+      return !q || u.name.toLowerCase().includes(q) || (u.designation ?? "").toLowerCase().includes(q) || (u.department ?? "").toLowerCase().includes(q);
+    });
+    return (
+      <HRMSLayout currentUser={currentUser}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+          <div>
+            <div className="page-title">Employee Directory</div>
+            <div className="page-sub">{organization?.name ?? "Your Organisation"} · {users.length} team member{users.length !== 1 ? "s" : ""}</div>
+          </div>
+        </div>
+        {/* Search */}
+        <div style={{ position: "relative", maxWidth: 360, marginBottom: 24 }}>
+          <svg style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: "#94a3b8", pointerEvents: "none" }} width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, role or department…" style={{ width: "100%", padding: "9px 12px 9px 34px", border: "1.5px solid var(--border)", borderRadius: 10, fontSize: 13, background: "white", color: "var(--ink)", fontFamily: "inherit" }} />
+        </div>
+        {/* Cards grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
+          {filteredDir.map((u) => {
+            const color = avatarColor(u.name);
+            const initials = getInitials(u.name);
+            const isSelf = u.id === currentUser.id;
+            return (
+              <div key={u.id} style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 14, padding: "20px 18px", textAlign: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+                <div style={{ width: 52, height: 52, borderRadius: "50%", background: color, display: "grid", placeItems: "center", fontSize: 16, fontWeight: 700, color: "white", margin: "0 auto 12px" }}>{initials}</div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)", marginBottom: 2 }}>
+                  {u.name}
+                  {isSelf && <span style={{ marginLeft: 6, fontSize: 10, color: "#6366f1", fontWeight: 600, background: "#eef2ff", padding: "1px 6px", borderRadius: 20 }}>You</span>}
+                </div>
+                {u.designation && <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 4 }}>{u.designation}</div>}
+                <div style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, display: "inline-block", background: "#eff6ff", color: "#2563eb", marginBottom: 8 }}>{u.department ?? "—"}</div>
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 4 }}>{u.employmentType ?? "Full-time"}</div>
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 2 }}>{u.email}</div>
+                <div style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{u.id}</div>
+              </div>
+            );
+          })}
+        </div>
+        {filteredDir.length === 0 && (
+          <div className="empty-state">
+            <div className="empty-state-icon">👥</div>
+            <div className="empty-state-title">No results found</div>
+            <div className="empty-state-sub">Try a different search term.</div>
+          </div>
+        )}
+      </HRMSLayout>
+    );
+  }
 
   return (
     <HRMSLayout currentUser={currentUser}>

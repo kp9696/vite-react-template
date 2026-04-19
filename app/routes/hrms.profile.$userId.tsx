@@ -48,15 +48,21 @@ export function meta({ data }: { data?: { employee?: { name: string } } }) {
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
-  if (!isAdminRole(currentUser.role)) throw redirect("/hrms");
-
   const { userId } = params as { userId: string };
+  const isAdmin = isAdminRole(currentUser.role);
+
+  // Employees can only view their own profile
+  if (!isAdmin && currentUser.id !== userId) throw redirect("/hrms");
+
   const db = context.cloudflare.env.HRMS;
   const orgId = currentUser.companyId;
   if (!orgId) throw redirect("/hrms");
 
   const employee = await getUserById(db, userId);
-  if (!employee || employee.companyId !== orgId) throw redirect("/hrms/employees");
+  if (!employee || employee.companyId !== orgId) {
+    if (isAdmin) throw redirect("/hrms/employees");
+    throw redirect("/hrms");
+  }
 
   const [attendanceRes, leaveBalancesRes, leavesRes, expensesRes] = await Promise.all([
     db.prepare(`SELECT id, attendance_date, check_in_at, check_out_at, status FROM attendance WHERE user_id = ? AND org_id = ? ORDER BY attendance_date DESC LIMIT 60`)
@@ -71,6 +77,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
   return {
     currentUser,
+    isAdmin,
     employee,
     attendance: attendanceRes.results ?? [],
     leaveBalances: leaveBalancesRes.results ?? [],
@@ -460,14 +467,13 @@ function ExpensesTab({ expenses }: { expenses: ExpenseRow[] }) {
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function EmployeeProfile() {
-  const { currentUser, employee, attendance, leaveBalances, leaves, expenses } = useLoaderData<typeof loader>();
+  const { currentUser, isAdmin, employee, attendance, leaveBalances, leaves, expenses } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ActionResult>();
   const [tab, setTab] = useState<"profile" | "attendance" | "leave" | "expenses">("profile");
   const [toast, setToast] = useState<ActionResult | null>(null);
 
   const color = avatarColor(employee.name);
   const initials = getInitials(employee.name);
-  const isAdmin = isAdminRole(employee.role);
 
   // Show toast on save
   if (fetcher.data && fetcher.data !== toast) {

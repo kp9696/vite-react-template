@@ -30,6 +30,29 @@ interface MyAttendanceRecord {
   hours_worked?: number;
 }
 
+interface RegularisationRecord {
+  id: string;
+  user_id: string;
+  name?: string;
+  email?: string;
+  attendance_date: string;
+  requested_check_in: string | null;
+  requested_check_out: string | null;
+  reason: string;
+  status: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+  review_note?: string;
+  created_at: string;
+}
+
+interface RegularisationResponse {
+  ok?: boolean;
+  error?: string;
+  id?: string;
+  status?: string;
+}
+
 interface TodayResponse {
   date: string;
   records: AttendanceRecord[];
@@ -93,8 +116,12 @@ function statusLabel(status: string): string {
   return map[status.toLowerCase()] ?? status;
 }
 
-const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const DAYS_SHORT = ["S","M","T","W","T","F","S"];
+function regStatusBadge(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "approved") return "badge-green";
+  if (s === "rejected") return "badge-red";
+  return "badge-amber";
+}
 
 // ── Meta ─────────────────────────────────────────────────────────────────────
 
@@ -132,12 +159,21 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const today = new Date().toISOString().slice(0, 10);
   const myToday = myRecords.find((r) => r.attendance_date === today) ?? null;
 
-  return { currentUser, isManager, todayRecords, myRecords, myToday, today };
+  // Regularisation requests
+  const regularisationsRes = await callCoreHrmsApi<{ regularisations?: RegularisationRecord[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/attendance/regularisations",
+  });
+  const regularisations = regularisationsRes?.regularisations ?? [];
+
+  return { currentUser, isManager, todayRecords, myRecords, myToday, today, regularisations };
 }
 
 // ── Action ───────────────────────────────────────────────────────────────────
 
-export async function action({ request, context }: Route.ActionArgs): Promise<CheckInOutResponse> {
+export async function action({ request, context }: Route.ActionArgs): Promise<CheckInOutResponse & RegularisationResponse> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
@@ -170,23 +206,72 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ch
     return { ok: true, checkOutAt: res.checkOutAt, attendanceDate: res.attendanceDate };
   }
 
+  if (intent === "regularise-submit") {
+    const attendanceDate = String(formData.get("attendanceDate") || "").trim();
+    const requestedCheckIn = String(formData.get("requestedCheckIn") || "").trim();
+    const requestedCheckOut = String(formData.get("requestedCheckOut") || "").trim();
+    const reason = String(formData.get("reason") || "").trim();
+
+    const res = await callCoreHrmsApi<RegularisationResponse>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/attendance/regularise",
+      method: "POST",
+      body: {
+        attendanceDate,
+        requestedCheckIn: requestedCheckIn || undefined,
+        requestedCheckOut: requestedCheckOut || undefined,
+        reason,
+      },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to submit regularisation request." };
+    return { ok: true, id: res.id };
+  }
+
+  if (intent === "regularise-decide") {
+    const id = String(formData.get("id") || "").trim();
+    const status = String(formData.get("status") || "").trim();
+    const note = String(formData.get("note") || "").trim();
+
+    const res = await callCoreHrmsApi<RegularisationResponse>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: `/api/attendance/regularisations/${encodeURIComponent(id)}/decision`,
+      method: "POST",
+      body: { status, note: note || undefined },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to process decision." };
+    return { ok: true, id, status: res.status };
+  }
+
   return { error: "Unsupported action." };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Attendance() {
-  const { currentUser, isManager, todayRecords, myRecords, myToday, today } =
+  const { currentUser, isManager, todayRecords, myRecords, myToday, today, regularisations: initialRegularisations } =
     useLoaderData<typeof loader>();
 
-  const fetcher = useFetcher<CheckInOutResponse>();
-  const [tab, setTab] = useState<"today" | "my" | "calendar">(isManager ? "today" : "my");
+  const fetcher = useFetcher<CheckInOutResponse & RegularisationResponse>();
+  const regulariseFetcher = useFetcher<RegularisationResponse>();
+  const [tab, setTab] = useState<"today" | "my" | "calendar" | "regularise">(isManager ? "today" : "my");
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [localToday, setLocalToday] = useState(myToday);
   const [calDate, setCalDate] = useState(() => {
     const d = new Date();
     return { year: d.getFullYear(), month: d.getMonth() };
   });
+
+  // Regularise form state
+  const [regForm, setRegForm] = useState({ date: "", checkIn: "", checkOut: "", reason: "" });
+  const [regularisations, setRegularisations] = useState<RegularisationRecord[]>(initialRegularisations);
+
+  // Admin decision modal state
+  const [decideModal, setDecideModal] = useState<{ rec: RegularisationRecord; action: "approved" | "rejected" } | null>(null);
+  const [decideNote, setDecideNote] = useState("");
 
   // Build calendar data from myRecords
   const recordsByDate = Object.fromEntries(myRecords.map((r) => [r.attendance_date, r]));
@@ -215,15 +300,37 @@ export default function Attendance() {
           check_out_at: prev?.check_out_at ?? null,
           status: "present",
         }));
-        setToast({ msg: "✓ Checked in successfully!", ok: true });
+        setToast({ msg: "Checked in successfully!", ok: true });
       } else if (data.checkOutAt) {
         setLocalToday((prev) =>
           prev ? { ...prev, check_out_at: data.checkOutAt! } : prev
         );
-        setToast({ msg: "✓ Checked out successfully!", ok: true });
+        setToast({ msg: "Checked out successfully!", ok: true });
+      } else if (data.id) {
+        // Regularisation submitted
+        setToast({ msg: "Regularisation request submitted!", ok: true });
+        setRegForm({ date: "", checkIn: "", checkOut: "", reason: "" });
       }
     }
   }, [fetcher.data, today]);
+
+  // Handle regularise fetcher (admin decision)
+  useEffect(() => {
+    const data = regulariseFetcher.data;
+    if (!data) return;
+    if (data.error) {
+      setToast({ msg: data.error, ok: false });
+      return;
+    }
+    if (data.ok && data.id) {
+      setRegularisations((prev) =>
+        prev.map((r) => r.id === data.id ? { ...r, status: data.status ?? r.status } : r)
+      );
+      setToast({ msg: `Request ${data.status === "approved" ? "approved" : "rejected"}.`, ok: true });
+      setDecideModal(null);
+      setDecideNote("");
+    }
+  }, [regulariseFetcher.data]);
 
   const handleCheckIn = () => {
     const fd = new FormData();
@@ -235,6 +342,27 @@ export default function Attendance() {
     const fd = new FormData();
     fd.set("intent", "check-out");
     fetcher.submit(fd, { method: "POST" });
+  };
+
+  const handleRegulariseSubmit = () => {
+    if (!regForm.date || !regForm.reason.trim()) return;
+    const fd = new FormData();
+    fd.set("intent", "regularise-submit");
+    fd.set("attendanceDate", regForm.date);
+    fd.set("requestedCheckIn", regForm.checkIn);
+    fd.set("requestedCheckOut", regForm.checkOut);
+    fd.set("reason", regForm.reason.trim());
+    fetcher.submit(fd, { method: "POST" });
+  };
+
+  const confirmRegDecision = () => {
+    if (!decideModal) return;
+    const fd = new FormData();
+    fd.set("intent", "regularise-decide");
+    fd.set("id", decideModal.rec.id);
+    fd.set("status", decideModal.action);
+    fd.set("note", decideNote);
+    regulariseFetcher.submit(fd, { method: "POST" });
   };
 
   // Calendar helpers
@@ -255,12 +383,59 @@ export default function Attendance() {
 
   const isSubmitting = fetcher.state !== "idle";
 
+  // Regularisation display: for admin show pending ones first, for employee show all own
+  const pendingRegs = regularisations.filter((r) => r.status === "pending");
+
+  const lblStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 5 };
+  const inpStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", color: "var(--ink)" };
+
   return (
     <HRMSLayout currentUser={currentUser}>
       {/* Toast */}
       {toast ? (
         <div className={`toast ${toast.ok ? "toast-success" : "toast-error"}`}>
           {toast.msg}
+        </div>
+      ) : null}
+
+      {/* Decision Modal */}
+      {decideModal ? (
+        <div className="modal-overlay" onClick={() => { setDecideModal(null); setDecideNote(""); }}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">
+              {decideModal.action === "approved" ? "Approve" : "Reject"} Regularisation
+              <button className="modal-close" onClick={() => { setDecideModal(null); setDecideNote(""); }}>✕</button>
+            </div>
+            <div style={{ background: "var(--surface)", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)", marginBottom: 4 }}>{decideModal.rec.name || "Employee"}</div>
+              <div style={{ fontSize: 13, color: "var(--ink-3)" }}>
+                Date: <strong>{decideModal.rec.attendance_date}</strong>
+                {decideModal.rec.requested_check_in && <> · In: <strong>{decideModal.rec.requested_check_in}</strong></>}
+                {decideModal.rec.requested_check_out && <> · Out: <strong>{decideModal.rec.requested_check_out}</strong></>}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{decideModal.rec.reason}</div>
+            </div>
+            <div>
+              <label style={lblStyle}>Note <span style={{ fontWeight: 400 }}>(optional)</span></label>
+              <textarea
+                value={decideNote}
+                onChange={(e) => setDecideNote(e.target.value)}
+                placeholder="Optional comment..."
+                rows={3}
+                style={{ ...inpStyle, resize: "vertical" as const }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button
+                className={decideModal.action === "approved" ? "btn btn-success" : "btn btn-danger"}
+                onClick={confirmRegDecision}
+                disabled={regulariseFetcher.state !== "idle"}
+              >
+                {regulariseFetcher.state !== "idle" ? "Saving..." : decideModal.action === "approved" ? "Approve" : "Reject"}
+              </button>
+              <button className="btn btn-outline" onClick={() => { setDecideModal(null); setDecideNote(""); }}>Cancel</button>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -299,7 +474,7 @@ export default function Attendance() {
                   disabled={isSubmitting}
                   style={{ padding: "8px 18px" }}
                 >
-                  {isSubmitting ? "…" : "▶ Check In"}
+                  {isSubmitting ? "…" : "Check In"}
                 </button>
               ) : !localToday?.check_out_at ? (
                 <button
@@ -308,11 +483,11 @@ export default function Attendance() {
                   disabled={isSubmitting}
                   style={{ padding: "8px 18px" }}
                 >
-                  {isSubmitting ? "…" : "■ Check Out"}
+                  {isSubmitting ? "…" : "Check Out"}
                 </button>
               ) : (
                 <span style={{ fontSize: 12, color: "var(--green)", fontWeight: 700 }}>
-                  ✓ Done · {hoursWorked(localToday.check_in_at, localToday.check_out_at)}
+                  Done · {hoursWorked(localToday.check_in_at, localToday.check_out_at)}
                 </span>
               )}
             </div>
@@ -332,13 +507,17 @@ export default function Attendance() {
         </div>
         <div className="stat-card">
           <div className="stat-label">Attendance %</div>
-          <div className="stat-value" style={{ color: attendancePct >= 90 ? "var(--green)" : attendancePct >= 75 ? "var(--amber)" : "var(--red)" }}>
+          <div className="stat-value" style={{ color: totalDays === 0 ? "var(--ink-3)" : attendancePct >= 90 ? "var(--green)" : attendancePct >= 75 ? "var(--amber)" : "var(--red)" }}>
             {totalDays > 0 ? `${attendancePct}%` : "—"}
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>
-            <div className="progress-track" style={{ marginTop: 6 }}>
-              <div className="progress-fill" style={{ width: `${attendancePct}%`, background: attendancePct >= 90 ? "var(--green)" : "var(--amber)" }} />
-            </div>
+            {totalDays > 0 ? (
+              <div className="progress-track" style={{ marginTop: 6 }}>
+                <div className="progress-fill" style={{ width: `${attendancePct}%`, background: attendancePct >= 90 ? "var(--green)" : "var(--amber)" }} />
+              </div>
+            ) : (
+              <span>No records yet</span>
+            )}
           </div>
         </div>
         <div className="stat-card">
@@ -370,6 +549,9 @@ export default function Attendance() {
         )}
         <button className={`tab-btn ${tab === "my" ? "active" : ""}`} onClick={() => setTab("my")}>My History</button>
         <button className={`tab-btn ${tab === "calendar" ? "active" : ""}`} onClick={() => setTab("calendar")}>Calendar</button>
+        <button className={`tab-btn ${tab === "regularise" ? "active" : ""}`} onClick={() => setTab("regularise")}>
+          Regularise{isManager && pendingRegs.length > 0 ? ` (${pendingRegs.length})` : ""}
+        </button>
       </div>
 
       {/* Today's team tab (HR only) */}
@@ -567,6 +749,172 @@ export default function Attendance() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Regularise tab */}
+      {tab === "regularise" && (
+        <div>
+          {/* Employee: submission form */}
+          {!isManager && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <div className="card-title">Request Attendance Correction</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 520 }}>
+                <div>
+                  <label style={lblStyle}>Date</label>
+                  <input
+                    type="date"
+                    value={regForm.date}
+                    onChange={(e) => setRegForm((f) => ({ ...f, date: e.target.value }))}
+                    style={inpStyle}
+                    max={today}
+                  />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div>
+                    <label style={lblStyle}>Requested Check-in <span style={{ fontWeight: 400, color: "var(--ink-3)" }}>(optional)</span></label>
+                    <input
+                      type="time"
+                      value={regForm.checkIn}
+                      onChange={(e) => setRegForm((f) => ({ ...f, checkIn: e.target.value }))}
+                      style={inpStyle}
+                    />
+                  </div>
+                  <div>
+                    <label style={lblStyle}>Requested Check-out <span style={{ fontWeight: 400, color: "var(--ink-3)" }}>(optional)</span></label>
+                    <input
+                      type="time"
+                      value={regForm.checkOut}
+                      onChange={(e) => setRegForm((f) => ({ ...f, checkOut: e.target.value }))}
+                      style={inpStyle}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label style={lblStyle}>Reason <span style={{ color: "var(--red)" }}>*</span></label>
+                  <textarea
+                    value={regForm.reason}
+                    onChange={(e) => setRegForm((f) => ({ ...f, reason: e.target.value }))}
+                    placeholder="Explain why you need this correction..."
+                    rows={3}
+                    style={{ ...inpStyle, resize: "vertical" as const }}
+                  />
+                </div>
+                <div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleRegulariseSubmit}
+                    disabled={!regForm.date || !regForm.reason.trim() || fetcher.state !== "idle"}
+                  >
+                    {fetcher.state !== "idle" ? "Submitting..." : "Submit Request"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Employee: own requests history */}
+          {!isManager && (
+            <div className="card">
+              <div className="card-title" style={{ marginBottom: 12 }}>My Regularisation Requests</div>
+              {regularisations.length === 0 ? (
+                <div style={{ fontSize: 13, color: "var(--ink-3)", padding: "12px 0" }}>No regularisation requests yet.</div>
+              ) : (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Req. Check-in</th>
+                      <th>Req. Check-out</th>
+                      <th>Reason</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {regularisations.map((r) => (
+                      <tr key={r.id}>
+                        <td style={{ fontWeight: 600 }}>{r.attendance_date}</td>
+                        <td>{r.requested_check_in || <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
+                        <td>{r.requested_check_out || <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
+                        <td style={{ fontSize: 12, color: "var(--ink-3)", maxWidth: 200 }}>{r.reason}</td>
+                        <td>
+                          <span className={`badge ${regStatusBadge(r.status)}`} style={{ textTransform: "capitalize" }}>
+                            {r.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Admin: review all regularisation requests */}
+          {isManager && (
+            <div className="card">
+              <div className="card-title" style={{ marginBottom: 12 }}>Regularisation Requests</div>
+              {regularisations.length === 0 ? (
+                <div style={{ fontSize: 13, color: "var(--ink-3)", padding: "12px 0" }}>No regularisation requests found.</div>
+              ) : (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Date</th>
+                      <th>Req. Check-in</th>
+                      <th>Req. Check-out</th>
+                      <th>Reason</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {regularisations.map((r) => (
+                      <tr key={r.id}>
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span className="avatar-sm" style={{ background: avatarColor(r.name || "?") }}>
+                              {getInitials(r.name || "?")}
+                            </span>
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)" }}>{r.name || "—"}</div>
+                              <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{r.email || ""}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{ fontWeight: 600 }}>{r.attendance_date}</td>
+                        <td>{r.requested_check_in || <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
+                        <td>{r.requested_check_out || <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
+                        <td style={{ fontSize: 12, color: "var(--ink-3)", maxWidth: 180 }}>{r.reason}</td>
+                        <td>
+                          <span className={`badge ${regStatusBadge(r.status)}`} style={{ textTransform: "capitalize" }}>
+                            {r.status}
+                          </span>
+                        </td>
+                        <td>
+                          {r.status === "pending" && (
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button
+                                className="btn btn-success"
+                                style={{ padding: "4px 10px", fontSize: 12 }}
+                                onClick={() => setDecideModal({ rec: r, action: "approved" })}
+                              >Approve</button>
+                              <button
+                                className="btn btn-danger"
+                                style={{ padding: "4px 10px", fontSize: 12 }}
+                                onClick={() => setDecideModal({ rec: r, action: "rejected" })}
+                              >Reject</button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
         </div>
       )}
     </HRMSLayout>

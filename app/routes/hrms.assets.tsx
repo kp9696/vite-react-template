@@ -4,6 +4,7 @@ import type { Route } from "./+types/hrms.assets";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
+import { isAdminRole } from "../lib/hrms.shared";
 
 
 const typeIcons: Record<string, string> = {
@@ -62,9 +63,17 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     path: "/api/assets",
   });
 
+  const isAdmin = isAdminRole(currentUser.role);
+  const allMapped = (assetResponse?.assets || []).map(mapApiAsset);
+  // Employees only see assets assigned to them
+  const apiAssets = isAdmin
+    ? allMapped
+    : allMapped.filter((a) => a.assignedTo && a.assignedTo.toLowerCase() === (currentUser.name || "").toLowerCase());
+
   return {
     currentUser,
-    apiAssets: (assetResponse?.assets || []).map(mapApiAsset),
+    isAdmin,
+    apiAssets,
   };
 }
 
@@ -156,7 +165,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<As
 }
 
 export default function Assets() {
-  const { currentUser, apiAssets } = useLoaderData<typeof loader>();
+  const { currentUser, isAdmin, apiAssets } = useLoaderData<typeof loader>();
   const createFetcher = useFetcher<AssetActionResult>();
   const assignFetcher = useFetcher<AssetActionResult>();
   const revokeFetcher = useFetcher<AssetActionResult>();
@@ -304,12 +313,14 @@ export default function Assets() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">IT Assets</div>
-          <div className="page-sub">Track all company hardware, devices and peripherals.</div>
+          <div className="page-sub">{isAdmin ? "Track all company hardware, devices and peripherals." : "View assets assigned to you."}</div>
         </div>
-        <button className="btn btn-primary" onClick={() => { setShowForm(true); setAssignTarget(null); }}>+ Register Asset</button>
+        {isAdmin && (
+          <button className="btn btn-primary" onClick={() => { setShowForm(true); setAssignTarget(null); }}>+ Register Asset</button>
+        )}
       </div>
 
-      {showForm ? (
+      {isAdmin && showForm ? (
         <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--accent)" }}>
           <div className="card-title">Register New Asset</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
@@ -347,7 +358,7 @@ export default function Assets() {
         </div>
       ) : null}
 
-      {assignTarget ? (
+      {isAdmin && assignTarget ? (
         <div className="card" style={{ marginBottom: 24, borderTop: "3px solid var(--green)" }}>
           <div className="card-title">Assign Asset - {assets.find((asset) => asset.id === assignTarget)?.name}</div>
           <div style={{ maxWidth: 360, marginBottom: 16 }}>
@@ -363,20 +374,24 @@ export default function Assets() {
 
       <div className="stat-grid">
         <div className="stat-card">
-          <div className="stat-label">Total Assets</div>
-          <div className="stat-value">{assets.length}</div>
-          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>Worth {fmt(totalValue)}</div>
+          <div className="stat-label">{isAdmin ? "Total Assets" : "Assets Assigned to You"}</div>
+          <div className="stat-value">{isAdmin ? assets.length : assets.filter(a => a.assignedTo).length}</div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{isAdmin ? `Worth ${fmt(totalValue)}` : "Currently in your possession"}</div>
         </div>
-        <div className="stat-card">
-          <div className="stat-label">Assigned</div>
-          <div className="stat-value" style={{ color: "var(--accent)" }}>{assets.length - available}</div>
-          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>To {assets.length - available} employees</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Available</div>
-          <div className="stat-value" style={{ color: "var(--green)" }}>{available}</div>
-          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>Ready to assign</div>
-        </div>
+        {isAdmin && (
+          <div className="stat-card">
+            <div className="stat-label">Assigned</div>
+            <div className="stat-value" style={{ color: "var(--accent)" }}>{assets.length - available}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>To {assets.length - available} employees</div>
+          </div>
+        )}
+        {isAdmin && (
+          <div className="stat-card">
+            <div className="stat-label">Available</div>
+            <div className="stat-value" style={{ color: "var(--green)" }}>{available}</div>
+            <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>Ready to assign</div>
+          </div>
+        )}
         <div className="stat-card">
           <div className="stat-label">Damaged / In Repair</div>
           <div className="stat-value" style={{ color: "var(--red)" }}>{damaged}</div>
@@ -384,7 +399,7 @@ export default function Assets() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      {isAdmin && <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         {types.map((type) => (
           <button key={type} onClick={() => setFilter(type)} style={{
             padding: "6px 16px",
@@ -399,14 +414,19 @@ export default function Assets() {
             {type !== "All" ? typeIcons[type] : ""} {type}
           </button>
         ))}
-      </div>
+      </div>}
 
       <div className="card">
         <table className="table">
           <thead>
-            <tr><th>Asset</th><th>Type</th><th>Serial</th><th>Assigned To</th><th>Assigned On</th><th>Value</th><th>Condition</th><th>Actions</th></tr>
+            <tr><th>Asset</th><th>Type</th><th>Serial</th><th>Assigned To</th><th>Assigned On</th><th>Value</th><th>Condition</th>{isAdmin && <th>Actions</th>}</tr>
           </thead>
           <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={isAdmin ? 8 : 7} style={{ color: "var(--ink-3)", fontSize: 13 }}>
+                {isAdmin ? "No assets registered yet." : "No assets are currently assigned to you."}
+              </td></tr>
+            )}
             {filtered.map((asset) => (
               <tr key={asset.id}>
                 <td>
@@ -432,12 +452,14 @@ export default function Assets() {
                     {asset.condition}
                   </span>
                 </td>
-                <td>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {!asset.assignedTo ? <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => { setAssignTarget(asset.id); setShowForm(false); setAssignName(""); }}>Assign</button> : null}
-                    {asset.assignedTo ? <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => handleRetrieve(asset.id, asset.name)}>Retrieve</button> : null}
-                  </div>
-                </td>
+                {isAdmin && (
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {!asset.assignedTo ? <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => { setAssignTarget(asset.id); setShowForm(false); setAssignName(""); }}>Assign</button> : null}
+                      {asset.assignedTo ? <button className="btn btn-outline" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => handleRetrieve(asset.id, asset.name)}>Retrieve</button> : null}
+                    </div>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
