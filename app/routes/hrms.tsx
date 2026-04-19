@@ -193,12 +193,24 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
             </span>
             <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", gap: 5 }}>
               <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-              {(currentUser as { department?: string }).department ?? "General"}
+              {currentUser.department ?? "General"}
+              {currentUser.designation ? ` · ${currentUser.designation}` : ""}
             </span>
             <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", gap: 5 }}>
-              <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-              {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+              <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              {currentUser.employmentType ?? "Full-time"}
             </span>
+            {(currentUser.joinedOn && currentUser.joinedOn !== "Invalid Date") ? (
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", gap: 5 }}>
+                <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                Joined {currentUser.joinedOn}
+              </span>
+            ) : currentUser.createdAt ? (
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", display: "flex", alignItems: "center", gap: 5 }}>
+                <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                Joined {new Date(currentUser.createdAt).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}
+              </span>
+            ) : null}
           </div>
         </div>
 
@@ -235,14 +247,16 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
             color: isCheckedIn ? "#10b981" : "#ef4444",
             icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>,
             bg: isCheckedIn ? "#ecfdf5" : "#fef2f2",
+            to: "/hrms/attendance",
           },
           {
             label: "Leave Available",
             value: `${totalLeaveRemaining}`,
-            sub: "days remaining",
+            sub: totalLeaveRemaining > 0 ? "days remaining" : leaveBalances.length > 0 ? "days remaining" : "Contact HR to set up",
             color: "#6366f1",
             icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>,
             bg: "#eef2ff",
+            to: "/hrms/leave",
           },
           {
             label: "Expense Claims",
@@ -251,22 +265,25 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
             color: "#f59e0b",
             icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M16 8H8m8 4H8m5 4H8"/></svg>,
             bg: "#fffbeb",
+            to: "/hrms/expenses",
           },
           {
             label: "Leave Balances",
             value: `${leaveBalances.length}`,
-            sub: "leave types",
+            sub: leaveBalances.length > 0 ? "leave types" : "Not set up yet",
             color: "#0ea5e9",
             icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>,
             bg: "#eff6ff",
+            to: "/hrms/leave",
           },
         ].map((s) => (
-          <div key={s.label} style={{
+          <Link key={s.label} to={s.to} style={{
             background: "white", border: "1px solid #e2e8f0",
             borderRadius: 14, padding: "18px 20px",
             display: "flex", flexDirection: "column", gap: 8,
             boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
             transition: "transform 0.15s, box-shadow 0.15s",
+            textDecoration: "none", cursor: "pointer",
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.7 }}>
@@ -278,7 +295,7 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
             </div>
             <div style={{ fontSize: 30, fontWeight: 800, color: s.color, letterSpacing: -1 }}>{s.value}</div>
             <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 500 }}>{s.sub}</div>
-          </div>
+          </Link>
         ))}
       </div>
 

@@ -489,7 +489,32 @@ async function handleApplyLeave(request: Request, env: Env, user: ApiUser): Prom
   const leaveId = crypto.randomUUID();
   const year = new Date(body.startDate).getUTCFullYear();
 
+  // Validate end date >= start date
+  if (new Date(body.endDate) < new Date(body.startDate)) {
+    return json(request, env, { error: "End date cannot be before start date." }, 400);
+  }
+
   await upsertLeaveBalance(env.HRMS, user.tenantId, effectiveUserId, body.leaveType.trim(), year);
+
+  // Check available balance before applying — allow admin bypass
+  if (!isHrManager(user.role)) {
+    const bal = await env.HRMS
+      .prepare(
+        `SELECT total, used, pending FROM leave_balances
+         WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND leave_type = ? AND year = ?`,
+      )
+      .bind(user.tenantId, effectiveUserId, body.leaveType.trim(), year)
+      .first<{ total: number; used: number; pending: number }>();
+
+    if (bal) {
+      const available = Number(bal.total) - Number(bal.used) - Number(bal.pending);
+      if (totalDays > available) {
+        return json(request, env, {
+          error: `Insufficient ${body.leaveType} balance. You have ${available} day${available !== 1 ? "s" : ""} available.`,
+        }, 400);
+      }
+    }
+  }
 
   await env.HRMS
     .prepare(
@@ -1172,6 +1197,157 @@ async function handleExpenseDecision(
   return json(request, env, { ok: true, id: claimId, status: newStatus });
 }
 
+async function handleSubmitRegularisation(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    attendanceDate?: string;
+    requestedCheckIn?: string;
+    requestedCheckOut?: string;
+    reason?: string;
+  }>(request);
+
+  if (!body?.attendanceDate || !body.reason?.trim()) {
+    return json(request, env, { error: "attendanceDate and reason are required." }, 400);
+  }
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+
+  try {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO attendance_regularisations
+          (id, org_id, company_id, user_id, attendance_date, requested_check_in, requested_check_out, reason, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      )
+      .bind(id, user.tenantId, user.tenantId, user.userId, body.attendanceDate, body.requestedCheckIn || null, body.requestedCheckOut || null, body.reason.trim(), now, now)
+      .run();
+  } catch {
+    return json(request, env, { error: "Failed to submit regularisation request." }, 500);
+  }
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleListRegularisations(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status");
+  const isManager = isHrManager(user.role);
+
+  let sql = `SELECT ar.id, ar.user_id, ar.attendance_date, ar.requested_check_in, ar.requested_check_out,
+                    ar.reason, ar.status, ar.reviewed_by, ar.reviewed_at, ar.review_note, ar.created_at,
+                    u.name, u.email
+             FROM attendance_regularisations ar
+             LEFT JOIN users u ON u.id = ar.user_id
+             WHERE COALESCE(ar.company_id, ar.org_id) = ?`;
+  const binds: Array<string | number> = [user.tenantId];
+
+  if (!isManager) {
+    sql += " AND ar.user_id = ?";
+    binds.push(user.userId);
+  }
+  if (status) {
+    sql += " AND ar.status = ?";
+    binds.push(status);
+  }
+
+  sql += " ORDER BY datetime(ar.created_at) DESC";
+
+  const rows = await env.HRMS.prepare(sql).bind(...binds).all();
+  return json(request, env, { regularisations: rows.results });
+}
+
+async function handleRegularisationDecision(id: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const body = await readJsonBody<{ status?: string; note?: string }>(request);
+  if (!body?.status || !["approved", "rejected"].includes(body.status)) {
+    return json(request, env, { error: "status must be approved or rejected." }, 400);
+  }
+
+  const reg = await env.HRMS
+    .prepare(`SELECT id, user_id, attendance_date, requested_check_in, requested_check_out, status FROM attendance_regularisations WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(id, user.tenantId)
+    .first<{ id: string; user_id: string; attendance_date: string; requested_check_in: string | null; requested_check_out: string | null; status: string }>();
+
+  if (!reg) return json(request, env, { error: "Regularisation request not found." }, 404);
+  if (reg.status !== "pending") return json(request, env, { error: "Only pending requests can be decided." }, 409);
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE attendance_regularisations SET status = ?, reviewed_by = ?, reviewed_at = ?, review_note = ?, updated_at = ? WHERE id = ?`)
+    .bind(body.status, user.userId, now, body.note?.trim() || null, now, id)
+    .run();
+
+  if (body.status === "approved") {
+    const existing = await env.HRMS
+      .prepare(`SELECT id FROM attendance WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND attendance_date = ? LIMIT 1`)
+      .bind(user.tenantId, reg.user_id, reg.attendance_date)
+      .first<{ id: string }>();
+
+    if (existing) {
+      await env.HRMS
+        .prepare(`UPDATE attendance SET check_in_at = COALESCE(?, check_in_at), check_out_at = COALESCE(?, check_out_at), status = 'present', updated_at = ? WHERE id = ?`)
+        .bind(reg.requested_check_in, reg.requested_check_out, now, existing.id)
+        .run();
+    } else {
+      await env.HRMS
+        .prepare(`INSERT INTO attendance (id, company_id, org_id, user_id, attendance_date, check_in_at, check_out_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?, ?)`)
+        .bind(crypto.randomUUID(), user.tenantId, user.tenantId, reg.user_id, reg.attendance_date, reg.requested_check_in, reg.requested_check_out, now, now)
+        .run();
+    }
+  }
+
+  return json(request, env, { ok: true, id, status: body.status });
+}
+
+async function handleListSalaryConfigs(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT u.id as user_id, u.name, u.email, u.department, u.role, u.status,
+              COALESCE(es.annual_ctc, 0) as annual_ctc, es.effective_from, es.updated_at as salary_updated_at
+       FROM users u
+       LEFT JOIN employee_salaries es ON es.user_id = u.id AND COALESCE(es.company_id, es.org_id) = ?
+       WHERE COALESCE(u.company_id, u.org_id) = ?
+       ORDER BY u.name ASC`,
+    )
+    .bind(user.tenantId, user.tenantId)
+    .all();
+
+  return json(request, env, { configs: rows.results });
+}
+
+async function handleUpsertSalaryConfig(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const body = await readJsonBody<{ userId?: string; annualCtc?: number; effectiveFrom?: string }>(request);
+  if (!body?.userId?.trim() || !body.annualCtc || body.annualCtc <= 0) {
+    return json(request, env, { error: "userId and annualCtc (>0) are required." }, 400);
+  }
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(
+      `INSERT INTO employee_salaries (id, org_id, company_id, user_id, annual_ctc, effective_from, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(org_id, user_id) DO UPDATE SET
+         annual_ctc = excluded.annual_ctc,
+         effective_from = excluded.effective_from,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(crypto.randomUUID(), user.tenantId, user.tenantId, body.userId.trim(), Math.round(body.annualCtc), body.effectiveFrom?.trim() || now.slice(0, 10), now, now)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
 export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Response | null> {
   const { method } = request;
   const { pathname } = new URL(request.url);
@@ -1302,5 +1478,629 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
     return handleTestWebhook(request, env, user!);
   }
 
+  if (method === "POST" && pathname === "/api/attendance/regularise") {
+    return handleSubmitRegularisation(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/attendance/regularisations") {
+    return handleListRegularisations(request, env, user!);
+  }
+  const regularisationDecisionMatch = pathname.match(/^\/api\/attendance\/regularisations\/([^/]+)\/decision$/);
+  if (method === "POST" && regularisationDecisionMatch) {
+    return handleRegularisationDecision(regularisationDecisionMatch[1], request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/salary-configs") {
+    return handleListSalaryConfigs(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/salary-configs") {
+    return handleUpsertSalaryConfig(request, env, user!);
+  }
+
+  if (method === "POST" && pathname === "/api/hrbot/chat") {
+    return handleHRBotChat(request, env, user!);
+  }
+
+  // ── Recruitment: Applicants ──────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/recruitment/applicants") {
+    return handleListApplicants(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/recruitment/applicants") {
+    return handleAddApplicant(request, env, user!);
+  }
+  const applicantStageMatch = pathname.match(/^\/api\/recruitment\/applicants\/([^/]+)\/stage$/);
+  if (method === "PATCH" && applicantStageMatch) {
+    return handleMoveApplicantStage(applicantStageMatch[1], request, env, user!);
+  }
+  if (method === "DELETE" && pathname.match(/^\/api\/recruitment\/applicants\/([^/]+)$/)) {
+    const id = pathname.match(/^\/api\/recruitment\/applicants\/([^/]+)$/)![1];
+    return handleDeleteApplicant(id, request, env, user!);
+  }
+  if (method === "PATCH" && pathname.match(/^\/api\/recruitment\/jobs\/([^/]+)\/close$/)) {
+    const id = pathname.match(/^\/api\/recruitment\/jobs\/([^/]+)\/close$/)![1];
+    return handleCloseJob(id, request, env, user!);
+  }
+
+  // ── Performance ──────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/performance/cycles") {
+    return handleListCycles(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/performance/cycles") {
+    return handleCreateCycle(request, env, user!);
+  }
+  const cycleReviewsMatch = pathname.match(/^\/api\/performance\/cycles\/([^/]+)\/reviews$/);
+  if (method === "GET" && cycleReviewsMatch) {
+    return handleListReviews(cycleReviewsMatch[1], request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/performance/reviews/submit") {
+    return handleSubmitReview(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/performance/okrs") {
+    return handleListOKRs(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/performance/okrs") {
+    return handleCreateOKR(request, env, user!);
+  }
+  const okrProgressMatch = pathname.match(/^\/api\/performance\/okrs\/([^/]+)\/progress$/);
+  if (method === "PATCH" && okrProgressMatch) {
+    return handleUpdateOKRProgress(okrProgressMatch[1], request, env, user!);
+  }
+
+  // ── Learning ─────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/learning/courses") {
+    return handleListCourses(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/learning/courses") {
+    return handleCreateCourse(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/learning/enroll") {
+    return handleEnrollCourse(request, env, user!);
+  }
+  if (method === "PATCH" && pathname === "/api/learning/progress") {
+    return handleUpdateCourseProgress(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/learning/my-courses") {
+    return handleMyEnrollments(request, env, user!);
+  }
+
   return null;
+}
+
+// ── Recruitment Handlers ──────────────────────────────────────────────────────
+
+async function handleListApplicants(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const jobId = url.searchParams.get("jobId");
+  if (!jobId) return json(request, env, { error: "jobId is required." }, 400);
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, job_id, name, email, phone, resume_url, stage, notes, applied_at, updated_at
+       FROM job_applicants
+       WHERE COALESCE(company_id, org_id) = ? AND job_id = ?
+       ORDER BY applied_at DESC`,
+    )
+    .bind(user.tenantId, jobId)
+    .all<{
+      id: string; job_id: string; name: string; email: string; phone: string | null;
+      resume_url: string | null; stage: string; notes: string | null;
+      applied_at: string; updated_at: string;
+    }>();
+
+  return json(request, env, { applicants: rows.results });
+}
+
+async function handleAddApplicant(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    jobId?: string; name?: string; email?: string; phone?: string; resumeUrl?: string;
+  }>(request);
+
+  if (!body?.jobId || !body.name?.trim() || !body.email?.trim()) {
+    return json(request, env, { error: "jobId, name, and email are required." }, 400);
+  }
+
+  const now = nowIso();
+  const id = `APL${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO job_applicants (id, company_id, org_id, job_id, name, email, phone, resume_url, stage, applied_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Applied', ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, body.jobId, body.name.trim(), body.email.trim(),
+      body.phone?.trim() || null, body.resumeUrl?.trim() || null, now, now)
+    .run();
+
+  // Increment applicant_count on job_openings
+  await env.HRMS
+    .prepare(`UPDATE job_openings SET applicant_count = applicant_count + 1, updated_at = ? WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(now, body.jobId, user.tenantId)
+    .run();
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleMoveApplicantStage(
+  applicantId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{ stage?: string; notes?: string }>(request);
+  const STAGES = ["Applied", "Screening", "Interview", "Offer", "Hired", "Rejected"];
+  if (!body?.stage || !STAGES.includes(body.stage)) {
+    return json(request, env, { error: `stage must be one of: ${STAGES.join(", ")}` }, 400);
+  }
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(
+      `UPDATE job_applicants SET stage = ?, notes = COALESCE(?, notes), updated_at = ?
+       WHERE id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(body.stage, body.notes || null, now, applicantId, user.tenantId)
+    .run();
+
+  return json(request, env, { ok: true, id: applicantId, stage: body.stage });
+}
+
+async function handleDeleteApplicant(
+  applicantId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  // Get job_id first so we can decrement count
+  const apl = await env.HRMS
+    .prepare(`SELECT job_id FROM job_applicants WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(applicantId, user.tenantId)
+    .first<{ job_id: string }>();
+
+  if (!apl) return json(request, env, { error: "Applicant not found." }, 404);
+
+  await env.HRMS.prepare(`DELETE FROM job_applicants WHERE id = ?`).bind(applicantId).run();
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE job_openings SET applicant_count = MAX(0, applicant_count - 1), updated_at = ? WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(now, apl.job_id, user.tenantId)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+async function handleCloseJob(
+  jobId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE job_openings SET stage = 'Closed', updated_at = ? WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(now, jobId, user.tenantId)
+    .run();
+  return json(request, env, { ok: true });
+}
+
+// ── Performance Handlers ──────────────────────────────────────────────────────
+
+async function handleListCycles(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, name, review_type, start_date, end_date, status, created_by, created_at
+       FROM review_cycles
+       WHERE COALESCE(company_id, org_id) = ?
+       ORDER BY created_at DESC`,
+    )
+    .bind(user.tenantId)
+    .all();
+  return json(request, env, { cycles: rows.results });
+}
+
+async function handleCreateCycle(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    name?: string; reviewType?: string; startDate?: string; endDate?: string;
+  }>(request);
+
+  if (!body?.name?.trim()) return json(request, env, { error: "name is required." }, 400);
+
+  const now = nowIso();
+  const id = `CYC${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO review_cycles (id, company_id, org_id, name, review_type, start_date, end_date, status, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, body.name.trim(),
+      body.reviewType || "360", body.startDate || null, body.endDate || null,
+      user.userId, now, now)
+    .run();
+
+  // Auto-create reviews for all employees in this org (manager → employee)
+  const employees = await env.HRMS
+    .prepare(`SELECT id FROM users WHERE COALESCE(company_id, org_id) = ? AND status = 'Active'`)
+    .bind(user.tenantId)
+    .all<{ id: string }>();
+
+  const reviewType = body.reviewType || "360";
+  const insertBatch: Promise<unknown>[] = [];
+
+  for (const emp of employees.results) {
+    // Self review
+    if (reviewType === "360" || reviewType === "self") {
+      const rid = `REV${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+      insertBatch.push(
+        env.HRMS.prepare(
+          `INSERT OR IGNORE INTO performance_reviews (id, company_id, org_id, cycle_id, reviewee_id, reviewer_id, reviewer_type, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'self', 'pending', ?, ?)`,
+        ).bind(rid, user.tenantId, user.tenantId, id, emp.id, emp.id, now, now).run(),
+      );
+    }
+    // Manager review (admin/HR reviewing employee)
+    if (reviewType === "360" || reviewType === "manager") {
+      const rid = `REV${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+      insertBatch.push(
+        env.HRMS.prepare(
+          `INSERT OR IGNORE INTO performance_reviews (id, company_id, org_id, cycle_id, reviewee_id, reviewer_id, reviewer_type, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'manager', 'pending', ?, ?)`,
+        ).bind(rid, user.tenantId, user.tenantId, id, emp.id, user.userId, now, now).run(),
+      );
+    }
+  }
+
+  await Promise.all(insertBatch);
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleListReviews(
+  cycleId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const revieweeId = isHrManager(user.role) ? (url.searchParams.get("revieweeId") || null) : user.userId;
+
+  const baseQuery = isHrManager(user.role)
+    ? `SELECT pr.id, pr.cycle_id, pr.reviewee_id, u1.name as reviewee_name,
+              pr.reviewer_id, u2.name as reviewer_name,
+              pr.reviewer_type, pr.rating, pr.comments, pr.status, pr.submitted_at
+       FROM performance_reviews pr
+       LEFT JOIN users u1 ON u1.id = pr.reviewee_id
+       LEFT JOIN users u2 ON u2.id = pr.reviewer_id
+       WHERE pr.cycle_id = ? AND COALESCE(pr.company_id, pr.org_id) = ?
+       ORDER BY u1.name, pr.reviewer_type`
+    : `SELECT pr.id, pr.cycle_id, pr.reviewee_id, u1.name as reviewee_name,
+              pr.reviewer_id, u2.name as reviewer_name,
+              pr.reviewer_type, pr.rating, pr.comments, pr.status, pr.submitted_at
+       FROM performance_reviews pr
+       LEFT JOIN users u1 ON u1.id = pr.reviewee_id
+       LEFT JOIN users u2 ON u2.id = pr.reviewer_id
+       WHERE pr.cycle_id = ? AND COALESCE(pr.company_id, pr.org_id) = ?
+         AND (pr.reviewee_id = ? OR pr.reviewer_id = ?)
+       ORDER BY pr.reviewer_type`;
+
+  const stmt = isHrManager(user.role)
+    ? env.HRMS.prepare(baseQuery).bind(cycleId, user.tenantId)
+    : env.HRMS.prepare(baseQuery).bind(cycleId, user.tenantId, user.userId, user.userId);
+
+  const rows = await stmt.all();
+  return json(request, env, { reviews: rows.results });
+}
+
+async function handleSubmitReview(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    reviewId?: string; rating?: number; comments?: string;
+  }>(request);
+
+  if (!body?.reviewId || !body.rating || body.rating < 1 || body.rating > 5) {
+    return json(request, env, { error: "reviewId and rating (1-5) are required." }, 400);
+  }
+
+  const now = nowIso();
+  const result = await env.HRMS
+    .prepare(
+      `UPDATE performance_reviews
+       SET rating = ?, comments = ?, status = 'submitted', submitted_at = ?, updated_at = ?
+       WHERE id = ? AND reviewer_id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(body.rating, body.comments || null, now, now, body.reviewId, user.userId, user.tenantId)
+    .run();
+
+  if (!result.meta.changes) return json(request, env, { error: "Review not found or not authorized." }, 404);
+  return json(request, env, { ok: true });
+}
+
+async function handleListOKRs(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const userId = isHrManager(user.role) ? (url.searchParams.get("userId") || null) : user.userId;
+  const cycleId = url.searchParams.get("cycleId");
+
+  let q = `SELECT id, user_id, cycle_id, objective, key_results, progress, status, due_date, created_at
+           FROM okrs WHERE COALESCE(company_id, org_id) = ?`;
+  const binds: unknown[] = [user.tenantId];
+  if (userId) { q += ` AND user_id = ?`; binds.push(userId); }
+  if (cycleId) { q += ` AND cycle_id = ?`; binds.push(cycleId); }
+  q += ` ORDER BY created_at DESC`;
+
+  const rows = await env.HRMS.prepare(q).bind(...binds).all();
+  return json(request, env, { okrs: rows.results });
+}
+
+async function handleCreateOKR(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    objective?: string; keyResults?: Array<{ title: string; target: number; current: number; unit: string }>;
+    cycleId?: string; dueDate?: string;
+  }>(request);
+
+  if (!body?.objective?.trim()) return json(request, env, { error: "objective is required." }, 400);
+
+  const now = nowIso();
+  const id = `OKR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const keyResults = JSON.stringify(body.keyResults || []);
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO okrs (id, company_id, org_id, user_id, cycle_id, objective, key_results, progress, status, due_date, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, user.userId, body.cycleId || null,
+      body.objective.trim(), keyResults, body.dueDate || null, now, now)
+    .run();
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleUpdateOKRProgress(
+  okrId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  const body = await readJsonBody<{ progress?: number; keyResults?: unknown[]; status?: string }>(request);
+
+  if (body?.progress === undefined) return json(request, env, { error: "progress is required." }, 400);
+  const progress = Math.max(0, Math.min(100, Math.round(Number(body.progress))));
+
+  const now = nowIso();
+  const status = body.status || (progress === 100 ? "completed" : "active");
+  const krJson = body.keyResults ? JSON.stringify(body.keyResults) : null;
+
+  const result = await env.HRMS
+    .prepare(
+      `UPDATE okrs SET progress = ?, status = ?, ${krJson ? "key_results = ?," : ""} updated_at = ?
+       WHERE id = ? AND user_id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(...(krJson ? [progress, status, krJson, now] : [progress, status, now]), okrId, user.userId, user.tenantId)
+    .run();
+
+  if (!result.meta.changes) return json(request, env, { error: "OKR not found or not authorized." }, 404);
+  return json(request, env, { ok: true, progress });
+}
+
+// ── Learning Handlers ─────────────────────────────────────────────────────────
+
+async function handleListCourses(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const category = url.searchParams.get("category");
+  const level = url.searchParams.get("level");
+
+  let q = `SELECT id, title, category, level, duration, provider, description, is_mandatory, created_at
+           FROM courses WHERE COALESCE(company_id, org_id) = ?`;
+  const binds: unknown[] = [user.tenantId];
+  if (category) { q += ` AND category = ?`; binds.push(category); }
+  if (level && level !== "All") { q += ` AND level = ?`; binds.push(level); }
+  q += ` ORDER BY is_mandatory DESC, created_at DESC`;
+
+  const rows = await env.HRMS.prepare(q).bind(...binds).all();
+  return json(request, env, { courses: rows.results });
+}
+
+async function handleCreateCourse(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    title?: string; category?: string; level?: string; duration?: string;
+    provider?: string; description?: string; isMandatory?: boolean;
+  }>(request);
+
+  if (!body?.title?.trim()) return json(request, env, { error: "title is required." }, 400);
+
+  const now = nowIso();
+  const id = `CRS${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO courses (id, company_id, org_id, title, category, level, duration, provider, description, is_mandatory, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, body.title.trim(),
+      body.category || "Technical", body.level || "All",
+      body.duration?.trim() || null, body.provider?.trim() || null,
+      body.description?.trim() || null, body.isMandatory ? 1 : 0,
+      user.userId, now, now)
+    .run();
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleEnrollCourse(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{ courseId?: string; userId?: string }>(request);
+  if (!body?.courseId) return json(request, env, { error: "courseId is required." }, 400);
+
+  const targetUserId = (body.userId && isHrManager(user.role)) ? body.userId : user.userId;
+  const now = nowIso();
+  const id = `ENR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO course_enrollments (id, company_id, org_id, course_id, user_id, status, progress, enrolled_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'enrolled', 0, ?, ?)
+       ON CONFLICT(org_id, course_id, user_id) DO NOTHING`,
+    )
+    .bind(id, user.tenantId, user.tenantId, body.courseId, targetUserId, now, now)
+    .run();
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleUpdateCourseProgress(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{ courseId?: string; progress?: number }>(request);
+  if (!body?.courseId || body.progress === undefined) {
+    return json(request, env, { error: "courseId and progress are required." }, 400);
+  }
+
+  const progress = Math.max(0, Math.min(100, Math.round(Number(body.progress))));
+  const now = nowIso();
+  const status = progress === 100 ? "completed" : progress > 0 ? "in_progress" : "enrolled";
+  const completedAt = progress === 100 ? now : null;
+
+  await env.HRMS
+    .prepare(
+      `UPDATE course_enrollments
+       SET progress = ?, status = ?, completed_at = COALESCE(completed_at, ?), updated_at = ?
+       WHERE course_id = ? AND user_id = ? AND COALESCE(company_id, org_id) = ?`,
+    )
+    .bind(progress, status, completedAt, now, body.courseId, user.userId, user.tenantId)
+    .run();
+
+  return json(request, env, { ok: true, progress, status });
+}
+
+async function handleMyEnrollments(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT e.id, e.course_id, c.title, c.category, c.level, c.duration, c.provider, c.is_mandatory,
+              e.status, e.progress, e.enrolled_at, e.completed_at
+       FROM course_enrollments e
+       JOIN courses c ON c.id = e.course_id
+       WHERE e.user_id = ? AND COALESCE(e.company_id, e.org_id) = ?
+       ORDER BY e.enrolled_at DESC`,
+    )
+    .bind(user.userId, user.tenantId)
+    .all();
+  return json(request, env, { enrollments: rows.results });
+}
+
+// ── HRBot AI Chat (OpenRouter / Claude) ───────────────────────────────────────
+async function handleHRBotChat(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const apiKey = (env as unknown as Record<string, string>).OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return json(request, env, { error: "AI not configured." }, 503);
+  }
+
+  const body = await readJsonBody<{
+    messages?: Array<{ role: string; content: string }>;
+    context?: {
+      leaveBalanceSummary?: string;
+      presentCount?: number;
+      employeeName?: string;
+      department?: string;
+      designation?: string;
+      grossSalary?: number;
+    };
+  }>(request);
+
+  if (!body?.messages?.length) {
+    return json(request, env, { error: "messages required." }, 400);
+  }
+
+  const ctx = body.context ?? {};
+  const systemPrompt = `You are HRBot, an intelligent HR assistant for JWithKP HRMS platform. You help employees with HR queries in a friendly, concise, and professional manner.
+
+Employee context:
+- Name: ${ctx.employeeName ?? user.name}
+- Department: ${ctx.department ?? "Not specified"}
+- Designation: ${ctx.designation ?? "Not specified"}
+- Leave balances: ${ctx.leaveBalanceSummary ?? "Not available"}
+- Present days this month: ${ctx.presentCount ?? "Unknown"}
+- Monthly gross salary: ${ctx.grossSalary ? `₹${ctx.grossSalary.toLocaleString("en-IN")}` : "Not disclosed"}
+
+Company policies:
+- Annual Leave: 18 days/year, Sick Leave: 12 days/year, Casual Leave: 6 days/year
+- Leave year: April to March
+- WFH: up to 3 days/week for eligible roles (manager approval required)
+- PF: 12% of Basic salary (employee), matched by employer up to ₹1800/month
+- ESI: 0.75% employee, 3.25% employer (applicable if gross ≤ ₹21,000/month)
+- Professional Tax: ₹200/month (income > ₹10,000)
+- Travel reimbursement: flights on actuals, hotels up to ₹2000/day (metro), meals ₹500/day
+- Expense claims: submit within 30 days with receipts
+- Performance reviews: bi-annual (April & October)
+- Probation: 3 months for new joiners
+
+Answer helpfully and concisely. Use bullet points when listing items. If you don't know specific company-level details, acknowledge it and suggest contacting HR. Always be warm and professional.`;
+
+  const openRouterMessages = [
+    { role: "system", content: systemPrompt },
+    ...body.messages.map((m) => ({ role: m.role, content: m.content })),
+  ];
+
+  const orResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://vite-react-template.keshavpandit9696.workers.dev",
+      "X-Title": "JWithKP HRMS HRBot",
+    },
+    body: JSON.stringify({
+      model: "anthropic/claude-3-haiku",
+      messages: openRouterMessages,
+      stream: true,
+      max_tokens: 1024,
+    }),
+  });
+
+  if (!orResponse.ok) {
+    const err = await orResponse.text();
+    return json(request, env, { error: `AI service error: ${err.slice(0, 200)}` }, 502);
+  }
+
+  // Stream SSE back to client
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  (async () => {
+    try {
+      const reader = orResponse.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") {
+            await writer.write(encoder.encode("data: [DONE]\n\n"));
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed?.choices?.[0]?.delta?.content;
+            if (delta) {
+              await writer.write(encoder.encode(`data: ${JSON.stringify({ content: delta })}\n\n`));
+            }
+          } catch {
+            // skip malformed
+          }
+        }
+      }
+    } catch {
+      // stream ended
+    } finally {
+      await writer.close();
+    }
+  })();
+
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      ...withCors(request, env),
+    },
+  });
 }

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { useLoaderData } from "react-router";
+import { Link, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.hrbot";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
@@ -21,86 +21,6 @@ const suggestions = [
 ];
 
 const now = () => new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
-
-function getBotReply(
-  text: string,
-  liveContext: {
-    leaveBalanceSummary: string;
-    presentCount: number;
-  },
-): string {
-  const message = text.toLowerCase();
-
-  if (message.includes("leave")) {
-    return `Here is the leave policy summary:
-
-- Annual Leave: 18 days
-- Sick Leave: 12 days
-- Casual Leave: 6 days
-- Leave year: April to March
-
-Your current live balance snapshot: ${liveContext.leaveBalanceSummary}`;
-  }
-
-  if (message.includes("wfh") || message.includes("work from home")) {
-    return `The current WFH policy is:
-
-- Up to 3 work-from-home days per week for eligible roles
-- Manager approval may still be required
-- Team-specific exceptions can apply
-
-If your role is client-facing or location-bound, check with your reporting manager.`;
-  }
-
-  if (message.includes("tds") || message.includes("tax") || message.includes("payroll")) {
-    return `For payroll and tax queries:
-
-- TDS depends on taxable income, declared investments, and salary structure
-- PF is 12% of basic salary, with employer contribution matched
-- ESI applies when monthly CTC is at or below INR 21,000
-
-For your personal numbers, the payroll team should confirm the latest computation.`;
-  }
-
-  if (message.includes("travel") || message.includes("reimbursement") || message.includes("expense")) {
-    return `Travel reimbursement guidance:
-
-- Flights: reimbursed on actuals
-- Hotels in metro cities: up to INR 2,000 per day
-- Meal allowance: INR 500 per day on approved travel
-
-Please keep bills and submit claims within the company expense window.`;
-  }
-
-  if (message.includes("performance") || message.includes("okr") || message.includes("review")) {
-    return `Performance guidance:
-
-- Reviews normally follow the company review cycle
-- OKRs should be updated regularly with your manager
-- Keep evidence of outcomes, feedback, and impact for review discussions
-
-Ask HR for the exact review window for your business unit if needed.`;
-  }
-
-  if (message.includes("maternity") || message.includes("benefit") || message.includes("insurance")) {
-    return `Benefits questions usually need policy-specific confirmation.
-
-- Maternity, insurance, and special leave policies often have eligibility rules
-- The safest next step is to contact your HR admin for the current policy document
-
-I can still help summarize the request before you send it.`;
-  }
-
-  return `I can help with:
-
-- Leave policies
-- Payroll and TDS basics
-- WFH policy
-- Travel reimbursement
-- Performance review guidance
-
-Today, currently marked present: ${liveContext.presentCount}.`;
-}
 
 export function meta() {
   return [{ title: "JWithKP HRMS - HRBot" }];
@@ -159,20 +79,73 @@ export default function HRBot() {
     if (!text.trim() || loading) return;
 
     const userMessage: Message = { role: "user", content: text, ts: now() };
-    setMessages((current) => [...current, userMessage]);
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
     setInput("");
     setLoading(true);
 
+    // Add an empty assistant message to stream into
+    const assistantTs = now();
+    setMessages((current) => [...current, { role: "assistant", content: "", ts: assistantTs }]);
+
     try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      setMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: getBotReply(text, liveContext),
-          ts: now(),
-        },
-      ]);
+      const conversationHistory = nextMessages.map((m) => ({ role: m.role, content: m.content }));
+
+      const response = await fetch("/api/hrbot/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: conversationHistory, context: liveContext }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (raw === "[DONE]") break;
+          try {
+            const parsed = JSON.parse(raw) as { content?: string };
+            if (parsed.content) {
+              setMessages((current) => {
+                const updated = [...current];
+                const last = updated[updated.length - 1];
+                if (last?.role === "assistant") {
+                  updated[updated.length - 1] = { ...last, content: last.content + parsed.content };
+                }
+                return updated;
+              });
+            }
+          } catch {
+            // skip malformed chunk
+          }
+        }
+      }
+    } catch (err) {
+      setMessages((current) => {
+        const updated = [...current];
+        const last = updated[updated.length - 1];
+        if (last?.role === "assistant" && last.content === "") {
+          updated[updated.length - 1] = {
+            ...last,
+            content: "Sorry, I couldn't connect to the AI service right now. Please try again in a moment.",
+          };
+        }
+        return updated;
+      });
     } finally {
       setLoading(false);
     }
@@ -231,15 +204,15 @@ export default function HRBot() {
   return (
     <HRMSLayout currentUser={currentUser}>
       <div className="page-title">HRBot - Policy Assistant</div>
-      <div className="page-sub">A deploy-safe built-in assistant for common HR policy questions.</div>
+      <div className="page-sub">Real AI assistant powered by Claude 3 Haiku — ask anything about HR policies, payroll, or leaves.</div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 20, height: "calc(100vh - 220px)" }}>
+      <div className="hrbot-grid" style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 20, height: "calc(100vh - 220px)" }}>
         <div style={{ display: "flex", flexDirection: "column", background: "white", border: "1px solid var(--border)", borderRadius: 16, overflow: "hidden" }}>
           <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--accent)", display: "grid", placeItems: "center", fontSize: 20 }}>AI</div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 14 }}>HRBot</div>
-              <div style={{ fontSize: 12, color: "var(--green)", fontWeight: 600 }}>Online · Built-in policy helper</div>
+              <div style={{ fontSize: 12, color: "var(--green)", fontWeight: 600 }}>Online · AI-powered · Claude 3 Haiku</div>
             </div>
           </div>
 
@@ -356,18 +329,20 @@ export default function HRBot() {
           </div>
 
           <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">HR Contacts</div>
-            {[
-              { name: "Sneha Pillai", role: "HR Generalist", email: "sneha@techcorp.in" },
-              { name: "HR Helpdesk", role: "General Queries", email: "hr@techcorp.in" },
-              { name: "Payroll Team", role: "Payroll and Tax", email: "payroll@techcorp.in" },
-            ].map((contact) => (
-              <div key={contact.email} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{contact.name}</div>
-                <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{contact.role}</div>
-                <div style={{ fontSize: 11, color: "var(--accent)", marginTop: 2 }}>{contact.email}</div>
-              </div>
-            ))}
+            <div className="card-title">Need Human Help?</div>
+            <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6, marginBottom: 16 }}>
+              For queries that HRBot can't answer, reach out to your HR team directly via the company directory or internal chat.
+            </div>
+            <Link to="/hrms/employees" style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "10px 14px", borderRadius: 10,
+              background: "var(--accent-light)", color: "var(--accent)",
+              textDecoration: "none", fontWeight: 600, fontSize: 13,
+              border: "1px solid #c7d2fe",
+            }}>
+              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              View Employee Directory
+            </Link>
           </div>
         </div>
       </div>
@@ -376,6 +351,12 @@ export default function HRBot() {
         @keyframes bounce {
           0%, 80%, 100% { transform: translateY(0); }
           40% { transform: translateY(-6px); }
+        }
+        @media (max-width: 768px) {
+          .hrbot-grid {
+            grid-template-columns: 1fr !important;
+            height: auto !important;
+          }
         }
       `}</style>
     </HRMSLayout>

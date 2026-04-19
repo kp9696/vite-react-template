@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Form, Link, useLocation } from "react-router";
 import { avatarColor, getInitials, isAdminRole } from "../lib/hrms.shared";
 
@@ -58,6 +58,12 @@ const employeeNavGroups = [
       { label: "Assets",      icon: SVGLaptop,    path: "/hrms/assets" },
     ],
   },
+  {
+    title: "Tools",
+    items: [
+      { label: "HRBot AI",    icon: SVGBot,       path: "/hrms/hrbot" },
+    ],
+  },
 ];
 
 function getNavGroups(role?: string) {
@@ -87,6 +93,8 @@ function SVGBell() { return <svg width="16" height="16" fill="none" stroke="curr
 function SVGSearch() { return <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>; }
 function SVGSignOut() { return <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>; }
 
+function SVGMenu() { return <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>; }
+
 export default function HRMSLayout({
   children,
   currentUser,
@@ -96,16 +104,43 @@ export default function HRMSLayout({
 }) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [avatarOpen, setAvatarOpen] = useState(false);
+  const avatarRef = useRef<HTMLDivElement>(null);
   const initials = currentUser ? getInitials(currentUser.name) : "?";
   const accentColor = currentUser ? avatarColor(currentUser.name) : "#6366f1";
   const navGroups = getNavGroups(currentUser?.role);
   const allNav = currentUser && !isAdminRole(currentUser.role) ? allEmployeeNav : allAdminNav;
   const currentPage = allNav.find((item) => item.path === location.pathname);
 
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (avatarRef.current && !avatarRef.current.contains(e.target as Node)) {
+        setAvatarOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  // Close mobile sidebar on route change
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [location.pathname]);
+
   return (
     <div className="hrms-shell">
+      {/* ── Mobile overlay backdrop ── */}
+      {mobileSidebarOpen && (
+        <div
+          className="mobile-overlay"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+
       {/* ── Sidebar ── */}
-      <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""}`}>
+      <aside className={`hrms-sidebar ${collapsed ? "collapsed" : ""} ${mobileSidebarOpen ? "mobile-open" : ""}`}>
         <div className="sidebar-top-strip" />
 
         <div className="sidebar-header">
@@ -177,6 +212,13 @@ export default function HRMSLayout({
       {/* ── Main Content ── */}
       <main className="hrms-main">
         <header className="hrms-topbar">
+          <button
+            className="mobile-menu-btn"
+            onClick={() => setMobileSidebarOpen((v) => !v)}
+            title="Open menu"
+          >
+            <SVGMenu />
+          </button>
           <div className="topbar-left">
             <div className="topbar-page-icon">
               {currentPage ? <currentPage.icon /> : <SVGGrid />}
@@ -195,8 +237,94 @@ export default function HRMSLayout({
               {new Date().toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
             </div>
             <button className="topbar-icon-btn" title="Notifications"><SVGBell /></button>
-            <div className="topbar-avatar" style={{ background: accentColor }} title={currentUser?.email}>
-              {initials}
+            {/* Avatar with dropdown */}
+            <div ref={avatarRef} style={{ position: "relative" }}>
+              <div
+                className="topbar-avatar"
+                style={{ background: accentColor, cursor: "pointer" }}
+                title={currentUser?.email}
+                onClick={() => setAvatarOpen((v) => !v)}
+              >
+                {initials}
+              </div>
+              {avatarOpen && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 10px)", right: 0,
+                  background: "white", border: "1px solid var(--border)",
+                  borderRadius: 14, boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
+                  minWidth: 220, zIndex: 999,
+                  animation: "scaleIn 0.15s cubic-bezier(0.16,1,0.3,1)",
+                  transformOrigin: "top right",
+                }}>
+                  {/* User info header */}
+                  <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{
+                        width: 36, height: 36, borderRadius: "50%",
+                        background: accentColor,
+                        display: "grid", placeItems: "center",
+                        fontSize: 13, fontWeight: 700, color: "white", flexShrink: 0,
+                      }}>{initials}</div>
+                      <div style={{ overflow: "hidden" }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
+                          {currentUser?.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
+                          {currentUser?.email}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+                        background: "var(--accent-light)", color: "var(--accent)",
+                        border: "1px solid #c7d2fe", textTransform: "uppercase", letterSpacing: 0.4,
+                      }}>
+                        {currentUser?.role}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Menu items */}
+                  <div style={{ padding: "6px 0" }}>
+                    {currentUser && (
+                      <Link
+                        to={`/hrms/profile/${currentUser.id}`}
+                        onClick={() => setAvatarOpen(false)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "9px 16px", color: "var(--ink-2)",
+                          textDecoration: "none", fontSize: 13, fontWeight: 500,
+                          transition: "background 0.1s",
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "var(--surface)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        View Profile
+                      </Link>
+                    )}
+                    <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
+                    <Form method="post" action="/login" style={{ padding: "2px 8px" }}>
+                      <input type="hidden" name="intent" value="logout" />
+                      <button type="submit" style={{
+                        width: "100%", background: "transparent", border: "none",
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "8px", borderRadius: 8, color: "#ef4444",
+                        fontSize: 13, fontWeight: 600, cursor: "pointer",
+                        transition: "background 0.1s", fontFamily: "inherit",
+                        textAlign: "left",
+                      }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#fef2f2")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <SVGSignOut />
+                        Sign Out
+                      </button>
+                    </Form>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </header>
@@ -280,7 +408,7 @@ export default function HRMSLayout({
           background: var(--sidebar-bg);
           display: flex; flex-direction: column;
           transition: width 0.25s cubic-bezier(0.4,0,0.2,1);
-          position: fixed; left: 0; bottom: 0;
+          position: fixed; top: 0; left: 0; bottom: 0;
           z-index: 100; overflow: hidden;
           box-shadow: 2px 0 20px rgba(0,0,0,0.25);
         }
@@ -649,16 +777,72 @@ export default function HRMSLayout({
           vertical-align: middle;
         }
 
+        /* ── Mobile hamburger button ───────────────────── */
+        .mobile-menu-btn {
+          display: none;
+          background: var(--surface);
+          border: 1.5px solid var(--border);
+          border-radius: var(--radius-sm);
+          width: 36px; height: 36px;
+          cursor: pointer; color: var(--ink-2);
+          align-items: center; justify-content: center;
+          flex-shrink: 0; transition: all 0.15s;
+          margin-right: 4px;
+        }
+        .mobile-menu-btn:hover { background: var(--accent-light); border-color: #c7d2fe; color: var(--accent); }
+
+        /* ── Mobile overlay ────────────────────────────── */
+        .mobile-overlay {
+          position: fixed; inset: 0;
+          background: rgba(15,23,42,0.5);
+          z-index: 99;
+          backdrop-filter: blur(2px);
+          animation: fadeIn 0.15s ease;
+        }
+
         /* ── Responsive ────────────────────────────────── */
         @media (max-width: 1100px) {
           .stat-grid { grid-template-columns: repeat(2, 1fr); }
           .two-col { grid-template-columns: 1fr; }
+          .three-col { grid-template-columns: 1fr 1fr; }
           .topbar-search-wrap { display: none; }
           .topbar-date { display: none; }
         }
-        @media (max-width: 700px) {
-          .hrms-content { padding: 16px; }
-          .stat-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+
+        @media (max-width: 768px) {
+          /* Show hamburger, hide collapse button */
+          .mobile-menu-btn { display: flex; }
+          .collapse-btn { display: none; }
+
+          /* Sidebar becomes off-canvas overlay */
+          .hrms-sidebar {
+            transform: translateX(-100%);
+            transition: transform 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1);
+            width: var(--sidebar-w) !important;
+            z-index: 200;
+          }
+          .hrms-sidebar.mobile-open {
+            transform: translateX(0);
+          }
+          /* Mobile: main content takes full width */
+          .hrms-main { margin-left: 0 !important; }
+
+          /* Tables scroll horizontally */
+          .card { overflow-x: auto; }
+          .table { min-width: 560px; }
+
+          .hrms-content { padding: 14px; }
+          .stat-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+          .stat-value { font-size: 22px !important; }
+          .three-col { grid-template-columns: 1fr; }
+          .page-title { font-size: 17px; }
+          .topbar-role { display: none; }
+        }
+
+        @media (max-width: 480px) {
+          .stat-grid { grid-template-columns: 1fr; gap: 10px; }
+          .hrms-content { padding: 12px; }
+          .modal-box { padding: 18px; }
         }
       `}</style>
     </div>

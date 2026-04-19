@@ -4,7 +4,7 @@ import type { Route } from "./+types/hrms.leave";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
-import { avatarColor, getInitials } from "../lib/hrms.shared";
+import { avatarColor, getInitials, isAdminRole } from "../lib/hrms.shared";
 
 type LeaveStatus = "Pending" | "Approved" | "Rejected";
 
@@ -19,6 +19,9 @@ interface LeaveRequest {
   reason: string;
   fromDate: Date;
   toDate: Date;
+  note?: string;
+  decidedAt?: string;
+  approverName?: string;
 }
 
 interface ApiLeaveRow {
@@ -30,6 +33,9 @@ interface ApiLeaveRow {
   total_days?: number;
   status?: string;
   reason?: string;
+  decision_note?: string;
+  decided_at?: string;
+  approver_name?: string;
 }
 
 interface ApiLeaveBalanceRow {
@@ -75,6 +81,9 @@ function mapApiLeave(row: ApiLeaveRow): LeaveRequest {
     reason: row.reason || "",
     fromDate,
     toDate,
+    note: row.decision_note || undefined,
+    decidedAt: row.decided_at || undefined,
+    approverName: row.approver_name || undefined,
   };
 }
 
@@ -166,6 +175,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Le
   if (intent === "decide-leave") {
     const id = String(formData.get("id") || "").trim();
     const nextStatus = String(formData.get("status") || "").trim();
+    const note = String(formData.get("note") || "").trim();
 
     if (!id || (nextStatus !== "Approved" && nextStatus !== "Rejected")) {
       return { ok: false, message: "Invalid leave decision request." };
@@ -179,6 +189,7 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Le
       method: "POST",
       body: {
         status: nextStatus.toLowerCase(),
+        note: note || undefined,
       },
     });
 
@@ -194,59 +205,92 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Le
 
 export default function Leave() {
   const { currentUser, apiRequests, apiBalances } = useLoaderData<typeof loader>();
+  const isAdmin = isAdminRole(currentUser.role);
   const applyFetcher = useFetcher<LeaveActionResult>();
   const decisionFetcher = useFetcher<LeaveActionResult>();
+  const balanceFetcher = useFetcher<{ apiBalances?: typeof apiBalances }>();
   const [tab, setTab] = useState<"requests" | "balance" | "calendar">("requests");
+  const [requestFilter, setRequestFilter] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
   const [requests, setRequests] = useState<LeaveRequest[]>(apiRequests);
-  const [calYear, setCalYear] = useState(2026);
-  const [calMonth, setCalMonth] = useState(3); // April
+  const [balances, setBalances] = useState(apiBalances);
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [applyForm, setApplyForm] = useState({ type: "Annual Leave", from: "", to: "", reason: "" });
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [pendingApply, setPendingApply] = useState<LeaveRequest | null>(null);
   const [pendingDecision, setPendingDecision] = useState<{ id?: string; name: string; from: string; status: LeaveStatus } | null>(null);
+  const [decisionModal, setDecisionModal] = useState<{ row: LeaveRequest; action: "Approved" | "Rejected" } | null>(null);
+  const [decisionNote, setDecisionNote] = useState("");
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
-  const leaveBalance = apiBalances;
+  const showToast = (msg: string, ok = true) => {
+    setToast({ msg, ok });
+    setTimeout(() => setToast(null), 3500);
+  };
+
+  const leaveBalance = balances;
 
   useEffect(() => {
     const result = applyFetcher.data;
-    if (!result || !pendingApply) {
-      return;
-    }
+    if (!result || !pendingApply) return;
 
     if (result.ok) {
       setRequests((prev) => [{ ...pendingApply, id: result.id }, ...prev]);
       setApplyForm({ type: "Annual Leave", from: "", to: "", reason: "" });
       setShowApplyModal(false);
+      showToast("Leave request submitted successfully.");
+    } else {
+      setApplyError(result.message || "Failed to submit leave request.");
     }
 
     setPendingApply(null);
-  }, [applyFetcher.data, pendingApply]);
+  }, [applyFetcher.data]);
 
   useEffect(() => {
-    if (!decisionFetcher.data || !pendingDecision) {
-      return;
-    }
+    const result = decisionFetcher.data;
+    if (!result || !pendingDecision) return;
 
-    if (decisionFetcher.data.ok) {
+    if (result.ok) {
       setRequests((prev) =>
-        prev.map((r) => {
-          if (pendingDecision.id) {
-            return r.id === pendingDecision.id ? { ...r, status: pendingDecision.status } : r;
-          }
-          return r.name === pendingDecision.name && r.from === pendingDecision.from
-            ? { ...r, status: pendingDecision.status }
-            : r;
-        }),
+        prev.map((r) =>
+          r.id === pendingDecision.id ? { ...r, status: pendingDecision.status } : r
+        )
       );
+      showToast(
+        pendingDecision.status === "Approved"
+          ? "Leave approved successfully."
+          : "Leave rejected.",
+        pendingDecision.status === "Approved"
+      );
+      // Re-fetch balance so cards update immediately after approval/rejection
+      balanceFetcher.load(window.location.pathname);
+    } else {
+      showToast(result.message || "Failed to update leave request.", false);
     }
 
     setPendingDecision(null);
-  }, [decisionFetcher.data, pendingDecision]);
+  }, [decisionFetcher.data]);
+
+  // Sync balance when re-fetched after a decision
+  useEffect(() => {
+    if (balanceFetcher.data?.apiBalances) {
+      setBalances(balanceFetcher.data.apiBalances);
+    }
+  }, [balanceFetcher.data]);
 
   const handleApply = () => {
-    if (!applyForm.from || !applyForm.to || !applyForm.reason.trim()) return;
+    setApplyError(null);
+    if (!applyForm.from || !applyForm.to || !applyForm.reason.trim()) {
+      setApplyError("Please fill in all required fields.");
+      return;
+    }
     const fromDate = new Date(applyForm.from);
     const toDate = new Date(applyForm.to);
+    if (toDate < fromDate) {
+      setApplyError("'To Date' cannot be before 'From Date'.");
+      return;
+    }
     const days = Math.max(1, Math.ceil((toDate.getTime() - fromDate.getTime()) / 86400000) + 1);
     const fmt = (d: Date) => d.toLocaleDateString("en-IN", { month: "short", day: "numeric" });
     const newRequest: LeaveRequest = {
@@ -271,11 +315,16 @@ export default function Leave() {
     applyFetcher.submit(payload, { method: "POST" });
   };
 
-  const handleAction = (row: LeaveRequest, action: LeaveStatus) => {
+  const confirmDecision = () => {
+    if (!decisionModal) return;
+    const { row, action } = decisionModal;
+
     if (!row.id) {
       setRequests((prev) =>
         prev.map((r) => r.name === row.name && r.from === row.from ? { ...r, status: action } : r)
       );
+      setDecisionModal(null);
+      setDecisionNote("");
       return;
     }
 
@@ -283,12 +332,19 @@ export default function Leave() {
     payload.set("intent", "decide-leave");
     payload.set("id", row.id);
     payload.set("status", action);
+    payload.set("note", decisionNote);
 
     setPendingDecision({ id: row.id, name: row.name, from: row.from, status: action });
     decisionFetcher.submit(payload, { method: "POST" });
+    setDecisionModal(null);
+    setDecisionNote("");
   };
 
   const pendingCount = requests.filter((r) => r.status === "Pending").length;
+
+  const filteredRequests = requestFilter === "All"
+    ? requests
+    : requests.filter((r) => r.status === requestFilter);
 
   // Calendar helpers
   const firstDay = new Date(calYear, calMonth, 1).getDay();
@@ -322,10 +378,15 @@ export default function Leave() {
 
   return (
     <HRMSLayout currentUser={currentUser}>
+      {toast && (
+        <div className={`toast ${toast.ok ? "toast-success" : "toast-error"}`}>
+          {toast.msg}
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <div className="page-title">Leave Management</div>
-          <div className="page-sub">Track, approve, and manage all leave requests.</div>
+          <div className="page-sub">{isAdmin ? "Track, approve, and manage all leave requests." : "Apply for leave and track your request status."}</div>
         </div>
         <button className="btn btn-primary" onClick={() => setShowApplyModal(true)}>+ Apply Leave</button>
       </div>
@@ -360,14 +421,26 @@ export default function Leave() {
                 <textarea value={applyForm.reason} onChange={(e) => setApplyForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Brief reason for leave…" rows={3}
                   style={{ ...inpStyle, resize: "vertical" as const }} />
               </div>
-              {applyForm.from && applyForm.to ? (
-                <div style={{ background: "var(--accent-light)", border: "1px solid #c7d2fe", borderRadius: 10, padding: 12, fontSize: 13 }}>
-                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>
-                    {Math.max(1, Math.ceil((new Date(applyForm.to).getTime() - new Date(applyForm.from).getTime()) / 86400000) + 1)} working days
-                  </span>{" "}
-                  <span style={{ color: "var(--ink-3)" }}>will be deducted from {applyForm.type}</span>
+              {applyForm.from && applyForm.to ? (() => {
+                const from = new Date(applyForm.from);
+                const to = new Date(applyForm.to);
+                const days = to >= from ? Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86400000) + 1) : 0;
+                return days > 0 ? (
+                  <div style={{ background: "var(--accent-light)", border: "1px solid #c7d2fe", borderRadius: 10, padding: 12, fontSize: 13 }}>
+                    <span style={{ color: "var(--accent)", fontWeight: 700 }}>{days} calendar day{days > 1 ? "s" : ""}</span>{" "}
+                    <span style={{ color: "var(--ink-3)" }}>will be deducted from {applyForm.type}</span>
+                  </div>
+                ) : (
+                  <div style={{ background: "var(--red-light)", border: "1px solid #fecaca", borderRadius: 10, padding: 10, fontSize: 12, color: "var(--red)", fontWeight: 600 }}>
+                    'To Date' must be on or after 'From Date'
+                  </div>
+                );
+              })() : null}
+              {applyError && (
+                <div style={{ background: "var(--red-light)", border: "1px solid #fecaca", borderRadius: 10, padding: 10, fontSize: 12, color: "var(--red)", fontWeight: 600 }}>
+                  {applyError}
                 </div>
-              ) : null}
+              )}
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
               <button
@@ -378,6 +451,58 @@ export default function Leave() {
                 Submit Request
               </button>
               <button className="btn btn-outline" onClick={() => setShowApplyModal(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Decision Modal */}
+      {decisionModal ? (
+        <div className="modal-overlay" onClick={() => { setDecisionModal(null); setDecisionNote(""); }}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">
+              {decisionModal.action === "Approved" ? "Approve Leave" : "Reject Leave"}
+              <button className="modal-close" onClick={() => { setDecisionModal(null); setDecisionNote(""); }}>✕</button>
+            </div>
+
+            <div style={{ background: "var(--surface)", borderRadius: 10, padding: "12px 14px", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)", marginBottom: 4 }}>{decisionModal.row.name}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: LEAVE_TYPE_COLORS[decisionModal.row.type] ?? "#6b7280", display: "inline-block", flexShrink: 0 }} />
+                <span style={{ color: "var(--ink-2)" }}>{decisionModal.row.type}</span>
+                <span style={{ color: "var(--ink-3)", marginLeft: 6 }}>{decisionModal.row.from} → {decisionModal.row.to} ({decisionModal.row.days}d)</span>
+              </div>
+            </div>
+
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              background: decisionModal.action === "Approved" ? "#dcfce7" : "#fee2e2",
+              color: decisionModal.action === "Approved" ? "var(--green)" : "var(--red)",
+              borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 700, marginBottom: 16
+            }}>
+              {decisionModal.action === "Approved" ? "Approving this request" : "Rejecting this request"}
+            </div>
+
+            <div>
+              <label style={lblStyle}>Decision Note / Comment <span style={{ fontWeight: 400, color: "var(--ink-3)" }}>(optional)</span></label>
+              <textarea
+                value={decisionNote}
+                onChange={(e) => setDecisionNote(e.target.value)}
+                placeholder="Optional comment for the employee..."
+                rows={3}
+                style={{ ...inpStyle, resize: "vertical" as const }}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button
+                className={decisionModal.action === "Approved" ? "btn btn-success" : "btn btn-danger"}
+                onClick={confirmDecision}
+                disabled={decisionFetcher.state !== "idle"}
+              >
+                {decisionFetcher.state !== "idle" ? "Saving..." : `Confirm ${decisionModal.action === "Approved" ? "Approval" : "Rejection"}`}
+              </button>
+              <button className="btn btn-outline" onClick={() => { setDecisionModal(null); setDecisionNote(""); }}>Cancel</button>
             </div>
           </div>
         </div>
@@ -418,12 +543,37 @@ export default function Leave() {
       {/* Requests tab */}
       {tab === "requests" && (
         <div className="card">
+          {/* Filter bar for admins */}
+          {isAdmin && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+              {(["All", "Pending", "Approved", "Rejected"] as const).map((f) => {
+                const count = f === "All" ? requests.length : requests.filter((r) => r.status === f).length;
+                return (
+                  <button
+                    key={f}
+                    onClick={() => setRequestFilter(f)}
+                    style={{
+                      padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                      border: "1.5px solid",
+                      borderColor: requestFilter === f ? "var(--accent)" : "var(--border)",
+                      background: requestFilter === f ? "var(--accent-light)" : "white",
+                      color: requestFilter === f ? "var(--accent)" : "var(--ink-3)",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    {f} {count > 0 ? `(${count})` : ""}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <table className="table">
             <thead>
-              <tr><th>Employee</th><th>Type</th><th>Duration</th><th>Days</th><th>Reason</th><th>Status</th><th>Actions</th></tr>
+              <tr><th>Employee</th><th>Type</th><th>Duration</th><th>Days</th><th>Reason</th><th>Status</th><th>Note</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {requests.map((r) => (
+              {filteredRequests.map((r) => (
                 <tr key={r.name + r.from}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -447,31 +597,44 @@ export default function Leave() {
                       {r.status}
                     </span>
                   </td>
+                  <td style={{ fontSize: 12, color: "var(--ink-3)", maxWidth: 140 }}>
+                    {r.note ? r.note : <span style={{ color: "var(--border)" }}>—</span>}
+                  </td>
                   <td>
-                    {r.status === "Pending" && (
+                    {isAdmin && r.status === "Pending" && (
                       <div style={{ display: "flex", gap: 6 }}>
                         <button
                           className="btn btn-success"
                           style={{ padding: "4px 10px", fontSize: 12 }}
-                          onClick={() => handleAction(r, "Approved")}
-                        >✓ Approve</button>
+                          onClick={() => setDecisionModal({ row: r, action: "Approved" })}
+                        >Approve</button>
                         <button
                           className="btn btn-danger"
                           style={{ padding: "4px 10px", fontSize: 12 }}
-                          onClick={() => handleAction(r, "Rejected")}
-                        >✕ Reject</button>
+                          onClick={() => setDecisionModal({ row: r, action: "Rejected" })}
+                        >Reject</button>
                       </div>
                     )}
-                    {r.status === "Approved" && (
+                    {isAdmin && r.status === "Approved" && (
                       <button
                         className="btn btn-outline"
                         style={{ padding: "4px 10px", fontSize: 11, color: "var(--ink-3)" }}
-                        onClick={() => handleAction(r, "Rejected")}
+                        onClick={() => setDecisionModal({ row: r, action: "Rejected" })}
                       >Revoke</button>
+                    )}
+                    {!isAdmin && r.status === "Pending" && (
+                      <span style={{ fontSize: 11, color: "var(--amber)", fontWeight: 600 }}>Awaiting review</span>
                     )}
                   </td>
                 </tr>
               ))}
+              {filteredRequests.length === 0 && (
+                <tr>
+                  <td colSpan={8} style={{ color: "var(--ink-3)", textAlign: "center", padding: 24 }}>
+                    No {requestFilter !== "All" ? requestFilter.toLowerCase() + " " : ""}leave requests found.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -601,4 +764,3 @@ export default function Leave() {
 
 const lblStyle: React.CSSProperties = { display: "block", fontSize: 12, fontWeight: 600, color: "var(--ink-3)", marginBottom: 5 };
 const inpStyle: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1.5px solid var(--border)", borderRadius: 8, fontSize: 13, background: "white", color: "var(--ink)" };
-
