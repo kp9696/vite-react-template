@@ -1,5 +1,6 @@
 import { hashPassword, requireAuth } from "../security/auth";
 import { withCors } from "../security/cors";
+import { sendEmail, buildLeaveDecisionHtml, buildExpenseDecisionHtml } from "../lib/email";
 
 interface ApiUser {
   userId: string;
@@ -133,7 +134,7 @@ async function handleDashboardSummary(request: Request, env: Env, user: ApiUser)
   const [employees, present, pendingLeaves, assetsAssigned] = await Promise.all([
     getEmployeeCount(env.HRMS, user.tenantId),
     env.HRMS
-      .prepare("SELECT COUNT(*) as cnt FROM attendance WHERE COALESCE(company_id, org_id) = ? AND attendance_date = ?")
+      .prepare("SELECT COUNT(*) as cnt FROM attendance WHERE COALESCE(company_id, org_id) = ? AND attendance_date = ? AND status IN ('present','wfh','half_day')")
       .bind(user.tenantId, date)
       .first<{ cnt: number }>(),
     env.HRMS
@@ -157,6 +158,63 @@ async function handleDashboardSummary(request: Request, env: Env, user: ApiUser)
   });
 }
 
+// ── Notifications helper ──────────────────────────────────────────────────────
+
+export async function createNotification(
+  db: D1Database,
+  opts: {
+    companyId: string;
+    userId: string;
+    type: string;
+    title: string;
+    body?: string;
+    link?: string;
+  },
+): Promise<void> {
+  const id = `NOTIF${crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
+  await db
+    .prepare(
+      `INSERT INTO notifications (id, company_id, org_id, user_id, type, title, body, link, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, opts.companyId, opts.companyId, opts.userId, opts.type, opts.title, opts.body ?? null, opts.link ?? null, nowIso())
+    .run();
+}
+
+async function handleListNotifications(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, type, title, body, read, link, created_at
+       FROM notifications
+       WHERE user_id = ? AND COALESCE(company_id, org_id) = ?
+       ORDER BY created_at DESC LIMIT 30`,
+    )
+    .bind(user.userId, user.tenantId)
+    .all<{ id: string; type: string; title: string; body: string | null; read: number; link: string | null; created_at: string }>();
+
+  const unreadCount = rows.results.filter((r) => r.read === 0).length;
+  return json(request, env, {
+    notifications: rows.results.map((r) => ({ ...r, read: r.read === 1 })),
+    unreadCount,
+  });
+}
+
+async function handleMarkAllRead(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  await env.HRMS
+    .prepare(`UPDATE notifications SET read = 1 WHERE user_id = ? AND COALESCE(company_id, org_id) = ? AND read = 0`)
+    .bind(user.userId, user.tenantId)
+    .run();
+  return json(request, env, { ok: true });
+}
+
+async function handleMarkOneRead(notifId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  await env.HRMS
+    .prepare(`UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?`)
+    .bind(notifId, user.userId)
+    .run();
+  return json(request, env, { ok: true });
+}
+
 // ── Analytics handlers ────────────────────────────────────────────────────────
 
 async function handleAnalyticsHeadcount(request: Request, env: Env, user: ApiUser): Promise<Response> {
@@ -166,8 +224,10 @@ async function handleAnalyticsHeadcount(request: Request, env: Env, user: ApiUse
     env.HRMS
       .prepare(
         `SELECT department, COUNT(*) as headcount
-         FROM employees
-         WHERE COALESCE(company_id, org_id) = ? AND status = 'active'
+         FROM users
+         WHERE COALESCE(company_id, org_id) = ?
+           AND status NOT IN ('Inactive', 'inactive')
+           AND department IS NOT NULL AND department != ''
          GROUP BY department ORDER BY headcount DESC`,
       )
       .bind(user.tenantId)
@@ -197,12 +257,13 @@ async function handleAnalyticsHeadcount(request: Request, env: Env, user: ApiUse
 async function handleAnalyticsHiringTrend(request: Request, env: Env, user: ApiUser): Promise<Response> {
   if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
 
-  // Last 7 months of joiners from employees table
+  // Last 7 months of joiners from users table
   const rows = await env.HRMS
     .prepare(
       `SELECT strftime('%Y-%m', joined_on) as month_key, COUNT(*) as hired
-       FROM employees
+       FROM users
        WHERE COALESCE(company_id, org_id) = ?
+         AND joined_on IS NOT NULL
          AND joined_on >= date('now', '-7 months')
        GROUP BY month_key ORDER BY month_key ASC`,
     )
@@ -602,12 +663,14 @@ async function handleLeaveDecision(
 
   const leave = await env.HRMS
     .prepare(
-      `SELECT id, company_id, org_id, user_id, leave_type, start_date, total_days, status
-       FROM leaves
-       WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`,
+      `SELECT l.id, l.company_id, l.org_id, l.user_id, l.leave_type, l.start_date, l.end_date, l.total_days, l.status,
+              u.name AS employee_name, u.email AS employee_email
+       FROM leaves l
+       LEFT JOIN users u ON u.id = l.user_id
+       WHERE l.id = ? AND COALESCE(l.company_id, l.org_id) = ? LIMIT 1`,
     )
     .bind(leaveId, user.tenantId)
-     .first<{ id: string; company_id: string | null; org_id: string; user_id: string; leave_type: string; start_date: string; total_days: number; status: string }>();
+     .first<{ id: string; company_id: string | null; org_id: string; user_id: string; leave_type: string; start_date: string; end_date: string; total_days: number; status: string; employee_name: string | null; employee_email: string | null }>();
 
   if (!leave) {
     return json(request, env, { error: "Leave request not found." }, 404);
@@ -651,6 +714,37 @@ async function handleLeaveDecision(
       )
       .bind(leave.total_days, leave.total_days, now, user.tenantId, leave.user_id, leave.leave_type, year)
       .run();
+  }
+
+  // In-app notification
+  const emoji = body.status === "approved" ? "✅" : "❌";
+  const verb  = body.status === "approved" ? "Approved" : "Rejected";
+  await createNotification(env.HRMS, {
+    companyId: user.tenantId,
+    userId: leave.user_id,
+    type: body.status === "approved" ? "leave_approved" : "leave_rejected",
+    title: `${emoji} Leave ${verb}`,
+    body: `Your ${leave.leave_type} leave (${leave.total_days} day${leave.total_days !== 1 ? "s" : ""}) from ${leave.start_date} has been ${body.status}.${body.note ? ` Note: ${body.note}` : ""}`,
+    link: "/hrms/leave",
+  });
+
+  // Email notification (fire-and-forget — don't block the response)
+  if (leave.employee_email) {
+    const baseUrl = env.HRMS_BASE_URL ?? new URL(request.url).origin;
+    sendEmail(env, {
+      to: leave.employee_email,
+      subject: `${emoji} Your Leave Request has been ${verb} – JWithKP HRMS`,
+      html: buildLeaveDecisionHtml({
+        employeeName: leave.employee_name ?? "there",
+        leaveType: leave.leave_type,
+        startDate: leave.start_date,
+        endDate: leave.end_date,
+        totalDays: leave.total_days,
+        status: body.status as "approved" | "rejected",
+        note: body.note?.trim() || undefined,
+        baseUrl,
+      }),
+    }).catch((e) => console.error("[email] leave decision:", e));
   }
 
   return json(request, env, { ok: true, id: leave.id, status: body.status });
@@ -1180,6 +1274,18 @@ async function handleExpenseDecision(
     return json(request, env, { error: "Invalid status. Use: approved, rejected, reimbursed." }, 400);
   }
 
+  // Fetch claim + employee info before updating (needed for email)
+  const claim = await env.HRMS
+    .prepare(
+      `SELECT ec.id, ec.category, ec.description, ec.amount, ec.user_id,
+              u.name AS employee_name, u.email AS employee_email
+       FROM expense_claims ec
+       LEFT JOIN users u ON u.id = ec.user_id
+       WHERE ec.id = ? AND COALESCE(ec.company_id, ec.org_id) = ? LIMIT 1`,
+    )
+    .bind(claimId, user.tenantId)
+    .first<{ id: string; category: string; description: string; amount: number; user_id: string; employee_name: string | null; employee_email: string | null }>();
+
   const now = nowIso();
   const result = await env.HRMS
     .prepare(
@@ -1192,6 +1298,38 @@ async function handleExpenseDecision(
 
   if (!result.meta.changes) {
     return json(request, env, { error: "Claim not found." }, 404);
+  }
+
+  // In-app notification
+  if (claim) {
+    const notifEmoji = newStatus === "approved" ? "✅" : newStatus === "reimbursed" ? "💰" : "❌";
+    const notifVerb  = newStatus === "approved" ? "Approved" : newStatus === "reimbursed" ? "Reimbursed" : "Rejected";
+    await createNotification(env.HRMS, {
+      companyId: user.tenantId,
+      userId: claim.user_id,
+      type: "general",
+      title: `${notifEmoji} Expense ${notifVerb}`,
+      body: `Your expense claim "${claim.description}" (₹${claim.amount.toLocaleString("en-IN")}) has been ${newStatus}.${body?.notes ? ` Note: ${body.notes}` : ""}`,
+      link: "/hrms/expenses",
+    });
+
+    // Email notification (fire-and-forget)
+    if (claim.employee_email) {
+      const baseUrl = env.HRMS_BASE_URL ?? new URL(request.url).origin;
+      sendEmail(env, {
+        to: claim.employee_email,
+        subject: `${notifEmoji} Your Expense Claim has been ${notifVerb} – JWithKP HRMS`,
+        html: buildExpenseDecisionHtml({
+          employeeName: claim.employee_name ?? "there",
+          category: claim.category,
+          description: claim.description,
+          amount: claim.amount,
+          status: newStatus as "approved" | "rejected" | "reimbursed",
+          notes: body?.notes?.trim() || undefined,
+          baseUrl,
+        }),
+      }).catch((e) => console.error("[email] expense decision:", e));
+    }
   }
 
   return json(request, env, { ok: true, id: claimId, status: newStatus });
@@ -1519,6 +1657,22 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
     const id = pathname.match(/^\/api\/recruitment\/jobs\/([^/]+)\/close$/)![1];
     return handleCloseJob(id, request, env, user!);
   }
+  if (method === "PATCH" && pathname.match(/^\/api\/recruitment\/jobs\/([^/]+)\/stage$/)) {
+    const id = pathname.match(/^\/api\/recruitment\/jobs\/([^/]+)\/stage$/)![1];
+    return handleUpdateJobStage(id, request, env, user!);
+  }
+
+  // ── Notifications ────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/notifications") {
+    return handleListNotifications(request, env, user!);
+  }
+  if (method === "PATCH" && pathname === "/api/notifications/read-all") {
+    return handleMarkAllRead(request, env, user!);
+  }
+  const notifReadMatch = pathname.match(/^\/api\/notifications\/([^/]+)\/read$/);
+  if (method === "PATCH" && notifReadMatch) {
+    return handleMarkOneRead(notifReadMatch[1], request, env, user!);
+  }
 
   // ── Performance ──────────────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/performance/cycles") {
@@ -1678,6 +1832,23 @@ async function handleCloseJob(
     .bind(now, jobId, user.tenantId)
     .run();
   return json(request, env, { ok: true });
+}
+
+async function handleUpdateJobStage(
+  jobId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await request.json<{ stage: string }>();
+  const VALID_STAGES = ["Applied", "Screening", "Interview", "Offer", "Hired", "Closed"];
+  if (!VALID_STAGES.includes(body.stage)) {
+    return json(request, env, { error: "Invalid stage." }, 400);
+  }
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE job_openings SET stage = ?, updated_at = ? WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(body.stage, now, jobId, user.tenantId)
+    .run();
+  return json(request, env, { ok: true, stage: body.stage });
 }
 
 // ── Performance Handlers ──────────────────────────────────────────────────────

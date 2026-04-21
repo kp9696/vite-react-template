@@ -108,6 +108,31 @@ export default function Exit() {
       && value.getFullYear() === now.getFullYear();
   }).length;
 
+  // Calculate real YTD attrition
+  const ytdExits = exits.filter((e) => {
+    const d = new Date(e.lastDay);
+    return Number.isFinite(d.getTime()) && d.getFullYear() === now.getFullYear();
+  }).length;
+  const attritionPct = data.totalEmployees > 0
+    ? ((ytdExits / (data.totalEmployees + ytdExits)) * 100).toFixed(1)
+    : "0.0";
+
+  // Calculate real exit reasons breakdown from actual data
+  const reasonCounts: Record<string, number> = {};
+  for (const e of exits) {
+    const key = e.exitType || "Other";
+    reasonCounts[key] = (reasonCounts[key] ?? 0) + 1;
+  }
+  const reasonColors: Record<string, string> = {
+    Resignation: "#6366f1", Termination: "#ef4444", Retirement: "#10b981",
+    Abandonment: "#f59e0b", Other: "#8b5cf6",
+  };
+  const exitReasons = Object.entries(reasonCounts).map(([reason, count]) => ({
+    reason,
+    pct: exits.length > 0 ? Math.round((count / exits.length) * 100) : 0,
+    color: reasonColors[reason] ?? "#6b7280",
+  }));
+
   return (
     <HRMSLayout currentUser={data.currentUser}>
       {toast ? (
@@ -181,7 +206,7 @@ export default function Exit() {
           { label: "Active Exits", value: String(exits.length), sub: "In notice period" },
           { label: "Ending This Month", value: String(endingThisMonth), sub: "Last day this month" },
           { label: "Pending F&F", value: String(pendingFF), sub: "Settlement due" },
-          { label: "Attrition (YTD)", value: "9.1%", sub: "down from 10.5% last year" },
+          { label: "Attrition (YTD)", value: `${attritionPct}%`, sub: ytdExits > 0 ? `${ytdExits} exit${ytdExits !== 1 ? "s" : ""} this year` : "No exits this year" },
         ].map((stat) => (
           <div className="stat-card" key={stat.label}>
             <div className="stat-label">{stat.label}</div>
@@ -227,13 +252,10 @@ export default function Exit() {
           ))}
 
           <div className="card" style={{ margin: 0, marginTop: 8 }}>
-            <div className="card-title">Top Exit Reasons</div>
-            {[
-              { reason: "Better Opportunity", pct: 42, color: "#6366f1" },
-              { reason: "Higher Studies", pct: 18, color: "#10b981" },
-              { reason: "Relocation", pct: 15, color: "#f59e0b" },
-              { reason: "Personal", pct: 25, color: "#8b5cf6" },
-            ].map((reason) => (
+            <div className="card-title">Exit by Type</div>
+            {exits.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--ink-3)", padding: "8px 0" }}>No exits recorded yet.</div>
+            ) : exitReasons.map((reason) => (
               <div key={reason.reason} style={{ marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
                   <span style={{ fontSize: 11, color: "var(--ink-2)" }}>{reason.reason}</span>

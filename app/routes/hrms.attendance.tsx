@@ -75,9 +75,11 @@ interface CheckInOutResponse {
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
   } catch {
-    return iso;
+    return "—";
   }
 }
 
@@ -85,6 +87,7 @@ function hoursWorked(checkIn: string | null, checkOut: string | null): string {
   if (!checkIn || !checkOut) return "—";
   try {
     const diff = new Date(checkOut).getTime() - new Date(checkIn).getTime();
+    if (isNaN(diff) || diff < 0) return "—";
     const h = Math.floor(diff / 3600000);
     const m = Math.floor((diff % 3600000) / 60000);
     return `${h}h ${m}m`;

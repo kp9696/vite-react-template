@@ -22,4 +22,5 @@ export default [
   route("hrms/hrbot", "routes/hrms.hrbot.tsx"),
   route("hrms/users", "routes/hrms.users.tsx"),
   route("hrms/profile/:userId", "routes/hrms.profile.$userId.tsx"),
+  route("hrms/notifications", "routes/hrms.notifications.tsx"),
 ] satisfies RouteConfig;

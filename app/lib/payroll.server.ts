@@ -294,6 +294,7 @@ export async function runPayrollForMonth(
 
   return {
     month: toMonthLabel(monthKey),
+    monthKey,
     processed,
     pending,
   };
