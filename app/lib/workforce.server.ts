@@ -127,6 +127,16 @@ export interface OnboardingTaskRecord {
   sortOrder: number;
 }
 
+export interface OnboardingTechAllocation {
+  id: string;
+  joinerId: string;
+  assetType: string;
+  assetTag: string;
+  serialNo: string;
+  notes: string;
+  allocatedAt: string;
+}
+
 export interface OnboardingJoinerRecord {
   id: string;
   companyId: string;
@@ -134,6 +144,12 @@ export interface OnboardingJoinerRecord {
   role: string;
   department: string;
   startDate: string;
+  email: string;
+  phone: string;
+  offerSigned: boolean;
+  bgCheck: boolean;
+  docsCollected: boolean;
+  welcomeSent: boolean;
   progress: number;
   avatar: string;
   createdAt: string;
@@ -711,7 +727,8 @@ export async function getRecruitmentDashboard(db: D1Database, companyId: string)
 export async function listOnboardingJoiners(db: D1Database, companyId: string): Promise<OnboardingJoinerRecord[]> {
   const joinersResult = await db
     .prepare(
-      `SELECT id, company_id, org_id, name, role, department, start_date, progress, avatar, created_at
+      `SELECT id, company_id, org_id, name, role, department, start_date, progress, avatar,
+              email, phone, offer_signed, bg_check, docs_collected, welcome_sent, created_at
        FROM onboarding_joiners
        WHERE COALESCE(company_id, org_id) = ?
        ORDER BY date(start_date) ASC, datetime(created_at) DESC`,
@@ -744,6 +761,12 @@ export async function listOnboardingJoiners(db: D1Database, companyId: string): 
     role: String(row.role),
     department: String(row.department),
     startDate: String(row.start_date),
+    email: String(row.email ?? ""),
+    phone: String(row.phone ?? ""),
+    offerSigned: Boolean(row.offer_signed),
+    bgCheck: Boolean(row.bg_check),
+    docsCollected: Boolean(row.docs_collected),
+    welcomeSent: Boolean(row.welcome_sent),
     progress: Number(row.progress ?? 0),
     avatar: String(row.avatar),
     createdAt: String(row.created_at),
@@ -759,17 +782,19 @@ export async function createOnboardingJoiner(
     role: string;
     department: string;
     startDate: string;
+    email?: string;
+    phone?: string;
   },
-): Promise<void> {
+): Promise<string> {
   const id = `ONB${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
   const now = new Date().toISOString();
 
   await db
     .prepare(
-      `INSERT INTO onboarding_joiners (id, company_id, org_id, name, role, department, start_date, progress, avatar, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      `INSERT INTO onboarding_joiners (id, company_id, org_id, name, role, department, start_date, progress, avatar, email, phone, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(), input.startDate, initials(input.name), now, now)
+    .bind(id, input.companyId, input.companyId, input.name.trim(), input.role.trim(), input.department.trim(), input.startDate, initials(input.name), (input.email ?? "").trim(), (input.phone ?? "").trim(), now, now)
     .run();
 
   const statements = defaultOnboardingTemplate.map(([section, label], index) =>
@@ -780,6 +805,7 @@ export async function createOnboardingJoiner(
   );
 
   await db.batch(statements);
+  return id;
 }
 
 export async function toggleOnboardingTask(db: D1Database, joinerId: string, taskId: string): Promise<void> {
@@ -970,7 +996,116 @@ export async function toggleExitTask(db: D1Database, exitId: string, taskId: str
 }
 
 export async function getExitDashboard(db: D1Database, companyId: string) {
-  const exits = await listExitProcesses(db, companyId);
-  return { exits };
+  const [exits, headcount] = await Promise.all([
+    listExitProcesses(db, companyId),
+    db
+      .prepare("SELECT COUNT(*) as cnt FROM users WHERE COALESCE(company_id, org_id) = ? AND status NOT IN ('Inactive','inactive')")
+      .bind(companyId)
+      .first<{ cnt: number }>(),
+  ]);
+  return { exits, totalEmployees: headcount?.cnt ?? 0 };
+}
+
+// ── Onboarding: Pre-boarding status ─────────────────────────────────────────
+
+export async function updatePreBoarding(
+  db: D1Database,
+  companyId: string,
+  joinerId: string,
+  data: {
+    offerSigned?: boolean;
+    bgCheck?: boolean;
+    docsCollected?: boolean;
+  },
+): Promise<void> {
+  const now = new Date().toISOString();
+  const parts: string[] = [];
+  const values: unknown[] = [];
+  if (data.offerSigned !== undefined) { parts.push("offer_signed = ?"); values.push(data.offerSigned ? 1 : 0); }
+  if (data.bgCheck !== undefined) { parts.push("bg_check = ?"); values.push(data.bgCheck ? 1 : 0); }
+  if (data.docsCollected !== undefined) { parts.push("docs_collected = ?"); values.push(data.docsCollected ? 1 : 0); }
+  if (!parts.length) return;
+  parts.push("updated_at = ?");
+  values.push(now, joinerId, companyId);
+  await db
+    .prepare(`UPDATE onboarding_joiners SET ${parts.join(", ")} WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(...values)
+    .run();
+}
+
+export async function markWelcomeSent(
+  db: D1Database,
+  joinerId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db
+    .prepare(`UPDATE onboarding_joiners SET welcome_sent = 1, updated_at = ? WHERE id = ?`)
+    .bind(now, joinerId)
+    .run();
+}
+
+// ── Onboarding: Tech Allocations ─────────────────────────────────────────────
+
+export async function listTechAllocations(
+  db: D1Database,
+  joinerId: string,
+): Promise<OnboardingTechAllocation[]> {
+  const result = await db
+    .prepare(
+      `SELECT id, joiner_id, asset_type, asset_tag, serial_no, notes, allocated_at
+       FROM onboarding_tech_allocations
+       WHERE joiner_id = ?
+       ORDER BY datetime(allocated_at) ASC`,
+    )
+    .bind(joinerId)
+    .all<Record<string, unknown>>();
+
+  return result.results.map((row) => ({
+    id: String(row.id),
+    joinerId: String(row.joiner_id),
+    assetType: String(row.asset_type),
+    assetTag: String(row.asset_tag ?? ""),
+    serialNo: String(row.serial_no ?? ""),
+    notes: String(row.notes ?? ""),
+    allocatedAt: String(row.allocated_at),
+  }));
+}
+
+export async function addTechAllocation(
+  db: D1Database,
+  companyId: string,
+  joinerId: string,
+  data: {
+    assetType: string;
+    assetTag?: string;
+    serialNo?: string;
+    notes?: string;
+  },
+): Promise<string> {
+  const id = `TEC${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO onboarding_tech_allocations (id, company_id, org_id, joiner_id, asset_type, asset_tag, serial_no, notes, allocated_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, companyId, companyId, joinerId, data.assetType.trim(), (data.assetTag ?? "").trim(), (data.serialNo ?? "").trim(), (data.notes ?? "").trim(), now, now)
+    .run();
+  return id;
+}
+
+export async function deleteTechAllocation(
+  db: D1Database,
+  companyId: string,
+  allocationId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `DELETE FROM onboarding_tech_allocations
+       WHERE id = ?
+         AND joiner_id IN (SELECT id FROM onboarding_joiners WHERE id = joiner_id AND COALESCE(company_id, org_id) = ?)`,
+    )
+    .bind(allocationId, companyId)
+    .run();
 }
 

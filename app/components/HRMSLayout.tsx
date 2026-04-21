@@ -1,6 +1,16 @@
 import { useState, useRef, useEffect } from "react";
-import { Form, Link, useLocation } from "react-router";
+import { Form, Link, useLocation, useFetcher } from "react-router";
 import { avatarColor, getInitials, isAdminRole } from "../lib/hrms.shared";
+
+interface Notification {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  read: boolean;
+  link: string | null;
+  created_at: string;
+}
 
 interface CurrentUser {
   id: string;
@@ -106,18 +116,81 @@ export default function HRMSLayout({
   const [collapsed, setCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [avatarOpen, setAvatarOpen] = useState(false);
+  const [bellOpen, setBellOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const avatarRef = useRef<HTMLDivElement>(null);
+  const bellRef = useRef<HTMLDivElement>(null);
   const initials = currentUser ? getInitials(currentUser.name) : "?";
   const accentColor = currentUser ? avatarColor(currentUser.name) : "#6366f1";
   const navGroups = getNavGroups(currentUser?.role);
   const allNav = currentUser && !isAdminRole(currentUser.role) ? allEmployeeNav : allAdminNav;
   const currentPage = allNav.find((item) => item.path === location.pathname);
 
-  // Close dropdown when clicking outside
+  // useFetcher targets the /hrms/notifications React Router proxy route (which uses callCoreHrmsApi server-side)
+  const notifFetcher = useFetcher<{ notifications: Notification[]; unreadCount: number }>();
+  const markFetcher = useFetcher();
+
+  // Sync fetcher data into local state
+  useEffect(() => {
+    if (notifFetcher.data?.notifications) {
+      setNotifications(notifFetcher.data.notifications);
+      setUnreadCount(notifFetcher.data.unreadCount ?? 0);
+    }
+  }, [notifFetcher.data]);
+
+  // Load notifications on route change
+  useEffect(() => {
+    if (!currentUser) return;
+    notifFetcher.load("/hrms/notifications");
+  }, [location.pathname, currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleMarkAllRead = () => {
+    markFetcher.submit(
+      { intent: "mark-all-read" },
+      { method: "POST", action: "/hrms/notifications" },
+    );
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setUnreadCount(0);
+  };
+
+  const handleMarkOneRead = (notifId: string, link: string | null) => {
+    markFetcher.submit(
+      { intent: "mark-one-read", id: notifId },
+      { method: "POST", action: "/hrms/notifications" },
+    );
+    setNotifications((prev) => prev.map((n) => n.id === notifId ? { ...n, read: true } : n));
+    setUnreadCount((prev) => Math.max(0, prev - 1));
+    if (link) window.location.href = link;
+    setBellOpen(false);
+  };
+
+  const notifTypeIcon: Record<string, string> = {
+    leave_approved: "✅",
+    leave_rejected: "❌",
+    payroll_processed: "💰",
+    onboarding_task: "🚀",
+    general: "🔔",
+  };
+
+  function timeAgo(iso: string): string {
+    const diff = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
+  // Close dropdowns when clicking outside
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (avatarRef.current && !avatarRef.current.contains(e.target as Node)) {
         setAvatarOpen(false);
+      }
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
+        setBellOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -236,7 +309,142 @@ export default function HRMSLayout({
             <div className="topbar-date">
               {new Date().toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
             </div>
-            <button className="topbar-icon-btn" title="Notifications"><SVGBell /></button>
+            {/* ── Notifications Bell ── */}
+            <div ref={bellRef} style={{ position: "relative" }}>
+              <button
+                className="topbar-icon-btn"
+                title="Notifications"
+                onClick={() => {
+                  setBellOpen((v) => !v);
+                  if (!bellOpen && currentUser) {
+                    notifFetcher.load("/hrms/notifications");
+                  }
+                }}
+                style={{ position: "relative" }}
+              >
+                <SVGBell />
+                {unreadCount > 0 && (
+                  <span style={{
+                    position: "absolute", top: -4, right: -4,
+                    background: "#ef4444", color: "white",
+                    fontSize: 9, fontWeight: 700,
+                    minWidth: 16, height: 16, borderRadius: 8,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    padding: "0 3px", lineHeight: 1,
+                    border: "2px solid white",
+                    pointerEvents: "none",
+                  }}>
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+              {bellOpen && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 10px)", right: 0,
+                  background: "white", border: "1px solid var(--border)",
+                  borderRadius: 14, boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
+                  width: 340, zIndex: 999,
+                  animation: "scaleIn 0.15s cubic-bezier(0.16,1,0.3,1)",
+                  transformOrigin: "top right",
+                  overflow: "hidden",
+                }}>
+                  {/* Header */}
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "12px 16px", borderBottom: "1px solid var(--border)",
+                  }}>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: "var(--ink)" }}>
+                      Notifications
+                      {unreadCount > 0 && (
+                        <span style={{
+                          marginLeft: 6, background: "#ef4444", color: "white",
+                          fontSize: 10, fontWeight: 700, padding: "1px 6px",
+                          borderRadius: 10,
+                        }}>{unreadCount}</span>
+                      )}
+                    </span>
+                    {unreadCount > 0 && (
+                      <button
+                        onClick={handleMarkAllRead}
+                        style={{
+                          fontSize: 11, color: "var(--accent)", fontWeight: 600,
+                          background: "none", border: "none", cursor: "pointer", padding: 0,
+                        }}
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  {/* Notification list */}
+                  <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                    {notifications.length === 0 ? (
+                      <div style={{
+                        padding: "32px 16px", textAlign: "center",
+                        color: "var(--ink-3)", fontSize: 12,
+                      }}>
+                        <div style={{ fontSize: 28, marginBottom: 8 }}>🔔</div>
+                        <div style={{ fontWeight: 600 }}>You're all caught up!</div>
+                        <div style={{ marginTop: 4, opacity: 0.7 }}>No notifications yet</div>
+                      </div>
+                    ) : (
+                      notifications.map((n) => (
+                        <div
+                          key={n.id}
+                          onClick={() => handleMarkOneRead(n.id, n.link)}
+                          style={{
+                            display: "flex", gap: 10, padding: "10px 16px",
+                            cursor: n.link ? "pointer" : "default",
+                            background: n.read ? "transparent" : "rgba(99,102,241,0.04)",
+                            borderBottom: "1px solid var(--border)",
+                            transition: "background 0.15s",
+                          }}
+                          onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = "rgba(99,102,241,0.07)"; }}
+                          onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = n.read ? "transparent" : "rgba(99,102,241,0.04)"; }}
+                        >
+                          <div style={{
+                            width: 32, height: 32, borderRadius: "50%",
+                            background: "var(--accent-light)",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 14, flexShrink: 0,
+                          }}>
+                            {notifTypeIcon[n.type] ?? "🔔"}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              display: "flex", justifyContent: "space-between",
+                              alignItems: "flex-start", gap: 4,
+                            }}>
+                              <span style={{
+                                fontSize: 12, fontWeight: n.read ? 500 : 700,
+                                color: "var(--ink)", lineHeight: 1.3,
+                              }}>{n.title}</span>
+                              <span style={{
+                                fontSize: 10, color: "var(--ink-3)", flexShrink: 0,
+                                marginTop: 1,
+                              }}>{timeAgo(n.created_at)}</span>
+                            </div>
+                            {n.body && (
+                              <div style={{
+                                fontSize: 11, color: "var(--ink-3)", marginTop: 2,
+                                lineHeight: 1.4, overflow: "hidden",
+                                display: "-webkit-box", WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                              }}>{n.body}</div>
+                            )}
+                          </div>
+                          {!n.read && (
+                            <div style={{
+                              width: 7, height: 7, borderRadius: "50%",
+                              background: "#6366f1", flexShrink: 0, marginTop: 4,
+                            }} />
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             {/* Avatar with dropdown */}
             <div ref={avatarRef} style={{ position: "relative" }}>
               <div

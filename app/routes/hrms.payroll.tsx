@@ -5,7 +5,9 @@ import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { avatarColor, getInitials, isAdminRole } from "../lib/hrms.shared";
 import { getPayrollDashboard, runPayrollForMonth, type PayrollEmployee } from "../lib/payroll.server";
+import { createNotification } from "../lib/notifications.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
+import { sendEmail, buildPayslipEmailHtml } from "../../workers/lib/email";
 
 type Employee = PayrollEmployee;
 
@@ -111,6 +113,60 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
     const result = await runPayrollForMonth(context.cloudflare.env.HRMS, tenantId, month);
     if (result.processed + result.pending === 0) {
       return { ok: false, message: `No employees found for payroll run (${result.month}).` };
+    }
+
+    // Notify all active employees (in-app + email)
+    try {
+      const db = context.cloudflare.env.HRMS;
+      const env = context.cloudflare.env;
+      const baseUrl = env.HRMS_BASE_URL ?? new URL(request.url).origin;
+
+      // Fetch employees with their payroll items for this month
+      // Note: payroll_items uses employee_id (not user_id) and month_key (not month)
+      const empRows = await db
+        .prepare(
+          `SELECT u.id, u.name, u.email,
+                  pi.gross AS gross_pay, pi.net AS net_pay, pi.deductions AS total_deductions
+           FROM users u
+           LEFT JOIN payroll_items pi ON pi.employee_id = u.id AND pi.month_key = ?
+             AND COALESCE(pi.company_id, pi.org_id) = ?
+           WHERE COALESCE(u.company_id, u.org_id) = ?
+             AND u.status NOT IN ('Inactive','inactive')`,
+        )
+        .bind(result.monthKey, tenantId, tenantId)
+        .all<{ id: string; name: string; email: string; gross_pay: number | null; net_pay: number | null; total_deductions: number | null }>();
+
+      await Promise.all(
+        empRows.results.map(async (emp) => {
+          // In-app notification
+          await createNotification(db, {
+            companyId: tenantId,
+            userId: emp.id,
+            type: "payroll_processed",
+            title: "💰 Payslip Ready",
+            body: `Your payslip for ${result.month} has been processed. Net pay: ₹${(emp.net_pay ?? 0).toLocaleString("en-IN")}.`,
+            link: "/hrms/payroll",
+          });
+
+          // Email
+          if (emp.email && emp.gross_pay != null) {
+            sendEmail(env, {
+              to: emp.email,
+              subject: `💰 Your Payslip for ${result.month} is Ready – JWithKP HRMS`,
+              html: buildPayslipEmailHtml({
+                employeeName: emp.name,
+                month: result.month,
+                grossPay: emp.gross_pay ?? 0,
+                netPay: emp.net_pay ?? 0,
+                totalDeductions: emp.total_deductions ?? 0,
+                baseUrl,
+              }),
+            }).catch((e) => console.error("[email] payslip:", e));
+          }
+        }),
+      );
+    } catch {
+      // Notification failure should not block payroll response
     }
 
     return {

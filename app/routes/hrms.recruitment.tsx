@@ -111,6 +111,19 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
     return { intent, ok: true, aplId, stage };
   }
 
+  if (intent === "move-job-stage") {
+    const jobId = String(formData.get("jobId") || "");
+    const stage = String(formData.get("stage") || "");
+    const res = await callCoreHrmsApi<{ ok?: boolean; error?: string; stage?: string }>({
+      request, env, currentUser,
+      path: `/api/recruitment/jobs/${jobId}/stage`,
+      method: "PATCH",
+      body: { stage },
+    });
+    if (res?.error) return { ok: false, type: "error", message: res.error };
+    return { intent, ok: true, jobId, stage };
+  }
+
   if (intent === "delete-applicant") {
     const aplId = String(formData.get("aplId") || "");
     const jobId = String(formData.get("jobId") || "");
@@ -128,9 +141,10 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
 
 export default function Recruitment() {
   const { currentUser, isAdmin, openings, pipeline } = useLoaderData<typeof loader>();
-  const fetcher      = useFetcher<ActionResult>();
-  const aplFetcher   = useFetcher<ActionResult>();
-  const revalidator  = useRevalidator();
+  const fetcher          = useFetcher<ActionResult>();
+  const aplFetcher       = useFetcher<ActionResult>();
+  const jobStageFetcher  = useFetcher<ActionResult>();
+  const revalidator      = useRevalidator();
 
   const [showForm, setShowForm] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
@@ -143,16 +157,18 @@ export default function Recruitment() {
   const [showAddApl, setShowAddApl] = useState(false);
   const [aplForm, setAplForm] = useState({ name: "", email: "", phone: "", resumeUrl: "" });
   const [stageMoving, setStageMoving] = useState<string | null>(null);
-  const pendingAplFormRef = useRef<typeof aplForm | null>(null);
-  const pendingStageRef   = useRef<{ aplId: string; stage: Stage } | null>(null);
-  const pendingDeleteRef  = useRef<{ aplId: string; name: string } | null>(null);
+  const pendingAplFormRef  = useRef<typeof aplForm | null>(null);
+  const pendingStageRef    = useRef<{ aplId: string; stage: Stage } | null>(null);
+  const pendingDeleteRef   = useRef<{ aplId: string; name: string } | null>(null);
+  const pendingJobStageRef = useRef<{ jobId: string; stage: string } | null>(null);
 
   // Local copy of openings so applicant_count updates without full reload
   const [jobs, setJobs] = useState(openings);
   const [localPipeline, setLocalPipeline] = useState(pipeline);
 
-  // Sync jobs when loader revalidates
+  // Sync jobs & pipeline when loader revalidates
   useEffect(() => { setJobs(openings); }, [openings]);
+  useEffect(() => { setLocalPipeline(pipeline); }, [pipeline]);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -222,6 +238,43 @@ export default function Recruitment() {
       }
     }
   }, [aplFetcher.data]);
+
+  // Job stage fetcher result
+  useEffect(() => {
+    if (!jobStageFetcher.data) return;
+    const d = jobStageFetcher.data as Record<string, unknown>;
+    if (d.intent === "move-job-stage") {
+      if (!d.ok) { showToast((d.message as string) || "Failed to update stage.", false); return; }
+      const p = pendingJobStageRef.current;
+      if (p) {
+        // Rebuild pipeline from updated jobs list
+        setJobs(prev => {
+          const updated = prev.map(j => j.id === p.jobId ? { ...j, stage: p.stage } : j);
+          const STAGE_COLORS_MAP: Record<string, string> = {
+            "Applied": "#7b8099", "Screening": "#4f46e5", "Interview": "#f59e0b", "Offer": "#10b981",
+          };
+          const pipelineStages = ["Applied", "Screening", "Interview", "Offer"];
+          setLocalPipeline(pipelineStages.map((s) => ({
+            stage: s,
+            color: STAGE_COLORS_MAP[s],
+            count: updated.filter(j => j.stage === s).length,
+            roles: updated.filter(j => j.stage === s).map(j => ({
+              id: j.id, title: j.title, department: j.department,
+              location: j.location, applicants: j.applicantCount, priority: j.priority,
+            })),
+          })));
+          return updated;
+        });
+        showToast(`Moved to ${p.stage}.`);
+        pendingJobStageRef.current = null;
+      }
+    }
+  }, [jobStageFetcher.data]);
+
+  const handleMoveJobStage = (jobId: string, stage: string) => {
+    pendingJobStageRef.current = { jobId, stage };
+    jobStageFetcher.submit({ intent: "move-job-stage", jobId, stage }, { method: "post" });
+  };
 
   const loadApplicants = (jobId: string) => {
     setAplLoading(true);
@@ -500,7 +553,20 @@ export default function Recruitment() {
                         <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 700 }}>
                           👥 {aplCount} applied
                         </span>
-                        <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Click to view →</span>
+                        {isAdmin ? (
+                          <select
+                            value={column.stage}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => { e.stopPropagation(); handleMoveJobStage(role.id, e.target.value); }}
+                            style={{ fontSize: 11, padding: "3px 6px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", cursor: "pointer", color: "var(--ink-2)", fontWeight: 600 }}
+                          >
+                            {(["Applied", "Screening", "Interview", "Offer"] as const).map((s) => (
+                              <option key={s} value={s}>{s}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Click to view →</span>
+                        )}
                       </div>
                     </div>
                   );
@@ -545,8 +611,20 @@ export default function Recruitment() {
                         {opening.priority === "Urgent" ? "🔴 " : "🟢 "}{opening.priority}
                       </span>
                     </td>
-                    <td>
-                      <span style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 500 }}>{opening.stage}</span>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      {isAdmin ? (
+                        <select
+                          value={opening.stage}
+                          onChange={(e) => handleMoveJobStage(opening.id, e.target.value)}
+                          style={{ fontSize: 12, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", cursor: "pointer", color: "var(--ink-2)", fontWeight: 600 }}
+                        >
+                          {(["Applied", "Screening", "Interview", "Offer", "Hired", "Closed"] as const).map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span style={{ fontSize: 12, color: "var(--ink-2)", fontWeight: 500 }}>{opening.stage}</span>
+                      )}
                     </td>
                     <td>
                       <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>View →</span>
