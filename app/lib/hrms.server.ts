@@ -28,6 +28,15 @@ export interface HRMSUser {
   inviteSentAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // Bank details
+  bankName: string | null;
+  bankAccount: string | null;
+  bankIfsc: string | null;
+  bankAccountType: string | null;
+  // Emergency contact
+  emergencyContactName: string | null;
+  emergencyContactPhone: string | null;
+  emergencyContactRelation: string | null;
 }
 
 export interface InviteUserInput {
@@ -107,6 +116,13 @@ function mapUser(row: Record<string, unknown>): HRMSUser {
     inviteSentAt: row.invite_sent_at ? String(row.invite_sent_at) : null,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    bankName: row.bank_name ? String(row.bank_name) : null,
+    bankAccount: row.bank_account ? String(row.bank_account) : null,
+    bankIfsc: row.bank_ifsc ? String(row.bank_ifsc) : null,
+    bankAccountType: row.bank_account_type ? String(row.bank_account_type) : null,
+    emergencyContactName: row.emergency_contact_name ? String(row.emergency_contact_name) : null,
+    emergencyContactPhone: row.emergency_contact_phone ? String(row.emergency_contact_phone) : null,
+    emergencyContactRelation: row.emergency_contact_relation ? String(row.emergency_contact_relation) : null,
   };
 }
 
@@ -173,7 +189,9 @@ export async function getUserByEmail(db: D1Database, email: string): Promise<HRM
 
   const result = await db
     .prepare(
-      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at,
+              users.bank_name, users.bank_account, users.bank_ifsc, users.bank_account_type,
+              users.emergency_contact_name, users.emergency_contact_phone, users.emergency_contact_relation
        FROM users
         LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
        WHERE lower(users.email) = lower(?)
@@ -202,7 +220,9 @@ export async function getUserById(db: D1Database, id: string): Promise<HRMSUser 
 
   const result = await db
     .prepare(
-      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at
+      `SELECT users.id, COALESCE(users.company_id, users.org_id) AS company_id, users.org_id, organizations.name AS organization_name, users.name, users.email, users.role, users.department, users.designation, users.phone, users.gender, users.dob, users.employment_type, users.status, users.joined_on, users.invite_sent_at, users.created_at, users.updated_at,
+              users.bank_name, users.bank_account, users.bank_ifsc, users.bank_account_type,
+              users.emergency_contact_name, users.emergency_contact_phone, users.emergency_contact_relation
        FROM users
         LEFT JOIN organizations ON organizations.id = COALESCE(users.company_id, users.org_id)
        WHERE users.id = ?
@@ -323,6 +343,8 @@ export async function updateUserDetails(
   updates: Partial<{
     name: string; role: string; department: string; designation: string;
     phone: string; gender: string; dob: string; employmentType: string; joinedOn: string;
+    bankName: string; bankAccount: string; bankIfsc: string; bankAccountType: string;
+    emergencyContactName: string; emergencyContactPhone: string; emergencyContactRelation: string;
   }>,
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -332,6 +354,9 @@ export async function updateUserDetails(
   const map: Record<string, string> = {
     name: "name", role: "role", department: "department", designation: "designation",
     phone: "phone", gender: "gender", dob: "dob", employmentType: "employment_type", joinedOn: "joined_on",
+    bankName: "bank_name", bankAccount: "bank_account", bankIfsc: "bank_ifsc", bankAccountType: "bank_account_type",
+    emergencyContactName: "emergency_contact_name", emergencyContactPhone: "emergency_contact_phone",
+    emergencyContactRelation: "emergency_contact_relation",
   };
 
   for (const [key, col] of Object.entries(map)) {

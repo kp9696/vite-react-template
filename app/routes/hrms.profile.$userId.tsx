@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.profile.$userId";
 import HRMSLayout from "../components/HRMSLayout";
 import { getUserById, updateUserDetails } from "../lib/hrms.server";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { isAdminRole, avatarColor, getInitials } from "../lib/hrms.shared";
+import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface AttendanceRow {
@@ -39,8 +40,18 @@ interface ExpenseRow {
   status: string;
   has_receipt: number;
 }
+interface DocumentRow {
+  id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  category: string;
+  status: string;
+  uploaded_at: string;
+  r2_key: string;
+}
 
-type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
+type ActionResult = { ok: boolean; message: string; type: "success" | "error"; uploadToken?: string; fileKey?: string; intent?: string };
 
 export function meta({ data }: { data?: { employee?: { name: string } } }) {
   return [{ title: `${data?.employee?.name ?? "Employee"} — JWithKP HRMS` }];
@@ -51,7 +62,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   const { userId } = params as { userId: string };
   const isAdmin = isAdminRole(currentUser.role);
 
-  // Employees can only view their own profile
   if (!isAdmin && currentUser.id !== userId) throw redirect("/hrms");
 
   const db = context.cloudflare.env.HRMS;
@@ -64,7 +74,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     throw redirect("/hrms");
   }
 
-  const [attendanceRes, leaveBalancesRes, leavesRes, expensesRes] = await Promise.all([
+  const [attendanceRes, leaveBalancesRes, leavesRes, expensesRes, documentsRes] = await Promise.all([
     db.prepare(`SELECT id, attendance_date, check_in_at, check_out_at, status FROM attendance WHERE user_id = ? AND org_id = ? ORDER BY attendance_date DESC LIMIT 60`)
       .bind(userId, orgId).all<AttendanceRow>(),
     db.prepare(`SELECT leave_type, total, used, pending FROM leave_balances WHERE user_id = ? AND org_id = ? ORDER BY leave_type`)
@@ -73,6 +83,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       .bind(userId, orgId).all<LeaveRow>(),
     db.prepare(`SELECT id, category, description, amount, claim_date, status, has_receipt FROM expense_claims WHERE user_id = ? AND org_id = ? ORDER BY created_at DESC LIMIT 30`)
       .bind(userId, orgId).all<ExpenseRow>(),
+    db.prepare(`SELECT id, file_name, file_type, file_size, category, status, uploaded_at, r2_key FROM documents WHERE employee_id = ? AND org_id = ? ORDER BY uploaded_at DESC LIMIT 50`)
+      .bind(userId, orgId).all<DocumentRow>().catch(() => ({ results: [] })),
   ]);
 
   return {
@@ -83,6 +95,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     leaveBalances: leaveBalancesRes.results ?? [],
     leaves: leavesRes.results ?? [],
     expenses: expensesRes.results ?? [],
+    documents: (documentsRes as { results: DocumentRow[] }).results ?? [],
+    baseUrl: context.cloudflare.env.HRMS_BASE_URL ?? "",
   };
 }
 
@@ -113,6 +127,58 @@ export async function action({ request, context, params }: Route.ActionArgs): Pr
       });
       return { ok: true, type: "success", message: "Profile updated successfully." };
     }
+
+    if (intent === "edit-bank") {
+      await updateUserDetails(db, userId, tenantId, {
+        bankName:                String(formData.get("bankName") || "").trim() || undefined,
+        bankAccount:             String(formData.get("bankAccount") || "").trim() || undefined,
+        bankIfsc:                String(formData.get("bankIfsc") || "").trim() || undefined,
+        bankAccountType:         String(formData.get("bankAccountType") || "").trim() || undefined,
+        emergencyContactName:    String(formData.get("emergencyContactName") || "").trim() || undefined,
+        emergencyContactPhone:   String(formData.get("emergencyContactPhone") || "").trim() || undefined,
+        emergencyContactRelation:String(formData.get("emergencyContactRelation") || "").trim() || undefined,
+      });
+      return { ok: true, type: "success", message: "Bank & emergency details saved." };
+    }
+
+    if (intent === "presign") {
+      const result = await callCoreHrmsApi<{ uploadToken: string; fileKey: string }>({
+        request, env: context.cloudflare.env, currentUser,
+        path: "/api/documents/presign", method: "POST",
+        body: {
+          fileName: String(formData.get("fileName") || ""),
+          mimeType: String(formData.get("mimeType") || "application/octet-stream"),
+          employeeId: userId,
+        },
+      });
+      return { ok: !!result?.uploadToken, type: "success" as const, message: "", uploadToken: result?.uploadToken, fileKey: result?.fileKey, intent };
+    }
+
+    if (intent === "save-doc") {
+      const result = await callCoreHrmsApi<{ ok: boolean; id: string }>({
+        request, env: context.cloudflare.env, currentUser,
+        path: "/api/documents", method: "POST",
+        body: {
+          employeeId: userId,
+          category: String(formData.get("category") || "other"),
+          name: String(formData.get("name") || ""),
+          fileKey: String(formData.get("fileKey") || ""),
+          fileSize: Number(formData.get("fileSize") || 0),
+          mimeType: String(formData.get("mimeType") || ""),
+        },
+      });
+      return { ok: result?.ok ?? false, type: (result?.ok ? "success" : "error") as "success" | "error", message: result?.ok ? "Document uploaded successfully." : "Failed to save document.", intent };
+    }
+
+    if (intent === "delete-doc") {
+      const docId = String(formData.get("docId") || "");
+      const result = await callCoreHrmsApi<{ ok: boolean }>({
+        request, env: context.cloudflare.env, currentUser,
+        path: `/api/documents/${docId}`, method: "DELETE",
+      });
+      return { ok: result?.ok ?? false, type: (result?.ok ? "success" : "error") as "success" | "error", message: result?.ok ? "Document deleted." : "Failed to delete.", intent };
+    }
+
     return { ok: false, type: "error", message: "Unknown action." };
   } catch (err) {
     return { ok: false, type: "error", message: err instanceof Error ? err.message : "Something went wrong." };
@@ -131,12 +197,40 @@ const roles = ["Employee", "Manager", "HR Manager", "HR Admin", "Finance", "Payr
 const departments = ["Engineering", "Design", "Analytics", "Sales", "People Ops", "Marketing", "Finance", "Operations", "General"];
 const genders = ["Male", "Female", "Other", "Prefer not to say"];
 const employmentTypes = ["Full-time", "Part-time", "Contract", "Intern", "Consultant"];
+const accountTypes = ["Savings", "Current", "Salary"];
+const relations = ["Spouse", "Parent", "Sibling", "Child", "Friend", "Other"];
 
 function FL({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
       <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</label>
       {children}
+    </div>
+  );
+}
+
+function SectionDivider({ label, color = "#6366f1" }: { label: string; color?: string }) {
+  return (
+    <div style={{ fontSize: 11, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 1, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} /> {label} <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} />
+    </div>
+  );
+}
+
+function InfoCard({ label, value, masked }: { label: string; value: string; masked?: boolean }) {
+  const [revealed, setRevealed] = useState(false);
+  const display = masked && !revealed ? "•".repeat(Math.min((value || "").length, 10)) || "—" : (value || "—");
+  return (
+    <div style={{ padding: "12px 14px", background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+      <div style={{ fontSize: 10.5, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a", flex: 1 }}>{display}</div>
+        {masked && value && (
+          <button onClick={() => setRevealed(!revealed)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#6366f1", fontWeight: 600, padding: 0 }}>
+            {revealed ? "Hide" : "Show"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -162,6 +256,12 @@ const expenseStatusMap: Record<string, { bg: string; color: string }> = {
   pending:  { bg: "#fffbeb", color: "#d97706" },
   rejected: { bg: "#fef2f2", color: "#dc2626" },
 };
+const docStatusMap: Record<string, { bg: string; color: string }> = {
+  verified:  { bg: "#ecfdf5", color: "#059669" },
+  pending:   { bg: "#fffbeb", color: "#d97706" },
+  rejected:  { bg: "#fef2f2", color: "#dc2626" },
+  uploaded:  { bg: "#eff6ff", color: "#2563eb" },
+};
 
 function formatTime(iso: string | null) {
   if (!iso) return "—";
@@ -176,6 +276,12 @@ function calcHours(inAt: string | null, outAt: string | null) {
     const diff = (new Date(outAt).getTime() - new Date(inAt).getTime()) / 3600000;
     return `${diff.toFixed(1)}h`;
   } catch { return "—"; }
+}
+function formatFileSize(bytes: number): string {
+  if (!bytes) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ── Profile Tab ────────────────────────────────────────────────────────────────
@@ -199,9 +305,7 @@ function ProfileTab({ employee, fetcher }: { employee: ReturnType<typeof useLoad
         <fetcher.Form method="post" onSubmit={() => setEditing(false)}>
           <input type="hidden" name="intent" value="edit-profile" />
           <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#6366f1", textTransform: "uppercase", letterSpacing: 1, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} /> Personal <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} />
-            </div>
+            <SectionDivider label="Personal" color="#6366f1" />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
               <FL label="Full Name"><input name="name" defaultValue={employee.name} style={inputSt} required /></FL>
               <FL label="Mobile Phone"><input name="phone" type="tel" defaultValue={employee.phone ?? ""} style={inputSt} /></FL>
@@ -213,9 +317,7 @@ function ProfileTab({ employee, fetcher }: { employee: ReturnType<typeof useLoad
                 </select>
               </FL>
             </div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#10b981", textTransform: "uppercase", letterSpacing: 1, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} /> Work <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} />
-            </div>
+            <SectionDivider label="Work" color="#10b981" />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
               <FL label="Role">
                 <select name="role" defaultValue={employee.role} style={selectSt}>
@@ -246,9 +348,7 @@ function ProfileTab({ employee, fetcher }: { employee: ReturnType<typeof useLoad
       ) : (
         <div>
           <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#6366f1", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} /> Personal <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} />
-            </div>
+            <SectionDivider label="Personal" color="#6366f1" />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
               {[
                 { label: "Email", value: employee.email },
@@ -258,17 +358,12 @@ function ProfileTab({ employee, fetcher }: { employee: ReturnType<typeof useLoad
                 { label: "Employee ID", value: employee.id },
                 { label: "Status", value: employee.status },
               ].map((f) => (
-                <div key={f.label} style={{ padding: "12px 14px", background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{f.label}</div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{f.value}</div>
-                </div>
+                <InfoCard key={f.label} label={f.label} value={f.value} />
               ))}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#10b981", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} /> Work <span style={{ height: 1, flex: 1, background: "#e2e8f0" }} />
-            </div>
+            <SectionDivider label="Work" color="#10b981" />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
               {[
                 { label: "Role", value: employee.role },
@@ -278,13 +373,318 @@ function ProfileTab({ employee, fetcher }: { employee: ReturnType<typeof useLoad
                 { label: "Date of Joining", value: employee.joinedOn ? formatDate(employee.joinedOn) : "—" },
                 { label: "Organisation", value: employee.organizationName ?? "—" },
               ].map((f) => (
-                <div key={f.label} style={{ padding: "12px 14px", background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{f.label}</div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{f.value}</div>
-                </div>
+                <InfoCard key={f.label} label={f.label} value={f.value} />
               ))}
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Bank & Emergency Tab ───────────────────────────────────────────────────────
+function BankTab({ employee, fetcher }: { employee: ReturnType<typeof useLoaderData<typeof loader>>["employee"]; fetcher: ReturnType<typeof useFetcher> }) {
+  const [editing, setEditing] = useState(false);
+  const submitting = fetcher.state !== "idle";
+  const hasBank = !!(employee.bankName || employee.bankAccount);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a" }}>Bank & Emergency Details</div>
+        {!editing && (
+          <button onClick={() => setEditing(true)} style={{ padding: "7px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "white", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#475569", fontFamily: "inherit" }}>
+            ✏️ Edit
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <fetcher.Form method="post" onSubmit={() => setEditing(false)}>
+          <input type="hidden" name="intent" value="edit-bank" />
+          <div style={{ marginBottom: 20 }}>
+            <SectionDivider label="Bank Details" color="#0ea5e9" />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
+              <FL label="Bank Name"><input name="bankName" defaultValue={employee.bankName ?? ""} placeholder="e.g. HDFC Bank" style={inputSt} /></FL>
+              <FL label="Account Type">
+                <select name="bankAccountType" defaultValue={employee.bankAccountType ?? "Savings"} style={selectSt}>
+                  {accountTypes.map((t) => <option key={t}>{t}</option>)}
+                </select>
+              </FL>
+              <FL label="Account Number"><input name="bankAccount" defaultValue={employee.bankAccount ?? ""} placeholder="e.g. 50100XXXXXXXX" style={inputSt} /></FL>
+              <FL label="IFSC Code"><input name="bankIfsc" defaultValue={employee.bankIfsc ?? ""} placeholder="e.g. HDFC0001234" style={{ ...inputSt, textTransform: "uppercase" }} /></FL>
+            </div>
+            <SectionDivider label="Emergency Contact" color="#f59e0b" />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <FL label="Contact Name"><input name="emergencyContactName" defaultValue={employee.emergencyContactName ?? ""} style={inputSt} /></FL>
+              <FL label="Relationship">
+                <select name="emergencyContactRelation" defaultValue={employee.emergencyContactRelation ?? ""} style={selectSt}>
+                  <option value="">Select relation</option>
+                  {relations.map((r) => <option key={r}>{r}</option>)}
+                </select>
+              </FL>
+              <FL label="Phone Number"><input name="emergencyContactPhone" type="tel" defaultValue={employee.emergencyContactPhone ?? ""} style={inputSt} /></FL>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button type="button" onClick={() => setEditing(false)} style={{ padding: "9px 18px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "white", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+            <button type="submit" disabled={submitting} style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#0ea5e9,#6366f1)", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: submitting ? 0.7 : 1 }}>
+              {submitting ? "Saving…" : "Save Details"}
+            </button>
+          </div>
+        </fetcher.Form>
+      ) : (
+        <div>
+          {/* Bank Details */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionDivider label="Bank Details" color="#0ea5e9" />
+            {!hasBank ? (
+              <div style={{ textAlign: "center", padding: "28px 0", background: "#f8fafc", borderRadius: 12, border: "1.5px dashed #e2e8f0" }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>🏦</div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: "#475569", marginBottom: 4 }}>No bank details added</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>Click Edit to add bank account for salary credit</div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>
+                <InfoCard label="Bank Name" value={employee.bankName ?? "—"} />
+                <InfoCard label="Account Type" value={employee.bankAccountType ?? "—"} />
+                <InfoCard label="Account Number" value={employee.bankAccount ?? "—"} masked />
+                <InfoCard label="IFSC Code" value={employee.bankIfsc ?? "—"} />
+              </div>
+            )}
+          </div>
+
+          {/* Emergency Contact */}
+          <div>
+            <SectionDivider label="Emergency Contact" color="#f59e0b" />
+            {!employee.emergencyContactName ? (
+              <div style={{ textAlign: "center", padding: "28px 0", background: "#f8fafc", borderRadius: 12, border: "1.5px dashed #e2e8f0" }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>🆘</div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: "#475569", marginBottom: 4 }}>No emergency contact added</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>Click Edit to add an emergency contact</div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 16 }}>
+                <InfoCard label="Name" value={employee.emergencyContactName ?? "—"} />
+                <InfoCard label="Phone" value={employee.emergencyContactPhone ?? "—"} />
+                <InfoCard label="Relationship" value={employee.emergencyContactRelation ?? "—"} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Documents Tab ──────────────────────────────────────────────────────────────
+const DOC_CATEGORIES = [
+  { value: "offer-letter",  label: "Offer Letter",   icon: "📄" },
+  { value: "id-proof",      label: "ID Proof",       icon: "🪪" },
+  { value: "address-proof", label: "Address Proof",  icon: "🏠" },
+  { value: "certificate",   label: "Certificate",    icon: "🎓" },
+  { value: "payslip",       label: "Payslip",        icon: "💰" },
+  { value: "contract",      label: "Contract",       icon: "📋" },
+  { value: "other",         label: "Other",          icon: "📎" },
+] as const;
+
+function mimeIcon(mime: string | null): string {
+  if (!mime) return "📎";
+  if (mime.startsWith("image/")) return "🖼️";
+  if (mime === "application/pdf") return "📕";
+  if (mime.includes("word") || mime.includes("document")) return "📝";
+  return "📎";
+}
+
+function DocumentsTab({
+  documents, fetcher, baseUrl, userId, isAdmin,
+}: {
+  documents: DocumentRow[];
+  fetcher: ReturnType<typeof useFetcher<ActionResult>>;
+  baseUrl: string;
+  userId: string;
+  isAdmin: boolean;
+}) {
+  const [showUpload, setShowUpload] = useState(false);
+  const [docName, setDocName] = useState("");
+  const [category, setCategory] = useState("other");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [localDocs, setLocalDocs] = useState<DocumentRow[]>(documents);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // After presign response, kick off XHR upload
+  useEffect(() => {
+    if (fetcher.data?.intent === "presign" && fetcher.data.uploadToken && selectedFile) {
+      doXhrUpload(fetcher.data.uploadToken, fetcher.data.fileKey!, selectedFile);
+    }
+  }, [fetcher.data]);
+
+  // After save-doc or delete-doc, refresh local list
+  useEffect(() => {
+    if (fetcher.data?.intent === "save-doc" && fetcher.data.ok) {
+      setShowUpload(false);
+      setDocName("");
+      setCategory("other");
+      setSelectedFile(null);
+      if (fileRef.current) fileRef.current.value = "";
+      // Reload page to get fresh doc list
+      window.location.reload();
+    }
+    if (fetcher.data?.intent === "delete-doc" && fetcher.data.ok) {
+      window.location.reload();
+    }
+  }, [fetcher.data]);
+
+  function doXhrUpload(token: string, fileKey: string, file: File) {
+    setUploading(true);
+    setUploadProgress(0);
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", `${baseUrl}/api/documents/upload/${encodeURIComponent(token)}`);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      setUploading(false);
+      if (xhr.status === 200) {
+        const fd = new FormData();
+        fd.set("intent", "save-doc");
+        fd.set("category", category);
+        fd.set("name", docName || file.name);
+        fd.set("fileKey", fileKey);
+        fd.set("fileSize", String(file.size));
+        fd.set("mimeType", file.type);
+        fetcher.submit(fd, { method: "post" });
+      }
+    };
+    xhr.onerror = () => { setUploading(false); };
+    xhr.send(file);
+  }
+
+  function startUpload() {
+    if (!selectedFile) return;
+    const fd = new FormData();
+    fd.set("intent", "presign");
+    fd.set("fileName", selectedFile.name);
+    fd.set("mimeType", selectedFile.type || "application/octet-stream");
+    fetcher.submit(fd, { method: "post" });
+  }
+
+  function handleDownload(doc: DocumentRow) {
+    window.open(`/api/documents/${doc.id}/download`, "_blank");
+  }
+
+  const busy = fetcher.state !== "idle" || uploading;
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: "#0f172a" }}>
+          Documents {localDocs.length > 0 ? `(${localDocs.length})` : ""}
+        </div>
+        <button
+          onClick={() => setShowUpload(v => !v)}
+          style={{ padding: "7px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: showUpload ? "#fef2f2" : "white", fontSize: 12, fontWeight: 600, cursor: "pointer", color: showUpload ? "#dc2626" : "#475569", fontFamily: "inherit" }}
+        >
+          {showUpload ? "✕ Cancel" : "⬆ Upload Document"}
+        </button>
+      </div>
+
+      {/* Upload panel */}
+      {showUpload && (
+        <div style={{ background: "#fafbff", border: "2px solid #6366f1", borderRadius: 14, padding: 20, marginBottom: 24 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "#6366f1", marginBottom: 16, textTransform: "uppercase", letterSpacing: 0.5 }}>Upload New Document</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+            <FL label="Document Name">
+              <input value={docName} onChange={e => setDocName(e.target.value)} placeholder="e.g. Aadhar Card, Offer Letter…" style={inputSt} />
+            </FL>
+            <FL label="Category">
+              <select value={category} onChange={e => setCategory(e.target.value)} style={selectSt}>
+                {DOC_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.icon} {c.label}</option>)}
+              </select>
+            </FL>
+          </div>
+          <FL label="File (PDF, Word, Image — max 10 MB)">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.xls,.xlsx,.txt"
+              onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
+              style={{ ...inputSt, padding: "7px 10px", cursor: "pointer" }}
+            />
+          </FL>
+          {uploading && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#6366f1", fontWeight: 600, marginBottom: 4 }}>
+                <span>Uploading…</span><span>{uploadProgress}%</span>
+              </div>
+              <div style={{ background: "#e2e8f0", borderRadius: 99, height: 6, overflow: "hidden" }}>
+                <div style={{ width: `${uploadProgress}%`, background: "linear-gradient(90deg,#6366f1,#8b5cf6)", height: "100%", borderRadius: 99, transition: "width 0.2s" }} />
+              </div>
+            </div>
+          )}
+          <div style={{ marginTop: 16, display: "flex", gap: 10 }}>
+            <button
+              onClick={startUpload}
+              disabled={!selectedFile || busy}
+              style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#6366f1,#8b5cf6)", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", opacity: !selectedFile || busy ? 0.6 : 1 }}
+            >
+              {busy ? `Uploading… ${uploadProgress}%` : "Upload"}
+            </button>
+            <button onClick={() => { setShowUpload(false); setSelectedFile(null); if (fileRef.current) fileRef.current.value = ""; }} style={{ padding: "9px 18px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "white", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Document list */}
+      {documents.length === 0 && !showUpload ? (
+        <div style={{ textAlign: "center", padding: "48px 0", background: "#f8fafc", borderRadius: 16, border: "1.5px dashed #e2e8f0" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📂</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#475569", marginBottom: 6 }}>No documents uploaded yet</div>
+          <div style={{ fontSize: 13, color: "#94a3b8", maxWidth: 280, margin: "0 auto 16px" }}>
+            Upload offer letters, ID proofs, certificates and more.
+          </div>
+          <button onClick={() => setShowUpload(true)} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#6366f1,#8b5cf6)", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            ⬆ Upload First Document
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {documents.map((doc) => (
+            <div key={doc.id} style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: "#f1f5f9", display: "grid", placeItems: "center", fontSize: 22, flexShrink: 0 }}>
+                {mimeIcon(doc.file_type)}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.file_name}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 3 }}>
+                  {DOC_CATEGORIES.find(c => c.value === doc.category)?.label ?? doc.category} · {formatFileSize(doc.file_size)} · {doc.uploaded_at ? formatDate(doc.uploaded_at) : "—"}
+                </div>
+              </div>
+              <StatusBadge status={doc.status ?? "uploaded"} map={docStatusMap} />
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                <button onClick={() => handleDownload(doc)} style={{ padding: "5px 12px", borderRadius: 7, border: "none", background: "#ede9fe", color: "#6d28d9", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  ⬇ Download
+                </button>
+                {(isAdmin || doc.r2_key) && (
+                  confirmDeleteId === doc.id ? (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ fontSize: 11, color: "#dc2626" }}>Delete?</span>
+                      <button onClick={() => { const fd = new FormData(); fd.set("intent", "delete-doc"); fd.set("docId", doc.id); fetcher.submit(fd, { method: "post" }); setConfirmDeleteId(null); }} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: "#ef4444", color: "white", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Yes</button>
+                      <button onClick={() => setConfirmDeleteId(null)} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #e2e8f0", background: "white", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>No</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setConfirmDeleteId(doc.id)} style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid #fca5a5", background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Delete</button>
+                  )
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -349,7 +749,6 @@ function AttendanceTab({ attendance }: { attendance: AttendanceRow[] }) {
 function LeaveTab({ leaveBalances, leaves }: { leaveBalances: LeaveBalance[]; leaves: LeaveRow[] }) {
   return (
     <div>
-      {/* Balances */}
       {leaveBalances.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 12 }}>Leave Balances</div>
@@ -372,7 +771,6 @@ function LeaveTab({ leaveBalances, leaves }: { leaveBalances: LeaveBalance[]; le
         </div>
       )}
 
-      {/* History */}
       {leaves.length === 0 ? (
         <div style={{ textAlign: "center", padding: "40px 0", color: "#94a3b8" }}>
           <div style={{ fontSize: 28, marginBottom: 8 }}>🌴</div>
@@ -467,22 +865,29 @@ function ExpensesTab({ expenses }: { expenses: ExpenseRow[] }) {
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function EmployeeProfile() {
-  const { currentUser, isAdmin, employee, attendance, leaveBalances, leaves, expenses } = useLoaderData<typeof loader>();
+  const { currentUser, isAdmin, employee, attendance, leaveBalances, leaves, expenses, documents, baseUrl } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ActionResult>();
-  const [tab, setTab] = useState<"profile" | "attendance" | "leave" | "expenses">("profile");
+  const docFetcher = useFetcher<ActionResult>();
+  const [tab, setTab] = useState<"profile" | "bank" | "attendance" | "leave" | "expenses" | "documents">("profile");
   const [toast, setToast] = useState<ActionResult | null>(null);
 
   const color = avatarColor(employee.name);
   const initials = getInitials(employee.name);
 
-  // Show toast on save
   if (fetcher.data && fetcher.data !== toast) {
     setToast(fetcher.data);
     setTimeout(() => setToast(null), 4000);
   }
 
+  if (docFetcher.data && docFetcher.data !== toast && docFetcher.data.message) {
+    setToast(docFetcher.data);
+    setTimeout(() => setToast(null), 4000);
+  }
+
   const tabs = [
     { key: "profile",    label: "👤 Profile" },
+    { key: "bank",       label: "🏦 Bank & Emergency" },
+    { key: "documents",  label: `📄 Documents${documents.length > 0 ? ` (${documents.length})` : ""}` },
     { key: "attendance", label: "📅 Attendance" },
     { key: "leave",      label: "🌴 Leave" },
     { key: "expenses",   label: "🧾 Expenses" },
@@ -520,20 +925,22 @@ export default function EmployeeProfile() {
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>Email</div>
           <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>{employee.email}</div>
-          {employee.phone && <>
-            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 8, marginBottom: 4 }}>Phone</div>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>{employee.phone}</div>
-          </>}
+          {employee.bankName && (
+            <>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 8, marginBottom: 4 }}>Bank</div>
+              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", fontWeight: 600 }}>{employee.bankName}</div>
+            </>
+          )}
         </div>
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "2px solid #e2e8f0", paddingBottom: 0 }}>
+      <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "2px solid #e2e8f0", paddingBottom: 0, overflowX: "auto" }}>
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            style={{ padding: "9px 18px", borderRadius: "8px 8px 0 0", border: "none", background: tab === t.key ? "white" : "transparent", color: tab === t.key ? "#6366f1" : "#64748b", fontSize: 13, fontWeight: tab === t.key ? 700 : 500, cursor: "pointer", fontFamily: "inherit", borderBottom: tab === t.key ? "2px solid #6366f1" : "2px solid transparent", marginBottom: -2, transition: "all 0.15s" }}
+            style={{ padding: "9px 18px", borderRadius: "8px 8px 0 0", border: "none", background: tab === t.key ? "white" : "transparent", color: tab === t.key ? "#6366f1" : "#64748b", fontSize: 13, fontWeight: tab === t.key ? 700 : 500, cursor: "pointer", fontFamily: "inherit", borderBottom: tab === t.key ? "2px solid #6366f1" : "2px solid transparent", marginBottom: -2, transition: "all 0.15s", whiteSpace: "nowrap" }}
           >{t.label}</button>
         ))}
       </div>
@@ -541,6 +948,8 @@ export default function EmployeeProfile() {
       {/* Tab content */}
       <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 14, padding: 24 }}>
         {tab === "profile"    && <ProfileTab employee={employee} fetcher={fetcher} />}
+        {tab === "bank"       && <BankTab employee={employee} fetcher={fetcher} />}
+        {tab === "documents"  && <DocumentsTab documents={documents} fetcher={docFetcher} baseUrl={baseUrl} userId={employee.id} isAdmin={isAdmin} />}
         {tab === "attendance" && <AttendanceTab attendance={attendance} />}
         {tab === "leave"      && <LeaveTab leaveBalances={leaveBalances} leaves={leaves} />}
         {tab === "expenses"   && <ExpensesTab expenses={expenses} />}

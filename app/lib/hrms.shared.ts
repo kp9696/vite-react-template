@@ -28,7 +28,8 @@ const AVATAR_PALETTE = [
   "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4",
 ];
 
-export function avatarColor(name: string): string {
+export function avatarColor(name: string | null | undefined): string {
+  if (!name) return AVATAR_PALETTE[0];
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -36,7 +37,8 @@ export function avatarColor(name: string): string {
   return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
 }
 
-export function getInitials(name: string): string {
+export function getInitials(name: string | null | undefined): string {
+  if (!name) return "?";
   const parts = name.trim().split(" ").filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
