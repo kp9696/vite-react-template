@@ -22,6 +22,12 @@
 			"preview_id": "2689163fb37d41b0ba5c8af6f899adbc"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "DOCS",
+			"bucket_name": "hrms-documents"
+		}
+	],
 	"observability": {
 		"enabled": true
 	},

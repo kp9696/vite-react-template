@@ -23,4 +23,10 @@ export default [
   route("hrms/users", "routes/hrms.users.tsx"),
   route("hrms/profile/:userId", "routes/hrms.profile.$userId.tsx"),
   route("hrms/notifications", "routes/hrms.notifications.tsx"),
+  route("hrms/settings", "routes/hrms.settings.tsx"),
+  route("hrms/announcements", "routes/hrms.announcements.tsx"),
+  route("hrms/shifts", "routes/hrms.shifts.tsx"),
+  route("hrms/reports", "routes/hrms.reports.tsx"),
+  route("hrms/setup", "routes/hrms.setup.tsx"),
+  route("hrms/documents", "routes/hrms.documents.tsx"),
 ] satisfies RouteConfig;

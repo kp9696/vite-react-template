@@ -40,7 +40,7 @@ import {
   revokeRefreshTokenById,
   sha256Hex,
 } from "./security/refreshTokens";
-import { handleCoreHrmsApi } from "./modules/hrms-core";
+import { handleCoreHrmsApi, handleR2UploadProxy } from "./modules/hrms-core";
 import { handleSchemaCoreApi } from "./modules/hrms-schema-api";
 
 declare module "react-router" {
@@ -1292,6 +1292,12 @@ export default {
     const employeeDeleteMatch = pathname.match(/^\/api\/employees\/([^/]+)$/);
     if (method === "DELETE" && employeeDeleteMatch) {
       return handleApiDeleteEmployee(employeeDeleteMatch[1], request, env);
+    }
+
+    // R2 upload proxy — handles PUT /api/documents/upload/:token (no auth header needed, token is signed)
+    const r2UploadResponse = await handleR2UploadProxy(request, env);
+    if (r2UploadResponse) {
+      return r2UploadResponse;
     }
 
     const coreHrmsResponse = await handleCoreHrmsApi(request, env);

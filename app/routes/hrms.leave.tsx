@@ -223,6 +223,7 @@ export default function Leave() {
   const [decisionModal, setDecisionModal] = useState<{ row: LeaveRequest; action: "Approved" | "Rejected" } | null>(null);
   const [decisionNote, setDecisionNote] = useState("");
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [hoveredDay, setHoveredDay] = useState<number | null>(null);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -672,92 +673,210 @@ export default function Leave() {
       )}
 
       {/* Calendar tab */}
-      {tab === "calendar" && (
-        <div className="card">
-          {/* Month nav */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-            <button className="btn btn-outline" style={{ padding: "6px 12px" }} onClick={prevMonth}>‹</button>
-            <div style={{ fontWeight: 800, fontSize: 16, color: "var(--ink)" }}>
-              {MONTHS[calMonth]} {calYear}
-            </div>
-            <button className="btn btn-outline" style={{ padding: "6px 12px" }} onClick={nextMonth}>›</button>
-          </div>
+      {tab === "calendar" && (() => {
+        const todayDate = new Date();
+        const todayIsThisMonth = todayDate.getFullYear() === calYear && todayDate.getMonth() === calMonth;
+        const whoIsOutToday = todayIsThisMonth ? (leaveDayMap[todayDate.getDate()] ?? []) : [];
+        const totalOnLeaveThisMonth = Object.values(leaveDayMap).flat().length;
 
-          {/* Day headers */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
-            {DAYS.map((d) => (
-              <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: "var(--ink-3)", textTransform: "uppercase", paddingBottom: 6 }}>
-                {d}
-              </div>
-            ))}
-          </div>
-
-          {/* Calendar grid */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
-            {/* Empty cells for first day offset */}
-            {Array.from({ length: firstDay }).map((_, i) => (
-              <div key={`empty-${i}`} />
-            ))}
-            {/* Day cells */}
-            {Array.from({ length: daysInMonth }).map((_, i) => {
-              const day = i + 1;
-              const today = new Date();
-              const isToday = today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
-              const isWeekend = ((firstDay + i) % 7 === 0) || ((firstDay + i) % 7 === 6);
-              const leaveEntries = leaveDayMap[day] ?? [];
-
-              return (
-                <div
-                  key={day}
-                  style={{
-                    minHeight: 70,
-                    padding: "6px 8px",
-                    borderRadius: 10,
-                    border: isToday ? "2px solid var(--accent)" : "1px solid var(--border)",
-                    background: isToday ? "var(--accent-light)" : isWeekend ? "var(--surface)" : "white",
-                    transition: "box-shadow 0.12s",
-                    cursor: leaveEntries.length > 0 ? "pointer" : "default",
-                  }}
-                >
-                  <div style={{
-                    fontSize: 12, fontWeight: isToday ? 800 : 500,
-                    color: isToday ? "var(--accent)" : isWeekend ? "var(--ink-3)" : "var(--ink)",
-                    marginBottom: 4,
-                  }}>
-                    {day}
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 20, alignItems: "start" }}>
+            {/* Main calendar */}
+            <div className="card" style={{ marginBottom: 0 }}>
+              {/* Month nav + stats */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                <button
+                  style={{ width: 34, height: 34, borderRadius: 8, border: "1.5px solid var(--border)", background: "white", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-2)", fontFamily: "inherit" }}
+                  onClick={prevMonth}
+                >‹</button>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontWeight: 800, fontSize: 18, color: "var(--ink)", letterSpacing: -0.5 }}>
+                    {MONTHS[calMonth]} {calYear}
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                    {leaveEntries.slice(0, 2).map((entry, idx) => (
-                      <div key={idx} style={{
-                        fontSize: 10, fontWeight: 600, color: "white",
-                        background: entry.color, borderRadius: 4,
-                        padding: "1px 5px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                      }}>
-                        {entry.name}
-                      </div>
-                    ))}
-                    {leaveEntries.length > 2 && (
-                      <div style={{ fontSize: 10, color: "var(--ink-3)", fontWeight: 600 }}>
-                        +{leaveEntries.length - 2} more
-                      </div>
-                    )}
+                  <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>
+                    {totalOnLeaveThisMonth > 0
+                      ? `${Object.keys(leaveDayMap).length} days with leave entries`
+                      : "No leave recorded this month"}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* Legend */}
-          <div style={{ marginTop: 20, display: "flex", gap: 16, flexWrap: "wrap" }}>
-            {Object.entries(LEAVE_TYPE_COLORS).map(([type, color]) => (
-              <div key={type} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 3, background: color, display: "inline-block" }} />
-                {type}
+                <button
+                  style={{ width: 34, height: 34, borderRadius: 8, border: "1.5px solid var(--border)", background: "white", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-2)", fontFamily: "inherit" }}
+                  onClick={nextMonth}
+                >›</button>
               </div>
-            ))}
+
+              {/* Day headers */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, marginBottom: 3 }}>
+                {DAYS.map((d, idx) => (
+                  <div key={d} style={{
+                    textAlign: "center", fontSize: 11, fontWeight: 700,
+                    color: (idx === 0 || idx === 6) ? "#ef4444" : "var(--ink-3)",
+                    textTransform: "uppercase", letterSpacing: 0.5, paddingBottom: 8,
+                  }}>
+                    {d}
+                  </div>
+                ))}
+              </div>
+
+              {/* Calendar grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3 }}>
+                {Array.from({ length: firstDay }).map((_, i) => (
+                  <div key={`empty-${i}`} style={{ minHeight: 80 }} />
+                ))}
+                {Array.from({ length: daysInMonth }).map((_, i) => {
+                  const day = i + 1;
+                  const isToday = todayDate.getFullYear() === calYear && todayDate.getMonth() === calMonth && todayDate.getDate() === day;
+                  const dayOfWeek = (firstDay + i) % 7;
+                  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                  const leaveEntries = leaveDayMap[day] ?? [];
+                  const isHovered = hoveredDay === day && leaveEntries.length > 0;
+
+                  return (
+                    <div
+                      key={day}
+                      onMouseEnter={() => leaveEntries.length > 0 && setHoveredDay(day)}
+                      onMouseLeave={() => setHoveredDay(null)}
+                      style={{
+                        minHeight: 82,
+                        padding: "7px 8px",
+                        borderRadius: 10,
+                        border: isToday ? "2px solid #6366f1" : isHovered ? "1.5px solid #c7d2fe" : "1px solid #e8eef4",
+                        background: isToday ? "#eff6ff" : isWeekend ? "#fafbfc" : "white",
+                        transition: "all 0.12s",
+                        boxShadow: isHovered ? "0 4px 12px rgba(99,102,241,0.12)" : "none",
+                        position: "relative",
+                      }}
+                    >
+                      <div style={{
+                        fontSize: 13, fontWeight: isToday ? 800 : 500,
+                        color: isToday ? "#6366f1" : isWeekend ? "#94a3b8" : "#0f172a",
+                        marginBottom: 5,
+                        display: "flex", alignItems: "center", gap: 4,
+                      }}>
+                        {day}
+                        {isToday && <span style={{ fontSize: 9, fontWeight: 700, background: "#6366f1", color: "white", borderRadius: 3, padding: "1px 4px", letterSpacing: 0.3 }}>TODAY</span>}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {leaveEntries.slice(0, 3).map((entry, idx) => (
+                          <div key={idx} style={{
+                            fontSize: 10, fontWeight: 700, color: "white",
+                            background: entry.color, borderRadius: 4,
+                            padding: "2px 6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                            letterSpacing: 0.1,
+                          }}>
+                            {entry.name}
+                          </div>
+                        ))}
+                        {leaveEntries.length > 3 && (
+                          <div style={{ fontSize: 10, color: "#6366f1", fontWeight: 700, padding: "1px 4px" }}>
+                            +{leaveEntries.length - 3} more
+                          </div>
+                        )}
+                      </div>
+                      {leaveEntries.length > 0 && (
+                        <div style={{
+                          position: "absolute", bottom: 6, right: 7,
+                          width: 6, height: 6, borderRadius: "50%",
+                          background: leaveEntries[0].color, opacity: 0.7,
+                        }} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Legend */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #e8eef4", display: "flex", gap: 16, flexWrap: "wrap" }}>
+                {Object.entries(LEAVE_TYPE_COLORS).map(([type, clr]) => (
+                  <div key={type} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ink-2)" }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: clr, display: "inline-block", flexShrink: 0 }} />
+                    {type}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Sidebar */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Who's out today */}
+              <div style={{ background: "white", border: "1px solid #e8eef4", borderRadius: 14, padding: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 14 }}>
+                  {todayIsThisMonth ? "Out Today" : `${MONTHS[calMonth]} Overview`}
+                </div>
+                {whoIsOutToday.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "16px 0" }}>
+                    <div style={{ fontSize: 24, marginBottom: 6 }}>✅</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>Everyone's in!</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>No leaves today</div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {whoIsOutToday.map((entry, idx) => (
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: entry.color, display: "grid", placeItems: "center", color: "white", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>
+                          {entry.name.charAt(0)}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{entry.name}</div>
+                          <div style={{ fontSize: 11, color: "#94a3b8" }}>On leave</div>
+                        </div>
+                        <div style={{ marginLeft: "auto", width: 8, height: 8, borderRadius: "50%", background: entry.color, flexShrink: 0 }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Monthly summary */}
+              <div style={{ background: "white", border: "1px solid #e8eef4", borderRadius: 14, padding: 18 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 14 }}>
+                  This Month
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {[
+                    { label: "Days with leave", value: Object.keys(leaveDayMap).length, color: "#6366f1" },
+                    { label: "Approved leaves", value: requests.filter(r => r.status === "Approved" && r.fromDate.getMonth() === calMonth && r.fromDate.getFullYear() === calYear).length, color: "#10b981" },
+                    { label: "Pending approvals", value: requests.filter(r => r.status === "Pending" && r.fromDate.getMonth() === calMonth && r.fromDate.getFullYear() === calYear).length, color: "#f59e0b" },
+                  ].map((s) => (
+                    <div key={s.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>{s.label}</span>
+                      <span style={{ fontSize: 15, fontWeight: 800, color: s.color }}>{s.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Upcoming leaves */}
+              {(() => {
+                const upcoming = requests
+                  .filter(r => r.status === "Approved" && r.fromDate >= todayDate)
+                  .sort((a, b) => a.fromDate.getTime() - b.fromDate.getTime())
+                  .slice(0, 4);
+                return upcoming.length > 0 ? (
+                  <div style={{ background: "white", border: "1px solid #e8eef4", borderRadius: 14, padding: 18 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 14 }}>
+                      Upcoming Leaves
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {upcoming.map((r, idx) => (
+                        <div key={idx} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                          <div style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: LEAVE_TYPE_COLORS[r.type] ?? "#6b7280", flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>{r.name}</div>
+                            <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>{r.from} → {r.to}</div>
+                            <div style={{ fontSize: 10, color: LEAVE_TYPE_COLORS[r.type] ?? "#6b7280", fontWeight: 600, marginTop: 2 }}>{r.type}</div>
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>{r.days}d</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </HRMSLayout>
   );
 }

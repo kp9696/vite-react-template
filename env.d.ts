@@ -2,6 +2,7 @@ interface Env {
   // ── Cloudflare bindings ──────────────────────────────────────────────────
   HRMS: D1Database;
   OTP_STORE: KVNamespace;
+  DOCS: R2Bucket;
 
   // ── Microsoft 365 / Graph API (primary email provider) ──────────────────
   // Azure app registration with Mail.Send permission (application, not delegated).

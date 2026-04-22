@@ -197,90 +197,167 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
 function downloadPayslipPDF(emp: Employee, month: string) {
   const color = avatarColor(emp.name);
   const esiRow = emp.esi > 0
-    ? `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">ESI (0.75%)</span><span style="font-weight:600;color:#ef4444">- ${fmt(emp.esi)}</span></div>`
+    ? `<tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">ESI (0.75%)</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#dc2626;text-align:right">− ${fmt(emp.esi)}</td></tr>`
     : "";
   const specialAllowance = Math.max(0, emp.gross - emp.basic - emp.hra - emp.conveyance);
   const specialRow = specialAllowance > 0
-    ? `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">Special Allowance</span><span style="font-weight:600;color:#1e293b">${fmt(specialAllowance)}</span></div>`
+    ? `<tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">Special Allowance</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#0f172a;text-align:right">${fmt(specialAllowance)}</td></tr>`
     : "";
+  const generatedDate = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
 
   const html = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Payslip - ${emp.name} - ${month}</title>
+<title>Payslip — ${emp.name} — ${month}</title>
 <style>
-  body { font-family: 'Segoe UI', Arial, sans-serif; padding: 32px; color: #1e293b; margin: 0; }
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 2px solid #6366f1; padding-bottom: 16px; }
-  .company { font-size: 20px; font-weight: 800; color: #6366f1; }
-  .payslip-label { font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-  .emp-box { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: #f8fafc; border-radius: 10px; margin-bottom: 20px; border: 1px solid #e2e8f0; }
-  .avatar { width: 44px; height: 44px; border-radius: 50%; background: ${color}; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 16px; flex-shrink: 0; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 10px; }
-  .total-row { display: flex; justify-content: space-between; padding: 10px 0; font-size: 14px; font-weight: 800; }
-  .net-box { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: #ecfdf5; border-radius: 10px; border: 1px solid #a7f3d0; margin-top: 16px; }
-  .footer { margin-top: 24px; font-size: 11px; color: #94a3b8; text-align: center; }
-  @media print { body { padding: 16px; } }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f0f4f8; min-height: 100vh; padding: 32px 24px; color: #0f172a; }
+  .page { background: white; max-width: 720px; margin: 0 auto; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.12); }
+
+  /* Header band */
+  .header-band { background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); padding: 28px 36px; position: relative; overflow: hidden; }
+  .header-band::before { content: ''; position: absolute; top: -40px; right: -40px; width: 180px; height: 180px; border-radius: 50%; background: rgba(99,102,241,0.15); }
+  .header-band::after { content: ''; position: absolute; bottom: -60px; right: 60px; width: 120px; height: 120px; border-radius: 50%; background: rgba(16,185,129,0.1); }
+  .brand { font-size: 22px; font-weight: 800; color: white; letter-spacing: -0.5px; }
+  .brand span { color: #818cf8; }
+  .payslip-meta { font-size: 12px; color: rgba(255,255,255,0.5); margin-top: 3px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+  .header-right { text-align: right; }
+  .header-right .label { font-size: 10px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 2px; }
+  .header-right .value { font-size: 13px; color: rgba(255,255,255,0.8); font-weight: 600; }
+
+  /* Employee card */
+  .emp-card { padding: 24px 36px; background: white; border-bottom: 1px solid #e8edf5; display: flex; align-items: center; gap: 18px; }
+  .avatar { width: 52px; height: 52px; border-radius: 50%; background: ${color}; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 18px; flex-shrink: 0; border: 3px solid #e8edf5; }
+  .emp-name { font-size: 18px; font-weight: 800; color: #0f172a; }
+  .emp-meta { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .net-highlight { margin-left: auto; text-align: right; }
+  .net-label { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.7px; margin-bottom: 3px; }
+  .net-amount { font-size: 28px; font-weight: 900; color: #059669; letter-spacing: -1px; }
+
+  /* Stats row */
+  .stats-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; border-bottom: 1px solid #e8edf5; }
+  .stat-item { padding: 16px 24px; text-align: center; border-right: 1px solid #e8edf5; }
+  .stat-item:last-child { border-right: none; }
+  .stat-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: #94a3b8; margin-bottom: 4px; }
+  .stat-val { font-size: 16px; font-weight: 800; }
+
+  /* Breakdown */
+  .breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 28px 36px; }
+  .col-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px; padding: 6px 12px; border-radius: 6px; display: inline-block; }
+  .earnings-title { background: #eff6ff; color: #2563eb; }
+  .deductions-title { background: #fef2f2; color: #dc2626; }
+  .breakdown-col:first-child { border-right: 1px solid #e8edf5; padding-right: 28px; }
+  .breakdown-col:last-child { padding-left: 28px; }
+  table.items { width: 100%; border-collapse: collapse; }
+  .subtotal-row td { padding: 11px 0 0 0; font-size: 14px; font-weight: 800; }
+
+  /* Net Pay Box */
+  .net-box { margin: 0 36px 28px; padding: 20px 24px; background: linear-gradient(135deg, #ecfdf5, #d1fae5); border-radius: 14px; border: 1.5px solid #a7f3d0; display: flex; justify-content: space-between; align-items: center; }
+  .net-box-label { font-size: 14px; font-weight: 800; color: #065f46; letter-spacing: -0.2px; }
+  .net-box-sub { font-size: 11px; color: #6ee7b7; margin-top: 3px; }
+  .net-box-amount { font-size: 32px; font-weight: 900; color: #059669; letter-spacing: -1.5px; }
+
+  /* Footer */
+  .footer { padding: 16px 36px; background: #f8fafc; border-top: 1px solid #e8edf5; display: flex; justify-content: space-between; align-items: center; }
+  .footer-left { font-size: 11px; color: #94a3b8; }
+  .footer-badge { font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px; background: #eff6ff; color: #2563eb; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  @media print {
+    body { background: white; padding: 0; }
+    .page { box-shadow: none; border-radius: 0; }
+  }
 </style>
 </head>
 <body>
-<div class="header">
-  <div>
-    <div class="company">JWithKP HRMS</div>
-    <div class="payslip-label">Pay Slip for ${month}</div>
+<div class="page">
+  <!-- Header -->
+  <div class="header-band" style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <div class="brand">JWith<span>KP</span> HRMS</div>
+      <div class="payslip-meta">Payslip for ${month}</div>
+    </div>
+    <div class="header-right" style="position:relative;z-index:1">
+      <div class="label">Generated on</div>
+      <div class="value">${generatedDate}</div>
+      <div class="label" style="margin-top:10px">Period</div>
+      <div class="value">${month}</div>
+    </div>
   </div>
-  <div style="text-align:right">
-    <div style="font-size:11px;color:#94a3b8">Generated</div>
-    <div style="font-size:12px;font-weight:600">${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</div>
+
+  <!-- Employee -->
+  <div class="emp-card">
+    <div class="avatar">${getInitials(emp.name)}</div>
+    <div>
+      <div class="emp-name">${emp.name}</div>
+      <div class="emp-meta">${emp.id} &nbsp;·&nbsp; ${emp.dept}</div>
+    </div>
+    <div class="net-highlight">
+      <div class="net-label">Net Take-Home</div>
+      <div class="net-amount">${fmt(emp.net)}</div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-row">
+    <div class="stat-item">
+      <div class="stat-lbl">Gross Earnings</div>
+      <div class="stat-val" style="color:#6366f1">${fmt(emp.gross)}</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-lbl">Total Deductions</div>
+      <div class="stat-val" style="color:#ef4444">− ${fmt(emp.deductions)}</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-lbl">Net Pay</div>
+      <div class="stat-val" style="color:#059669">${fmt(emp.net)}</div>
+    </div>
+  </div>
+
+  <!-- Breakdown -->
+  <div class="breakdown">
+    <div class="breakdown-col">
+      <div><span class="col-title earnings-title">📈 Earnings</span></div>
+      <table class="items">
+        <tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">Basic Salary</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#0f172a;text-align:right">${fmt(emp.basic)}</td></tr>
+        <tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">HRA</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#0f172a;text-align:right">${fmt(emp.hra)}</td></tr>
+        <tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">Conveyance</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#0f172a;text-align:right">${fmt(emp.conveyance)}</td></tr>
+        ${specialRow}
+        <tr class="subtotal-row"><td style="padding:11px 0 0;font-size:14px;font-weight:800;color:#0f172a">Gross Earnings</td><td style="padding:11px 0 0;font-size:14px;font-weight:800;color:#6366f1;text-align:right">${fmt(emp.gross)}</td></tr>
+      </table>
+    </div>
+    <div class="breakdown-col">
+      <div><span class="col-title deductions-title">📉 Deductions</span></div>
+      <table class="items">
+        <tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">Provident Fund (12%)</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#dc2626;text-align:right">− ${fmt(emp.pf)}</td></tr>
+        ${esiRow}
+        <tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">TDS (New Regime)</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#dc2626;text-align:right">− ${fmt(emp.tds)}</td></tr>
+        <tr><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;color:#475569">Professional Tax</td><td style="padding:9px 0;border-bottom:1px solid #e8edf5;font-size:13px;font-weight:600;color:#dc2626;text-align:right">− ${fmt(emp.pt)}</td></tr>
+        <tr class="subtotal-row"><td style="padding:11px 0 0;font-size:14px;font-weight:800;color:#0f172a">Total Deductions</td><td style="padding:11px 0 0;font-size:14px;font-weight:800;color:#dc2626;text-align:right">− ${fmt(emp.deductions)}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Net Pay -->
+  <div class="net-box">
+    <div>
+      <div class="net-box-label">💸 Net Pay (Take-Home)</div>
+      <div class="net-box-sub">After all statutory deductions &nbsp;·&nbsp; ${month}</div>
+    </div>
+    <div class="net-box-amount">${fmt(emp.net)}</div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">This is a computer-generated payslip and does not require a signature.</div>
+    <div class="footer-badge">JWithKP HRMS</div>
   </div>
 </div>
-
-<div class="emp-box">
-  <div class="avatar">${getInitials(emp.name)}</div>
-  <div style="flex:1">
-    <div style="font-weight:700;font-size:15px">${emp.name}</div>
-    <div style="font-size:12px;color:#64748b">${emp.id} &bull; ${emp.dept}</div>
-  </div>
-  <div style="text-align:right">
-    <div style="font-size:11px;color:#64748b;font-weight:600">Net Pay</div>
-    <div style="font-size:22px;font-weight:800;color:#10b981">${fmt(emp.net)}</div>
-  </div>
-</div>
-
-<div class="grid">
-  <div>
-    <div class="section-label">Earnings</div>
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">Basic Salary</span><span style="font-weight:600;color:#1e293b">${fmt(emp.basic)}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">HRA</span><span style="font-weight:600;color:#1e293b">${fmt(emp.hra)}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">Conveyance</span><span style="font-weight:600;color:#1e293b">${fmt(emp.conveyance)}</span></div>
-    ${specialRow}
-    <div class="total-row"><span>Gross Earnings</span><span style="color:#6366f1">${fmt(emp.gross)}</span></div>
-  </div>
-  <div>
-    <div class="section-label">Deductions</div>
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">Provident Fund (12%)</span><span style="font-weight:600;color:#ef4444">- ${fmt(emp.pf)}</span></div>
-    ${esiRow}
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">TDS (New Regime)</span><span style="font-weight:600;color:#ef4444">- ${fmt(emp.tds)}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #e2e8f0;font-size:13px"><span style="color:#64748b">Professional Tax</span><span style="font-weight:600;color:#ef4444">- ${fmt(emp.pt)}</span></div>
-    <div class="total-row"><span>Total Deductions</span><span style="color:#ef4444">- ${fmt(emp.deductions)}</span></div>
-  </div>
-</div>
-
-<div class="net-box">
-  <div>
-    <div style="font-size:12px;font-weight:700;color:#10b981;text-transform:uppercase;letter-spacing:0.5px">Net Pay (Take-Home)</div>
-    <div style="font-size:11px;color:#64748b;margin-top:2px">After all statutory deductions &bull; ${month}</div>
-  </div>
-  <div style="font-size:26px;font-weight:900;color:#10b981">${fmt(emp.net)}</div>
-</div>
-
-<div class="footer">This is a system-generated payslip from JWithKP HRMS. No signature required.</div>
-<script>window.print(); window.onafterprint = function() { window.close(); }</script>
+<script>window.addEventListener('load', function() { setTimeout(function() { window.print(); }, 300); }); window.onafterprint = function() { window.close(); }</script>
 </body>
 </html>`;
 
-  const w = window.open("", "_blank", "width=700,height=900");
+  const w = window.open("", "_blank", "width=780,height=950");
   if (w) {
     w.document.write(html);
     w.document.close();

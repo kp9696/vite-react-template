@@ -44,9 +44,20 @@ const adminNavGroups = [
   {
     title: "Insights",
     items: [
-      { label: "Exit Mgmt",   icon: SVGDoor,      path: "/hrms/exit" },
-      { label: "Analytics",   icon: SVGChart,     path: "/hrms/analytics" },
-      { label: "HRBot AI",    icon: SVGBot,       path: "/hrms/hrbot" },
+      { label: "Exit Mgmt",   icon: SVGDoor,         path: "/hrms/exit" },
+      { label: "Analytics",   icon: SVGChart,        path: "/hrms/analytics" },
+      { label: "Reports",     icon: SVGClipboard,    path: "/hrms/reports" },
+      { label: "HRBot AI",    icon: SVGBot,          path: "/hrms/hrbot" },
+      { label: "Noticeboard", icon: SVGMegaphone,    path: "/hrms/announcements" },
+    ],
+  },
+  {
+    title: "Admin",
+    items: [
+      { label: "Documents",   icon: SVGFolder,       path: "/hrms/documents" },
+      { label: "Shifts",      icon: SVGClock2,       path: "/hrms/shifts" },
+      { label: "Settings",    icon: SVGSettings,     path: "/hrms/settings" },
+      { label: "Setup",       icon: SVGRocket2,      path: "/hrms/setup" },
     ],
   },
 ];
@@ -55,23 +66,26 @@ const employeeNavGroups = [
   {
     title: "My Work",
     items: [
-      { label: "Dashboard",   icon: SVGGrid,      path: "/hrms" },
-      { label: "Attendance",  icon: SVGClock,     path: "/hrms/attendance" },
-      { label: "Expenses",    icon: SVGReceipt,   path: "/hrms/expenses" },
+      { label: "Dashboard",   icon: SVGGrid,       path: "/hrms" },
+      { label: "Attendance",  icon: SVGClock,      path: "/hrms/attendance" },
+      { label: "Expenses",    icon: SVGReceipt,    path: "/hrms/expenses" },
     ],
   },
   {
     title: "View Only",
     items: [
-      { label: "Leave",       icon: SVGCalendar,  path: "/hrms/leave" },
-      { label: "Payroll",     icon: SVGCoin,      path: "/hrms/payroll" },
-      { label: "Assets",      icon: SVGLaptop,    path: "/hrms/assets" },
+      { label: "Leave",       icon: SVGCalendar,   path: "/hrms/leave" },
+      { label: "Payroll",     icon: SVGCoin,       path: "/hrms/payroll" },
+      { label: "Assets",      icon: SVGLaptop,     path: "/hrms/assets" },
     ],
   },
   {
-    title: "Tools",
+    title: "Company",
     items: [
-      { label: "HRBot AI",    icon: SVGBot,       path: "/hrms/hrbot" },
+      { label: "Noticeboard", icon: SVGMegaphone,  path: "/hrms/announcements" },
+      { label: "My Shifts",   icon: SVGClock2,     path: "/hrms/shifts" },
+      { label: "Documents",   icon: SVGFolder,     path: "/hrms/documents" },
+      { label: "HRBot AI",    icon: SVGBot,        path: "/hrms/hrbot" },
     ],
   },
 ];
@@ -102,6 +116,13 @@ function SVGShield() { return <svg width="15" height="15" fill="none" stroke="cu
 function SVGBell() { return <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>; }
 function SVGSearch() { return <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>; }
 function SVGSignOut() { return <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>; }
+
+function SVGMegaphone() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>; }
+function SVGFolder() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>; }
+function SVGClipboard() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/></svg>; }
+function SVGClock2() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>; }
+function SVGRocket2() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>; }
+function SVGSettings() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>; }
 
 function SVGMenu() { return <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>; }
 

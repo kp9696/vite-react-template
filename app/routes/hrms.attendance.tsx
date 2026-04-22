@@ -77,7 +77,8 @@ function fmtTime(iso: string | null): string {
   try {
     const d = new Date(iso);
     if (isNaN(d.getTime())) return "—";
-    return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+    // Use fixed timezone to avoid server (UTC) vs client (IST) hydration mismatch
+    return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
   } catch {
     return "—";
   }
@@ -496,7 +497,7 @@ export default function Attendance() {
             </div>
           </div>
           <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
-            {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })}
+            {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", timeZone: "Asia/Kolkata" })}
           </div>
         </div>
       </div>
@@ -641,7 +642,7 @@ export default function Attendance() {
                 {myRecords.map((r) => (
                   <tr key={r.id}>
                     <td style={{ fontWeight: 600 }}>
-                      {new Date(r.attendance_date).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })}
+                      {new Date(r.attendance_date + "T00:00:00+05:30").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" })}
                     </td>
                     <td style={{ color: r.check_in_at ? "var(--green)" : "var(--ink-3)", fontWeight: 600 }}>
                       {fmtTime(r.check_in_at)}

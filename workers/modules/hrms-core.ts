@@ -1716,6 +1716,101 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
     return handleMyEnrollments(request, env, user!);
   }
 
+  // ── Announcements ────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/announcements") {
+    return handleListAnnouncements(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/announcements") {
+    return handleCreateAnnouncement(request, env, user!);
+  }
+  const announcementDeleteMatch = pathname.match(/^\/api\/announcements\/([^/]+)$/);
+  if (method === "DELETE" && announcementDeleteMatch) {
+    return handleDeleteAnnouncement(announcementDeleteMatch[1], request, env, user!);
+  }
+  const announcementReadMatch = pathname.match(/^\/api\/announcements\/([^/]+)\/read$/);
+  if (method === "POST" && announcementReadMatch) {
+    return handleMarkAnnouncementRead(announcementReadMatch[1], request, env, user!);
+  }
+  const announcementPinMatch = pathname.match(/^\/api\/announcements\/([^/]+)\/pin$/);
+  if (method === "PATCH" && announcementPinMatch) {
+    return handleToggleAnnouncementPin(announcementPinMatch[1], request, env, user!);
+  }
+
+  // ── Documents ────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/documents") {
+    return handleListDocuments(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/documents/presign") {
+    return handlePresignUpload(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/documents") {
+    return handleSaveDocument(request, env, user!);
+  }
+  const docDeleteMatch = pathname.match(/^\/api\/documents\/([^/]+)$/);
+  if (method === "DELETE" && docDeleteMatch) {
+    return handleDeleteDocument(docDeleteMatch[1], request, env, user!);
+  }
+  const docDownloadMatch = pathname.match(/^\/api\/documents\/([^/]+)\/download$/);
+  if (method === "GET" && docDownloadMatch) {
+    return handleDownloadDocument(docDownloadMatch[1], request, env, user!);
+  }
+
+  // ── Shifts & Roster ──────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/shifts") {
+    return handleListShifts(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/shifts") {
+    return handleCreateShift(request, env, user!);
+  }
+  const shiftDeleteMatch = pathname.match(/^\/api\/shifts\/([^/]+)$/);
+  if (method === "DELETE" && shiftDeleteMatch) {
+    return handleDeleteShift(shiftDeleteMatch[1], request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/roster") {
+    return handleListRoster(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/roster") {
+    return handleAssignShift(request, env, user!);
+  }
+  const rosterDeleteMatch = pathname.match(/^\/api\/roster\/([^/]+)$/);
+  if (method === "DELETE" && rosterDeleteMatch) {
+    return handleRemoveRosterEntry(rosterDeleteMatch[1], request, env, user!);
+  }
+
+  // ── Reports ───────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/reports/payroll") {
+    return handleReportPayroll(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/reports/attendance") {
+    return handleReportAttendance(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/reports/leave") {
+    return handleReportLeave(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/reports/headcount") {
+    return handleReportHeadcount(request, env, user!);
+  }
+
+  // ── Company Settings ─────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/tenant/settings") {
+    return handleGetTenantSettings(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/tenant/settings") {
+    return handleSaveTenantSettings(request, env, user!);
+  }
+
+  // ── Departments ──────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/departments") {
+    return handleListDepartments(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/departments") {
+    return handleCreateDepartment(request, env, user!);
+  }
+  const deptDeleteMatch = pathname.match(/^\/api\/departments\/([^/]+)$/);
+  if (method === "DELETE" && deptDeleteMatch) {
+    return handleDeleteDepartment(deptDeleteMatch[1], request, env, user!);
+  }
+
   return null;
 }
 
@@ -2274,4 +2369,924 @@ Answer helpfully and concisely. Use bullet points when listing items. If you don
       ...withCors(request, env),
     },
   });
+}
+
+// ── Company Settings Handlers ────────────────────────────────────────────────
+
+async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const row = await env.HRMS
+    .prepare(
+      `SELECT id, timezone, date_format, currency, office_lat, office_lng,
+              geo_fence_radius, office_checkin_required, wfh_enabled,
+              payroll_day, company_logo_url, setup_completed
+       FROM tenant_settings
+       WHERE COALESCE(company_id, org_id) = ?
+       LIMIT 1`,
+    )
+    .bind(user.tenantId)
+    .first<{
+      id: string;
+      timezone: string;
+      date_format: string;
+      currency: string;
+      office_lat: number | null;
+      office_lng: number | null;
+      geo_fence_radius: number;
+      office_checkin_required: number;
+      wfh_enabled: number;
+      payroll_day: number;
+      company_logo_url: string | null;
+      setup_completed: number;
+    }>();
+
+  if (!row) {
+    // Return defaults when no settings row exists yet
+    return json(request, env, {
+      settings: {
+        timezone: "Asia/Kolkata",
+        dateFormat: "DD/MM/YYYY",
+        currency: "INR",
+        officeLat: null,
+        officeLng: null,
+        geoFenceRadius: 200,
+        officeCheckinRequired: false,
+        wfhEnabled: true,
+        payrollDay: 1,
+        companyLogoUrl: null,
+        setupCompleted: false,
+      },
+    });
+  }
+
+  return json(request, env, {
+    settings: {
+      timezone: row.timezone,
+      dateFormat: row.date_format,
+      currency: row.currency,
+      officeLat: row.office_lat,
+      officeLng: row.office_lng,
+      geoFenceRadius: row.geo_fence_radius,
+      officeCheckinRequired: Boolean(row.office_checkin_required),
+      wfhEnabled: Boolean(row.wfh_enabled),
+      payrollDay: row.payroll_day,
+      companyLogoUrl: row.company_logo_url,
+      setupCompleted: Boolean(row.setup_completed),
+    },
+  });
+}
+
+async function handleSaveTenantSettings(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    timezone?: string;
+    dateFormat?: string;
+    currency?: string;
+    officeLat?: number | null;
+    officeLng?: number | null;
+    geoFenceRadius?: number;
+    officeCheckinRequired?: boolean;
+    wfhEnabled?: boolean;
+    payrollDay?: number;
+    companyLogoUrl?: string | null;
+    setupCompleted?: boolean;
+  }>(request);
+
+  if (!body) return json(request, env, { error: "Invalid request body." }, 400);
+
+  const now = nowIso();
+  const existing = await env.HRMS
+    .prepare(`SELECT id FROM tenant_settings WHERE COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(user.tenantId)
+    .first<{ id: string }>();
+
+  const id = existing?.id ?? crypto.randomUUID();
+
+  if (existing) {
+    await env.HRMS
+      .prepare(
+        `UPDATE tenant_settings
+         SET timezone = COALESCE(?, timezone),
+             date_format = COALESCE(?, date_format),
+             currency = COALESCE(?, currency),
+             office_lat = ?,
+             office_lng = ?,
+             geo_fence_radius = COALESCE(?, geo_fence_radius),
+             office_checkin_required = COALESCE(?, office_checkin_required),
+             wfh_enabled = COALESCE(?, wfh_enabled),
+             payroll_day = COALESCE(?, payroll_day),
+             company_logo_url = COALESCE(?, company_logo_url),
+             setup_completed = COALESCE(?, setup_completed),
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(
+        body.timezone ?? null,
+        body.dateFormat ?? null,
+        body.currency ?? null,
+        body.officeLat ?? null,
+        body.officeLng ?? null,
+        body.geoFenceRadius ?? null,
+        body.officeCheckinRequired != null ? (body.officeCheckinRequired ? 1 : 0) : null,
+        body.wfhEnabled != null ? (body.wfhEnabled ? 1 : 0) : null,
+        body.payrollDay ?? null,
+        body.companyLogoUrl ?? null,
+        body.setupCompleted != null ? (body.setupCompleted ? 1 : 0) : null,
+        now,
+        id,
+      )
+      .run();
+  } else {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO tenant_settings
+           (id, company_id, org_id, timezone, date_format, currency,
+            office_lat, office_lng, geo_fence_radius, office_checkin_required,
+            wfh_enabled, payroll_day, company_logo_url, setup_completed, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        user.tenantId,
+        user.tenantId,
+        body.timezone ?? "Asia/Kolkata",
+        body.dateFormat ?? "DD/MM/YYYY",
+        body.currency ?? "INR",
+        body.officeLat ?? null,
+        body.officeLng ?? null,
+        body.geoFenceRadius ?? 200,
+        body.officeCheckinRequired ? 1 : 0,
+        body.wfhEnabled !== false ? 1 : 0,
+        body.payrollDay ?? 1,
+        body.companyLogoUrl ?? null,
+        body.setupCompleted ? 1 : 0,
+        now,
+        now,
+      )
+      .run();
+  }
+
+  return json(request, env, { ok: true });
+}
+
+// ── Department Handlers ──────────────────────────────────────────────────────
+
+async function handleListDepartments(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT d.id, d.name, d.description, d.head_user_id,
+              u.name AS head_name,
+              (SELECT COUNT(*) FROM users WHERE COALESCE(company_id, org_id) = d.company_id
+                AND department = d.name AND COALESCE(status,'Active') = 'Active') AS member_count
+       FROM departments d
+       LEFT JOIN users u ON u.id = d.head_user_id
+       WHERE COALESCE(d.company_id, d.org_id) = ?
+       ORDER BY d.name ASC`,
+    )
+    .bind(user.tenantId)
+    .all<{
+      id: string;
+      name: string;
+      description: string | null;
+      head_user_id: string | null;
+      head_name: string | null;
+      member_count: number;
+    }>();
+
+  return json(request, env, { departments: rows.results });
+}
+
+async function handleCreateDepartment(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    name?: string;
+    description?: string;
+    headUserId?: string;
+  }>(request);
+
+  if (!body?.name?.trim()) return json(request, env, { error: "Department name is required." }, 400);
+
+  const now = nowIso();
+  const id = crypto.randomUUID();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO departments (id, company_id, org_id, name, description, head_user_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      user.tenantId,
+      user.tenantId,
+      body.name.trim(),
+      body.description?.trim() || null,
+      body.headUserId?.trim() || null,
+      now,
+      now,
+    )
+    .run();
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleDeleteDepartment(deptId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  await env.HRMS
+    .prepare(`DELETE FROM departments WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(deptId, user.tenantId)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+function isAdminUser(role: string): boolean {
+  return role.toLowerCase().includes("admin");
+}
+
+// ── Announcement Handlers ────────────────────────────────────────────────────
+
+function canPostAnnouncement(role: string): boolean {
+  const r = role.toLowerCase();
+  return r.includes("admin") || r.includes("hr");
+}
+
+async function handleListAnnouncements(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT a.id, a.title, a.body, a.priority, a.pinned, a.author_id, a.author_name, a.created_at,
+              CASE WHEN ar.user_id IS NOT NULL THEN 1 ELSE 0 END AS is_read
+       FROM announcements a
+       LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
+       WHERE COALESCE(a.company_id, a.org_id) = ?
+       ORDER BY a.pinned DESC, a.created_at DESC
+       LIMIT 50`,
+    )
+    .bind(user.userId, user.tenantId)
+    .all<{
+      id: string;
+      title: string;
+      body: string;
+      priority: string;
+      pinned: number;
+      author_id: string;
+      author_name: string;
+      created_at: string;
+      is_read: number;
+    }>();
+
+  const unreadCount = rows.results.filter((r) => !r.is_read).length;
+
+  return json(request, env, {
+    announcements: rows.results.map((r) => ({
+      ...r,
+      pinned: Boolean(r.pinned),
+      isRead: Boolean(r.is_read),
+    })),
+    unreadCount,
+  });
+}
+
+async function handleCreateAnnouncement(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!canPostAnnouncement(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    title?: string;
+    body?: string;
+    priority?: string;
+    pinned?: boolean;
+  }>(request);
+
+  if (!body?.title?.trim() || !body.body?.trim()) {
+    return json(request, env, { error: "Title and body are required." }, 400);
+  }
+
+  const validPriorities = ["normal", "important", "urgent"];
+  const priority = validPriorities.includes(body.priority ?? "") ? (body.priority ?? "normal") : "normal";
+
+  const now = nowIso();
+  const id = crypto.randomUUID();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO announcements (id, company_id, org_id, title, body, priority, pinned, author_id, author_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      user.tenantId,
+      user.tenantId,
+      body.title.trim(),
+      body.body.trim(),
+      priority,
+      body.pinned ? 1 : 0,
+      user.userId,
+      user.name,
+      now,
+      now,
+    )
+    .run();
+
+  // Broadcast in-app notification to all active employees in the tenant
+  try {
+    const employees = await env.HRMS
+      .prepare(`SELECT id FROM users WHERE COALESCE(company_id, org_id) = ? AND id != ? AND COALESCE(status, 'Active') = 'Active' LIMIT 200`)
+      .bind(user.tenantId, user.userId)
+      .all<{ id: string }>();
+
+    const notifInserts = employees.results.map((emp) =>
+      env.HRMS
+        .prepare(
+          `INSERT OR IGNORE INTO notifications (id, user_id, company_id, org_id, type, title, body, link, created_at)
+           VALUES (?, ?, ?, ?, 'announcement', ?, ?, '/hrms/announcements', ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          emp.id,
+          user.tenantId,
+          user.tenantId,
+          body.title!.trim(),
+          body.body!.trim().slice(0, 120),
+          now,
+        )
+    );
+
+    // D1 batch — fire and forget
+    if (notifInserts.length > 0) {
+      await env.HRMS.batch(notifInserts);
+    }
+  } catch {
+    // Notification failure should not block announcement creation
+  }
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleDeleteAnnouncement(announcementId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!canPostAnnouncement(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  await env.HRMS
+    .prepare(`DELETE FROM announcements WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(announcementId, user.tenantId)
+    .run();
+
+  // Clean up reads too
+  await env.HRMS
+    .prepare(`DELETE FROM announcement_reads WHERE announcement_id = ?`)
+    .bind(announcementId)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+async function handleMarkAnnouncementRead(announcementId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const now = nowIso();
+
+  await env.HRMS
+    .prepare(
+      `INSERT OR IGNORE INTO announcement_reads (id, announcement_id, user_id, read_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .bind(crypto.randomUUID(), announcementId, user.userId, now)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+async function handleToggleAnnouncementPin(announcementId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!canPostAnnouncement(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const current = await env.HRMS
+    .prepare(`SELECT pinned FROM announcements WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(announcementId, user.tenantId)
+    .first<{ pinned: number }>();
+
+  if (!current) return json(request, env, { error: "Not found." }, 404);
+
+  const newPinned = current.pinned ? 0 : 1;
+
+  await env.HRMS
+    .prepare(`UPDATE announcements SET pinned = ?, updated_at = ? WHERE id = ?`)
+    .bind(newPinned, nowIso(), announcementId)
+    .run();
+
+  return json(request, env, { ok: true, pinned: Boolean(newPinned) });
+}
+
+// ── Shift & Roster Handlers ──────────────────────────────────────────────────
+
+async function handleListShifts(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, name, start_time, end_time, color, created_at
+       FROM shifts
+       WHERE COALESCE(company_id, org_id) = ?
+       ORDER BY name ASC`,
+    )
+    .bind(user.tenantId)
+    .all<{ id: string; name: string; start_time: string; end_time: string; color: string; created_at: string }>();
+
+  return json(request, env, { shifts: rows.results });
+}
+
+async function handleCreateShift(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    name?: string;
+    startTime?: string;
+    endTime?: string;
+    color?: string;
+  }>(request);
+
+  if (!body?.name?.trim() || !body.startTime || !body.endTime) {
+    return json(request, env, { error: "name, startTime, and endTime are required." }, 400);
+  }
+
+  const now = nowIso();
+  const id = crypto.randomUUID();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO shifts (id, company_id, org_id, name, start_time, end_time, color, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, body.name.trim(), body.startTime, body.endTime, body.color ?? "#4f46e5", now, now)
+    .run();
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleDeleteShift(shiftId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  await env.HRMS
+    .prepare(`DELETE FROM shifts WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(shiftId, user.tenantId)
+    .run();
+  // cascade roster entries
+  await env.HRMS.prepare(`DELETE FROM employee_shifts WHERE shift_id = ? AND COALESCE(company_id, org_id) = ?`).bind(shiftId, user.tenantId).run();
+
+  return json(request, env, { ok: true });
+}
+
+async function handleListRoster(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT es.id, es.employee_id, es.employee_name, es.shift_id, es.shift_name,
+              s.start_time, s.end_time, s.color,
+              es.effective_from, es.effective_to
+       FROM employee_shifts es
+       LEFT JOIN shifts s ON s.id = es.shift_id
+       WHERE COALESCE(es.company_id, es.org_id) = ?
+       ORDER BY es.effective_from DESC, es.employee_name ASC`,
+    )
+    .bind(user.tenantId)
+    .all<{
+      id: string; employee_id: string; employee_name: string;
+      shift_id: string; shift_name: string; start_time: string; end_time: string; color: string;
+      effective_from: string; effective_to: string | null;
+    }>();
+
+  return json(request, env, { roster: rows.results });
+}
+
+async function handleAssignShift(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    employeeId?: string;
+    shiftId?: string;
+    effectiveFrom?: string;
+    effectiveTo?: string | null;
+  }>(request);
+
+  if (!body?.employeeId || !body.shiftId || !body.effectiveFrom) {
+    return json(request, env, { error: "employeeId, shiftId, effectiveFrom are required." }, 400);
+  }
+
+  const emp = await env.HRMS
+    .prepare(`SELECT id, name FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(body.employeeId, user.tenantId)
+    .first<{ id: string; name: string }>();
+  if (!emp) return json(request, env, { error: "Employee not found." }, 404);
+
+  const shift = await env.HRMS
+    .prepare(`SELECT id, name FROM shifts WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(body.shiftId, user.tenantId)
+    .first<{ id: string; name: string }>();
+  if (!shift) return json(request, env, { error: "Shift not found." }, 404);
+
+  const now = nowIso();
+  const id = crypto.randomUUID();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO employee_shifts (id, company_id, org_id, employee_id, employee_name, shift_id, shift_name, effective_from, effective_to, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, emp.id, emp.name, shift.id, shift.name, body.effectiveFrom, body.effectiveTo ?? null, now, now)
+    .run();
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleRemoveRosterEntry(entryId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  await env.HRMS
+    .prepare(`DELETE FROM employee_shifts WHERE id = ? AND COALESCE(company_id, org_id) = ?`)
+    .bind(entryId, user.tenantId)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+// ── Report Handlers ──────────────────────────────────────────────────────────
+
+async function handleReportPayroll(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const url = new URL(request.url);
+  const monthKey = url.searchParams.get("month") ?? "";
+
+  let query = `SELECT employee_name, department, basic, hra, conveyance, pf, esi, tds, pt, gross, deductions, net, status, month_key
+               FROM payroll_items
+               WHERE COALESCE(company_id, org_id) = ?`;
+  const binds: unknown[] = [user.tenantId];
+
+  if (monthKey) {
+    query += ` AND month_key = ?`;
+    binds.push(monthKey);
+  }
+  query += ` ORDER BY month_key DESC, employee_name ASC`;
+
+  const rows = await env.HRMS.prepare(query).bind(...binds).all<{
+    employee_name: string; department: string; basic: number; hra: number; conveyance: number;
+    pf: number; esi: number; tds: number; pt: number; gross: number; deductions: number; net: number;
+    status: string; month_key: string;
+  }>();
+
+  // Monthly totals
+  const totalsMap: Record<string, { gross: number; deductions: number; net: number; count: number }> = {};
+  for (const r of rows.results) {
+    if (!totalsMap[r.month_key]) totalsMap[r.month_key] = { gross: 0, deductions: 0, net: 0, count: 0 };
+    totalsMap[r.month_key].gross += r.gross;
+    totalsMap[r.month_key].deductions += r.deductions;
+    totalsMap[r.month_key].net += r.net;
+    totalsMap[r.month_key].count++;
+  }
+
+  return json(request, env, { rows: rows.results, totals: totalsMap });
+}
+
+async function handleReportAttendance(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const url = new URL(request.url);
+  const from = url.searchParams.get("from") ?? "";
+  const to = url.searchParams.get("to") ?? "";
+
+  let query = `SELECT u.name AS employee_name, COALESCE(u.department, 'General') AS department,
+                      a.attendance_date, a.status, a.check_in, a.check_out,
+                      CASE
+                        WHEN a.check_in IS NOT NULL AND a.check_out IS NOT NULL
+                        THEN ROUND((JULIANDAY(a.check_out) - JULIANDAY(a.check_in)) * 24, 2)
+                        ELSE NULL
+                      END AS hours_worked
+               FROM attendance a
+               JOIN users u ON u.id = a.user_id
+               WHERE COALESCE(a.company_id, a.org_id) = ?`;
+  const binds: unknown[] = [user.tenantId];
+
+  if (from) { query += ` AND a.attendance_date >= ?`; binds.push(from); }
+  if (to)   { query += ` AND a.attendance_date <= ?`; binds.push(to); }
+
+  query += ` ORDER BY a.attendance_date DESC, u.name ASC LIMIT 2000`;
+
+  const rows = await env.HRMS.prepare(query).bind(...binds).all<{
+    employee_name: string; department: string; attendance_date: string;
+    status: string; check_in: string | null; check_out: string | null; hours_worked: number | null;
+  }>();
+
+  // Per-employee summary
+  const summaryMap: Record<string, { present: number; absent: number; half_day: number; late: number; wfh: number; total_hours: number }> = {};
+  for (const r of rows.results) {
+    if (!summaryMap[r.employee_name]) summaryMap[r.employee_name] = { present: 0, absent: 0, half_day: 0, late: 0, wfh: 0, total_hours: 0 };
+    const s = summaryMap[r.employee_name];
+    const st = (r.status ?? "").toLowerCase();
+    if (st === "present") s.present++;
+    else if (st === "absent") s.absent++;
+    else if (st === "half_day" || st === "half-day") s.half_day++;
+    else if (st === "late") s.late++;
+    else if (st === "wfh") s.wfh++;
+    s.total_hours += r.hours_worked ?? 0;
+  }
+
+  return json(request, env, { rows: rows.results, summary: summaryMap });
+}
+
+async function handleReportLeave(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const url = new URL(request.url);
+  const year = url.searchParams.get("year") ?? new Date().getFullYear().toString();
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT u.name AS employee_name, COALESCE(u.department, 'General') AS department,
+              l.leave_type, l.status, l.start_date, l.end_date, l.days,
+              l.reason, l.applied_at
+       FROM leaves l
+       JOIN users u ON u.id = l.user_id
+       WHERE COALESCE(l.company_id, l.org_id) = ?
+         AND strftime('%Y', l.start_date) = ?
+       ORDER BY l.applied_at DESC LIMIT 2000`,
+    )
+    .bind(user.tenantId, year)
+    .all<{
+      employee_name: string; department: string; leave_type: string; status: string;
+      start_date: string; end_date: string; days: number; reason: string | null; applied_at: string;
+    }>();
+
+  // Type-wise totals
+  const typeMap: Record<string, { approved: number; pending: number; rejected: number; days: number }> = {};
+  for (const r of rows.results) {
+    if (!typeMap[r.leave_type]) typeMap[r.leave_type] = { approved: 0, pending: 0, rejected: 0, days: 0 };
+    const t = typeMap[r.leave_type];
+    if (r.status === "approved") { t.approved++; t.days += r.days ?? 0; }
+    else if (r.status === "pending") t.pending++;
+    else if (r.status === "rejected") t.rejected++;
+  }
+
+  return json(request, env, { rows: rows.results, typeBreakdown: typeMap, year: Number(year) });
+}
+
+async function handleReportHeadcount(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT COALESCE(department, 'General') AS department,
+              role,
+              COALESCE(employment_type, 'Full-time') AS employment_type,
+              COALESCE(status, 'Active') AS status,
+              COUNT(*) AS count
+       FROM users
+       WHERE COALESCE(company_id, org_id) = ?
+       GROUP BY department, role, employment_type, status
+       ORDER BY department, role`,
+    )
+    .bind(user.tenantId)
+    .all<{ department: string; role: string; employment_type: string; status: string; count: number }>();
+
+  const byDept: Record<string, number> = {};
+  const byStatus: Record<string, number> = {};
+  const byType: Record<string, number> = {};
+  let total = 0;
+
+  for (const r of rows.results) {
+    byDept[r.department] = (byDept[r.department] ?? 0) + r.count;
+    byStatus[r.status] = (byStatus[r.status] ?? 0) + r.count;
+    byType[r.employment_type] = (byType[r.employment_type] ?? 0) + r.count;
+    total += r.count;
+  }
+
+  return json(request, env, { rows: rows.results, byDept, byStatus, byType, total });
+}
+
+// ── Document Handlers ────────────────────────────────────────────────────────
+
+const DOC_CATEGORIES = ["offer-letter", "id-proof", "address-proof", "certificate", "payslip", "contract", "other"] as const;
+
+async function handleListDocuments(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const employeeId = url.searchParams.get("employeeId");
+
+  // Employees can only see their own docs; admins/HR can filter by employee or see all
+  const isAdmin = canPostAnnouncement(user.role);
+  const targetId = isAdmin && employeeId ? employeeId : user.userId;
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, employee_id, employee_name, category, name, file_key, file_size, mime_type,
+              uploaded_by, uploaded_by_name, created_at
+       FROM documents
+       WHERE COALESCE(company_id, org_id) = ?
+         ${isAdmin && !employeeId ? "" : "AND employee_id = ?"}
+       ORDER BY created_at DESC
+       LIMIT 200`,
+    )
+    .bind(...(isAdmin && !employeeId ? [user.tenantId] : [user.tenantId, targetId]))
+    .all<{
+      id: string; employee_id: string; employee_name: string; category: string;
+      name: string; file_key: string; file_size: number | null; mime_type: string | null;
+      uploaded_by: string; uploaded_by_name: string; created_at: string;
+    }>();
+
+  return json(request, env, { documents: rows.results });
+}
+
+async function handlePresignUpload(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!env.DOCS) return json(request, env, { error: "R2 storage not configured." }, 503);
+
+  const body = await readJsonBody<{
+    fileName?: string;
+    mimeType?: string;
+    employeeId?: string;
+  }>(request);
+
+  if (!body?.fileName?.trim() || !body.employeeId) {
+    return json(request, env, { error: "fileName and employeeId are required." }, 400);
+  }
+
+  // Only admins/HR can upload for other employees; employees can upload for themselves
+  const isAdmin = canPostAnnouncement(user.role);
+  if (!isAdmin && body.employeeId !== user.userId) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const ext = body.fileName.includes(".") ? body.fileName.split(".").pop() : "";
+  const fileKey = `${user.tenantId}/${body.employeeId}/${crypto.randomUUID()}${ext ? "." + ext : ""}`;
+
+  // Generate presigned PUT URL — valid for 15 minutes
+  const presignedUrl = await env.DOCS.createMultipartUpload(fileKey);
+
+  // Actually for simple uploads we use presigned URL via R2 HTTP API
+  // Cloudflare R2 Workers binding doesn't support presigned URLs directly —
+  // We use a signed token approach instead: the Worker acts as an upload proxy
+  // Return a short-lived upload token that the frontend exchanges via /api/documents/upload-proxy
+
+  return json(request, env, {
+    uploadToken: await signUploadToken({ fileKey, employeeId: body.employeeId, fileName: body.fileName, mimeType: body.mimeType ?? "application/octet-stream" }, env),
+    fileKey,
+  });
+}
+
+async function signUploadToken(
+  payload: { fileKey: string; employeeId: string; fileName: string; mimeType: string },
+  env: Env,
+): Promise<string> {
+  const secret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET ?? "fallback";
+  const data = JSON.stringify({ ...payload, exp: Date.now() + 15 * 60 * 1000 });
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(data) + "." + sigB64;
+}
+
+async function verifyUploadToken(token: string, env: Env): Promise<{ fileKey: string; employeeId: string; fileName: string; mimeType: string } | null> {
+  try {
+    const [dataB64, sigB64] = token.split(".");
+    const data = atob(dataB64);
+    const secret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET ?? "fallback";
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    const sig = Uint8Array.from(atob(sigB64.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+    const valid = await crypto.subtle.verify("HMAC", key, sig, new TextEncoder().encode(data));
+    if (!valid) return null;
+    const parsed = JSON.parse(data);
+    if (parsed.exp < Date.now()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// Upload proxy — receives the file from the browser and streams it to R2
+export async function handleR2UploadProxy(request: Request, env: Env): Promise<Response | null> {
+  if (request.method !== "PUT") return null;
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith("/api/documents/upload/")) return null;
+
+  const token = url.pathname.replace("/api/documents/upload/", "");
+  const payload = await verifyUploadToken(decodeURIComponent(token), env);
+  if (!payload) {
+    return new Response(JSON.stringify({ error: "Invalid or expired upload token." }), { status: 401, headers: { "Content-Type": "application/json" } });
+  }
+
+  if (!env.DOCS) {
+    return new Response(JSON.stringify({ error: "R2 not configured." }), { status: 503, headers: { "Content-Type": "application/json" } });
+  }
+
+  const body = request.body;
+  if (!body) return new Response(JSON.stringify({ error: "No body." }), { status: 400, headers: { "Content-Type": "application/json" } });
+
+  await env.DOCS.put(payload.fileKey, body, {
+    httpMetadata: { contentType: payload.mimeType },
+    customMetadata: { originalName: payload.fileName, employeeId: payload.employeeId },
+  });
+
+  return new Response(JSON.stringify({ ok: true, fileKey: payload.fileKey }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+  });
+}
+
+async function handleSaveDocument(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    employeeId?: string;
+    employeeName?: string;
+    category?: string;
+    name?: string;
+    fileKey?: string;
+    fileSize?: number;
+    mimeType?: string;
+  }>(request);
+
+  if (!body?.employeeId || !body.fileKey || !body.name?.trim()) {
+    return json(request, env, { error: "employeeId, fileKey, and name are required." }, 400);
+  }
+
+  const isAdmin = canPostAnnouncement(user.role);
+  if (!isAdmin && body.employeeId !== user.userId) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const validCategory = DOC_CATEGORIES.includes(body.category as typeof DOC_CATEGORIES[number])
+    ? body.category!
+    : "other";
+
+  // Resolve employee name if not provided
+  let employeeName = body.employeeName?.trim();
+  if (!employeeName) {
+    const emp = await env.HRMS
+      .prepare(`SELECT name FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+      .bind(body.employeeId, user.tenantId)
+      .first<{ name: string }>();
+    employeeName = emp?.name ?? "Unknown";
+  }
+
+  const now = nowIso();
+  const id = crypto.randomUUID();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO documents (id, company_id, org_id, employee_id, employee_name, category, name, file_key, file_size, mime_type, uploaded_by, uploaded_by_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id, user.tenantId, user.tenantId,
+      body.employeeId, employeeName, validCategory,
+      body.name.trim(), body.fileKey,
+      body.fileSize ?? null, body.mimeType ?? null,
+      user.userId, user.name,
+      now, now,
+    )
+    .run();
+
+  return json(request, env, { ok: true, id });
+}
+
+async function handleDeleteDocument(docId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const doc = await env.HRMS
+    .prepare(`SELECT file_key, employee_id FROM documents WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(docId, user.tenantId)
+    .first<{ file_key: string; employee_id: string }>();
+
+  if (!doc) return json(request, env, { error: "Not found." }, 404);
+
+  const isAdmin = canPostAnnouncement(user.role);
+  if (!isAdmin && doc.employee_id !== user.userId) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  // Delete from R2
+  if (env.DOCS) {
+    await env.DOCS.delete(doc.file_key);
+  }
+
+  await env.HRMS
+    .prepare(`DELETE FROM documents WHERE id = ?`)
+    .bind(docId)
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+async function handleDownloadDocument(docId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const doc = await env.HRMS
+    .prepare(`SELECT file_key, name, mime_type, employee_id FROM documents WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(docId, user.tenantId)
+    .first<{ file_key: string; name: string; mime_type: string | null; employee_id: string }>();
+
+  if (!doc) return json(request, env, { error: "Not found." }, 404);
+
+  const isAdmin = canPostAnnouncement(user.role);
+  if (!isAdmin && doc.employee_id !== user.userId) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  if (!env.DOCS) return json(request, env, { error: "R2 not configured." }, 503);
+
+  const object = await env.DOCS.get(doc.file_key);
+  if (!object) return json(request, env, { error: "File not found in storage." }, 404);
+
+  const headers = new Headers();
+  headers.set("Content-Type", doc.mime_type ?? "application/octet-stream");
+  headers.set("Content-Disposition", `attachment; filename="${encodeURIComponent(doc.name)}"`);
+  headers.set("Cache-Control", "private, max-age=300");
+  object.writeHttpMetadata(headers);
+
+  return new Response(object.body, { headers });
 }
