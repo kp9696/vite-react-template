@@ -1,6 +1,57 @@
+import { generateECRCSV, generateForm16CSV } from "../../app/lib/payroll.server";
 import { hashPassword, requireAuth } from "../security/auth";
 import { withCors } from "../security/cors";
 import { sendEmail, buildLeaveDecisionHtml, buildExpenseDecisionHtml } from "../lib/email";
+
+// ── Form 16 Export Handler ─────────────────────────────────────────────────
+
+async function handleExportForm16(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!user || user.role !== "admin") {
+    return new Response("Forbidden", { status: 403 });
+  }
+  const url = new URL(request.url);
+  const year = url.searchParams.get("year") ?? "";
+  // Fetch payroll_items and join with users to get PAN
+  const rows = await env.HRMS.prepare(`
+    SELECT u.name, u.pan, SUM(pi.gross) as gross, SUM(pi.deductions) as deductions, SUM(pi.net) as net, SUM(pi.tds) as tds
+    FROM payroll_items pi
+    JOIN users u ON u.id = pi.employee_id
+    WHERE pi.month_key LIKE ? AND COALESCE(pi.company_id, pi.org_id) = ?
+    GROUP BY u.id, u.name, u.pan
+  `).bind(`${year}-%`, user.tenantId).all<{ name: string; pan: string; gross: number; deductions: number; net: number; tds: number }>();
+  const csv = generateForm16CSV(rows.results);
+  return new Response(csv, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/csv",
+      "Content-Disposition": `attachment; filename=Form16-${year}.csv`,
+    },
+  });
+}
+// ── ECR Export Handler ─────────────────────────────────────────────────────
+
+async function handleExportECR(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!user || user.role !== "admin") {
+    return new Response("Forbidden", { status: 403 });
+  }
+  const url = new URL(request.url);
+  const monthKey = url.searchParams.get("month") ?? "";
+  // Fetch payroll_items and join with users to get UAN
+  const rows = await env.HRMS.prepare(`
+    SELECT u.uan, u.name, pi.gross, pi.pf, pi.basic
+    FROM payroll_items pi
+    JOIN users u ON u.id = pi.employee_id
+    WHERE pi.month_key = ? AND COALESCE(pi.company_id, pi.org_id) = ?
+  `).bind(monthKey, user.tenantId).all<{ uan: string; name: string; gross: number; pf: number; basic: number }>();
+  const csv = generateECRCSV(rows.results);
+  return new Response(csv, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/csv",
+      "Content-Disposition": `attachment; filename=ECR-${monthKey}.csv`,
+    },
+  });
+}
 
 interface ApiUser {
   userId: string;
@@ -11,6 +62,19 @@ interface ApiUser {
 }
 
 type JsonMap = Record<string, unknown>;
+
+interface StatutoryFilingRow {
+  id: string;
+  filing_type: string;
+  period: string;
+  status: string;
+  file_path: string | null;
+  filed_by: string | null;
+  filed_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 type LeaveStatus = "pending" | "approved" | "rejected";
 
@@ -1465,12 +1529,22 @@ async function handleUpsertSalaryConfig(request: Request, env: Env, user: ApiUse
     return json(request, env, { error: "Forbidden." }, 403);
   }
 
-  const body = await readJsonBody<{ userId?: string; annualCtc?: number; effectiveFrom?: string }>(request);
+  const body = await readJsonBody<{ userId?: string; annualCtc?: number; effectiveFrom?: string; reason?: string }>(request);
   if (!body?.userId?.trim() || !body.annualCtc || body.annualCtc <= 0) {
     return json(request, env, { error: "userId and annualCtc (>0) are required." }, 400);
   }
 
   const now = nowIso();
+  const effectiveFrom = body.effectiveFrom?.trim() || now.slice(0, 10);
+  const newCtc = Math.round(body.annualCtc);
+  const userId = body.userId.trim();
+
+  // Read current CTC before update to detect actual change
+  const existing = await env.HRMS
+    .prepare(`SELECT annual_ctc FROM employee_salaries WHERE COALESCE(company_id, org_id) = ? AND user_id = ? LIMIT 1`)
+    .bind(user.tenantId, userId)
+    .first<{ annual_ctc: number }>();
+
   await env.HRMS
     .prepare(
       `INSERT INTO employee_salaries (id, org_id, company_id, user_id, annual_ctc, effective_from, created_at, updated_at)
@@ -1480,10 +1554,117 @@ async function handleUpsertSalaryConfig(request: Request, env: Env, user: ApiUse
          effective_from = excluded.effective_from,
          updated_at = excluded.updated_at`,
     )
-    .bind(crypto.randomUUID(), user.tenantId, user.tenantId, body.userId.trim(), Math.round(body.annualCtc), body.effectiveFrom?.trim() || now.slice(0, 10), now, now)
+    .bind(crypto.randomUUID(), user.tenantId, user.tenantId, userId, newCtc, effectiveFrom, now, now)
     .run();
 
+  // Record history row only when CTC actually changes (or it's the first set)
+  if (!existing || existing.annual_ctc !== newCtc) {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO salary_history (id, company_id, user_id, annual_ctc, effective_from, reason, changed_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), user.tenantId, userId, newCtc, effectiveFrom, body.reason?.trim() || null, user.userId, now)
+      .run();
+  }
+
   return json(request, env, { ok: true });
+}
+
+async function handleListSalaryHistory(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const targetUserId = url.searchParams.get("userId");
+
+  // Employees can only see their own history
+  if (!isHrManager(user.role)) {
+    const rows = await env.HRMS
+      .prepare(
+        `SELECT sh.id, sh.annual_ctc, sh.effective_from, sh.reason, sh.created_at,
+                u.name as changed_by_name
+         FROM salary_history sh
+         LEFT JOIN users u ON u.id = sh.changed_by
+         WHERE sh.company_id = ? AND sh.user_id = ?
+         ORDER BY sh.effective_from DESC, sh.created_at DESC`,
+      )
+      .bind(user.tenantId, user.userId)
+      .all();
+    return json(request, env, { history: rows.results });
+  }
+
+  // HR sees all employees or a specific employee
+  if (targetUserId) {
+    const rows = await env.HRMS
+      .prepare(
+        `SELECT sh.id, sh.annual_ctc, sh.effective_from, sh.reason, sh.created_at,
+                u.name as changed_by_name, eu.name as employee_name
+         FROM salary_history sh
+         LEFT JOIN users u  ON u.id  = sh.changed_by
+         LEFT JOIN users eu ON eu.id = sh.user_id
+         WHERE sh.company_id = ? AND sh.user_id = ?
+         ORDER BY sh.effective_from DESC, sh.created_at DESC`,
+      )
+      .bind(user.tenantId, targetUserId)
+      .all();
+    return json(request, env, { history: rows.results });
+  }
+
+  // All employees' history (latest per employee for the salary-setup table)
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT sh.id, sh.user_id, sh.annual_ctc, sh.effective_from, sh.reason, sh.created_at,
+              u.name as changed_by_name, eu.name as employee_name
+       FROM salary_history sh
+       LEFT JOIN users u  ON u.id  = sh.changed_by
+       LEFT JOIN users eu ON eu.id = sh.user_id
+       WHERE sh.company_id = ?
+       ORDER BY sh.effective_from DESC, sh.created_at DESC`,
+    )
+    .bind(user.tenantId)
+    .all();
+  return json(request, env, { history: rows.results });
+}
+
+async function handleGetPayslipData(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const monthKey = url.searchParams.get("monthKey");
+  const targetUserId = url.searchParams.get("userId");
+
+  if (!monthKey) return json(request, env, { error: "monthKey is required." }, 400);
+
+  // Employees can only fetch their own payslip
+  const resolvedUserId = isHrManager(user.role) && targetUserId ? targetUserId : user.userId;
+
+  const row = await env.HRMS
+    .prepare(
+      `SELECT pi.employee_id as id, u.name, COALESCE(u.department,'General') as dept,
+              pi.basic, pi.hra, pi.conveyance, pi.pf, pi.esi, pi.tds, pi.pt,
+              pi.gross, pi.deductions, pi.net, pi.status,
+              pi.month_key
+       FROM payroll_items pi
+       JOIN users u ON u.id = pi.employee_id
+       WHERE COALESCE(pi.company_id, pi.org_id) = ?
+         AND pi.employee_id = ?
+         AND pi.month_key = ?
+       LIMIT 1`,
+    )
+    .bind(user.tenantId, resolvedUserId, monthKey)
+    .first<{
+      id: string; name: string; dept: string;
+      basic: number; hra: number; conveyance: number;
+      pf: number; esi: number; tds: number; pt: number;
+      gross: number; deductions: number; net: number;
+      status: string; month_key: string;
+    }>();
+
+  if (!row) return json(request, env, { error: "Payslip not found." }, 404);
+
+  // Fetch tax regime from IT declaration for correct label on payslip
+  const declRow = await env.HRMS
+    .prepare(`SELECT tax_regime FROM it_declarations WHERE company_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(user.tenantId, resolvedUserId)
+    .first<{ tax_regime: string }>();
+
+  return json(request, env, { payslip: { ...row, tax_regime: declRow?.tax_regime ?? "new" } });
 }
 
 export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Response | null> {
@@ -1632,6 +1813,12 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   }
   if (method === "POST" && pathname === "/api/salary-configs") {
     return handleUpsertSalaryConfig(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/salary-history") {
+    return handleListSalaryHistory(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/payslip") {
+    return handleGetPayslipData(request, env, user!);
   }
 
   if (method === "POST" && pathname === "/api/hrbot/chat") {
@@ -1784,11 +1971,36 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   if (method === "GET" && pathname === "/api/reports/attendance") {
     return handleReportAttendance(request, env, user!);
   }
+  if (method === "GET" && pathname === "/api/reports/ecr") {
+    return handleExportECR(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/reports/form16") {
+    return handleExportForm16(request, env, user!);
+  }
   if (method === "GET" && pathname === "/api/reports/leave") {
     return handleReportLeave(request, env, user!);
   }
   if (method === "GET" && pathname === "/api/reports/headcount") {
     return handleReportHeadcount(request, env, user!);
+  }
+
+  if (method === "GET" && pathname === "/api/statutory-filings") {
+    return handleListStatutoryFilings(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/statutory-filings") {
+    return handleUpsertStatutoryFiling(request, env, user!);
+  }
+
+  // ── IT Declarations ───────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/it-declarations") {
+    return handleGetITDeclarations(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/it-declarations") {
+    return handleUpsertITDeclaration(request, env, user!);
+  }
+  const itDeclApproveMatch = pathname.match(/^\/api\/it-declarations\/([^/]+)\/approve$/);
+  if (method === "PATCH" && itDeclApproveMatch) {
+    return handleApproveITDeclaration(itDeclApproveMatch[1], request, env, user!);
   }
 
   // ── Company Settings ─────────────────────────────────────────────────────────
@@ -1811,7 +2023,1547 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
     return handleDeleteDepartment(deptDeleteMatch[1], request, env, user!);
   }
 
+  // ── Holiday Calendar ─────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/holidays") {
+    return handleListHolidays(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/holidays") {
+    return handleCreateHoliday(request, env, user!);
+  }
+  const holidayDeleteMatch = pathname.match(/^\/api\/holidays\/([^/]+)$/);
+  if (method === "DELETE" && holidayDeleteMatch) {
+    return handleDeleteHoliday(holidayDeleteMatch[1], request, env, user!);
+  }
+
+  // ── Salary Structure ─────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/salary-structures") {
+    return handleListSalaryStructures(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/salary-structures") {
+    return handleUpsertSalaryStructure(request, env, user!);
+  }
+
+  // ── Payroll Lock / Finalize / Disburse ───────────────────────────────────────
+  if (method === "POST" && pathname === "/api/payroll/lock") {
+    return handlePayrollLock(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/payroll/unlock") {
+    return handlePayrollUnlock(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/payroll/finalize") {
+    return handlePayrollFinalize(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/payroll/disburse") {
+    return handlePayrollDisburse(request, env, user!);
+  }
+  // NOTE: GET /api/payroll/run-status is intentionally NOT handled here.
+  // The browser's useFetcher sends cookies (not a Bearer token), so handling it
+  // here would return 401. It falls through to the React Router resource route
+  // (app/routes/api.payroll.run-status.ts) which uses cookie-based auth.
+
+  // ── Resignation Self-Service ─────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/resignations") {
+    return handleListResignations(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/resignations") {
+    return handleCreateResignation(request, env, user!);
+  }
+  const resignDecisionMatch = pathname.match(/^\/api\/resignations\/([^/]+)\/decision$/);
+  if (method === "PATCH" && resignDecisionMatch) {
+    return handleResignationDecision(resignDecisionMatch[1], request, env, user!);
+  }
+  const resignWithdrawMatch = pathname.match(/^\/api\/resignations\/([^/]+)\/withdraw$/);
+  if (method === "PATCH" && resignWithdrawMatch) {
+    return handleResignationWithdraw(resignWithdrawMatch[1], request, env, user!);
+  }
+
+  // ── Leave Policies ───────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/leave-policies") {
+    return handleListLeavePolicies(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/leave-policies") {
+    return handleUpsertLeavePolicy(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/leave-policies/credit") {
+    return handleCreditLeaveBalances(request, env, user!);
+  }
+
+  // ── WFH Requests ─────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/wfh-requests") {
+    return handleListWfhRequests(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/wfh-requests") {
+    return handleCreateWfhRequest(request, env, user!);
+  }
+  const wfhDecisionMatch = pathname.match(/^\/api\/wfh-requests\/([^/]+)\/decision$/);
+  if (method === "PATCH" && wfhDecisionMatch) {
+    return handleWfhDecision(wfhDecisionMatch[1], request, env, user!);
+  }
+
+  // ── Expense Reimbursement + Policy ───────────────────────────────────────────
+  const expReimburseMatch = pathname.match(/^\/api\/expenses\/([^/]+)\/reimburse$/);
+  if (method === "POST" && expReimburseMatch) {
+    return handleReimburseExpense(expReimburseMatch[1], request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/expense-policies") {
+    return handleListExpensePolicies(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/expense-policies") {
+    return handleUpsertExpensePolicy(request, env, user!);
+  }
+
+  // ── Employee Loans & Advances ────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/loans") {
+    return handleListLoans(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/loans") {
+    return handleApplyLoan(request, env, user!);
+  }
+  const loanDecisionMatch = pathname.match(/^\/api\/loans\/([^/]+)\/decision$/);
+  if (method === "PATCH" && loanDecisionMatch) {
+    return handleLoanDecision(loanDecisionMatch[1], request, env, user!);
+  }
+  const loanCloseMatch = pathname.match(/^\/api\/loans\/([^/]+)\/close$/);
+  if (method === "POST" && loanCloseMatch) {
+    return handleCloseLoan(loanCloseMatch[1], request, env, user!);
+  }
+  const loanEmiMatch = pathname.match(/^\/api\/loans\/([^/]+)\/emi$/);
+  if (method === "POST" && loanEmiMatch) {
+    return handleRecordLoanEmi(loanEmiMatch[1], request, env, user!);
+  }
+
+  // ── Full & Final Settlements ──────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/fnf") {
+    return handleListFnf(request, env, user!);
+  }
+  const fnfComputeMatch = pathname.match(/^\/api\/fnf\/compute\/([^/]+)$/);
+  if (method === "GET" && fnfComputeMatch) {
+    return handleComputeFnf(fnfComputeMatch[1], request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/fnf") {
+    return handleCreateFnf(request, env, user!);
+  }
+  const fnfApproveMatch = pathname.match(/^\/api\/fnf\/([^/]+)\/approve$/);
+  if (method === "PATCH" && fnfApproveMatch) {
+    return handleFnfAction(fnfApproveMatch[1], "approve", request, env, user!);
+  }
+  const fnfDisburseMatch = pathname.match(/^\/api\/fnf\/([^/]+)\/disburse$/);
+  if (method === "PATCH" && fnfDisburseMatch) {
+    return handleFnfAction(fnfDisburseMatch[1], "disburse", request, env, user!);
+  }
+
+  // ── Help Desk ─────────────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/helpdesk/tickets") {
+    return handleListHelpdeskTickets(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/helpdesk/tickets") {
+    return handleCreateHelpdeskTicket(request, env, user!);
+  }
+  const helpdeskTicketMatch = pathname.match(/^\/api\/helpdesk\/tickets\/([^/]+)$/);
+  if (method === "PATCH" && helpdeskTicketMatch) {
+    return handleUpdateHelpdeskTicket(helpdeskTicketMatch[1], request, env, user!);
+  }
+  const helpdeskCommentsMatch = pathname.match(/^\/api\/helpdesk\/tickets\/([^/]+)\/comments$/);
+  if (method === "GET" && helpdeskCommentsMatch) {
+    return handleListHelpdeskComments(helpdeskCommentsMatch[1], request, env, user!);
+  }
+  if (method === "POST" && helpdeskCommentsMatch) {
+    return handleAddHelpdeskComment(helpdeskCommentsMatch[1], request, env, user!);
+  }
+
+  // ── Offer Letters ─────────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/offer-letters") {
+    return handleListOfferLetters(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/offer-letters") {
+    return handleCreateOfferLetter(request, env, user!);
+  }
+  const offerLetterMatch = pathname.match(/^\/api\/offer-letters\/([^/]+)$/);
+  if (method === "GET" && offerLetterMatch) {
+    return handleGetOfferLetter(offerLetterMatch[1], request, env, user!);
+  }
+  if (method === "PATCH" && offerLetterMatch) {
+    return handleUpdateOfferLetter(offerLetterMatch[1], request, env, user!);
+  }
+  if (method === "DELETE" && offerLetterMatch) {
+    return handleDeleteOfferLetter(offerLetterMatch[1], request, env, user!);
+  }
+
   return null;
+}
+
+// ── Help Desk Handlers ───────────────────────────────────────────────────────
+
+async function nextHelpdeskTicketNo(db: D1Database, companyId: string): Promise<string> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM helpdesk_tickets WHERE company_id = ?`,
+    )
+    .bind(companyId)
+    .first<{ cnt: number }>();
+  const seq = (row?.cnt ?? 0) + 1;
+  return `TKT-${String(seq).padStart(5, "0")}`;
+}
+
+async function handleListHelpdeskTickets(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") || "";
+  const category = url.searchParams.get("category") || "";
+  const isManager = isHrManager(user.role);
+
+  let sql = `SELECT id, ticket_no, title, category, priority, status,
+                    created_by_id, created_by_name, assigned_to_id, assigned_to_name,
+                    resolved_at, created_at, updated_at
+             FROM helpdesk_tickets
+             WHERE company_id = ?`;
+  const binds: Array<string | number> = [user.tenantId];
+
+  if (!isManager) {
+    sql += " AND created_by_id = ?";
+    binds.push(user.userId);
+  }
+  if (status) {
+    sql += " AND status = ?";
+    binds.push(status);
+  }
+  if (category) {
+    sql += " AND category = ?";
+    binds.push(category);
+  }
+
+  sql += " ORDER BY datetime(created_at) DESC LIMIT 200";
+
+  const rows = await env.HRMS.prepare(sql).bind(...binds).all();
+  return json(request, env, { tickets: rows.results });
+}
+
+async function handleCreateHelpdeskTicket(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    title?: string;
+    description?: string;
+    category?: string;
+    priority?: string;
+  }>(request);
+
+  const title = body?.title?.trim() || "";
+  const description = body?.description?.trim() || "";
+  const category = body?.category?.trim() || "Other";
+  const priority = body?.priority?.trim() || "medium";
+
+  if (!title || !description) {
+    return json(request, env, { error: "title and description are required." }, 400);
+  }
+
+  const VALID_CATEGORIES = ["Payroll", "Leave", "IT", "Facilities", "Other"];
+  const VALID_PRIORITIES = ["low", "medium", "high"];
+  if (!VALID_CATEGORIES.includes(category)) {
+    return json(request, env, { error: `category must be one of: ${VALID_CATEGORIES.join(", ")}.` }, 400);
+  }
+  if (!VALID_PRIORITIES.includes(priority)) {
+    return json(request, env, { error: `priority must be one of: ${VALID_PRIORITIES.join(", ")}.` }, 400);
+  }
+
+  const id = crypto.randomUUID();
+  const ticketNo = await nextHelpdeskTicketNo(env.HRMS, user.tenantId);
+  const now = nowIso();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO helpdesk_tickets
+         (id, company_id, org_id, ticket_no, title, description, category, priority, status,
+          created_by_id, created_by_name, assigned_to_id, assigned_to_name, resolved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL, NULL, NULL, ?, ?)`,
+    )
+    .bind(id, user.tenantId, user.tenantId, ticketNo, title, description, category, priority,
+          user.userId, user.name, now, now)
+    .run();
+
+  return json(request, env, { ok: true, id, ticketNo }, 201);
+}
+
+async function handleUpdateHelpdeskTicket(
+  ticketId: string,
+  request: Request,
+  env: Env,
+  user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const body = await readJsonBody<{
+    status?: string;
+    assignedToId?: string;
+    assignedToName?: string;
+    priority?: string;
+  }>(request);
+
+  const VALID_STATUSES = ["open", "in-progress", "resolved", "closed"];
+  if (body?.status && !VALID_STATUSES.includes(body.status)) {
+    return json(request, env, { error: `status must be one of: ${VALID_STATUSES.join(", ")}.` }, 400);
+  }
+
+  const ticket = await env.HRMS
+    .prepare(
+      `SELECT id, status, created_by_id FROM helpdesk_tickets WHERE id = ? AND company_id = ? LIMIT 1`,
+    )
+    .bind(ticketId, user.tenantId)
+    .first<{ id: string; status: string; created_by_id: string }>();
+
+  if (!ticket) {
+    return json(request, env, { error: "Ticket not found." }, 404);
+  }
+
+  const now = nowIso();
+  const newStatus = body?.status?.trim() || ticket.status;
+  const resolvedAt = newStatus === "resolved" && ticket.status !== "resolved" ? now : null;
+
+  // Build dynamic SET clause
+  const sets: string[] = ["status = ?", "updated_at = ?"];
+  const binds: Array<string | null> = [newStatus, now];
+
+  if (body?.assignedToId !== undefined) {
+    sets.push("assigned_to_id = ?");
+    binds.push(body.assignedToId?.trim() || null);
+  }
+  if (body?.assignedToName !== undefined) {
+    sets.push("assigned_to_name = ?");
+    binds.push(body.assignedToName?.trim() || null);
+  }
+  if (body?.priority !== undefined) {
+    sets.push("priority = ?");
+    binds.push(body.priority.trim());
+  }
+  if (resolvedAt) {
+    sets.push("resolved_at = ?");
+    binds.push(resolvedAt);
+  }
+
+  binds.push(ticketId, user.tenantId);
+  await env.HRMS
+    .prepare(`UPDATE helpdesk_tickets SET ${sets.join(", ")} WHERE id = ? AND company_id = ?`)
+    .bind(...binds)
+    .run();
+
+  // Notify the ticket creator when status changes
+  if (body?.status && body.status !== ticket.status) {
+    await createNotification(env.HRMS, {
+      companyId: user.tenantId,
+      userId: ticket.created_by_id,
+      type: "general",
+      title: `🎫 Ticket ${newStatus === "resolved" ? "Resolved" : "Updated"}`,
+      body: `Your help desk ticket status has been updated to "${newStatus}".`,
+      link: "/hrms/helpdesk",
+    });
+  }
+
+  return json(request, env, { ok: true, id: ticketId, status: newStatus });
+}
+
+async function handleListHelpdeskComments(
+  ticketId: string,
+  request: Request,
+  env: Env,
+  user: ApiUser,
+): Promise<Response> {
+  // Check ticket belongs to tenant; employees can view their own tickets' comments
+  const ticket = await env.HRMS
+    .prepare(`SELECT id, created_by_id FROM helpdesk_tickets WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(ticketId, user.tenantId)
+    .first<{ id: string; created_by_id: string }>();
+
+  if (!ticket) {
+    return json(request, env, { error: "Ticket not found." }, 404);
+  }
+
+  if (!isHrManager(user.role) && ticket.created_by_id !== user.userId) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, author_id, author_name, author_role, body, created_at
+       FROM helpdesk_comments
+       WHERE ticket_id = ? AND company_id = ?
+       ORDER BY datetime(created_at) ASC`,
+    )
+    .bind(ticketId, user.tenantId)
+    .all();
+
+  return json(request, env, { comments: rows.results });
+}
+
+async function handleAddHelpdeskComment(
+  ticketId: string,
+  request: Request,
+  env: Env,
+  user: ApiUser,
+): Promise<Response> {
+  const ticket = await env.HRMS
+    .prepare(`SELECT id, created_by_id, status FROM helpdesk_tickets WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(ticketId, user.tenantId)
+    .first<{ id: string; created_by_id: string; status: string }>();
+
+  if (!ticket) {
+    return json(request, env, { error: "Ticket not found." }, 404);
+  }
+
+  if (!isHrManager(user.role) && ticket.created_by_id !== user.userId) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+
+  if (ticket.status === "closed") {
+    return json(request, env, { error: "Cannot comment on a closed ticket." }, 409);
+  }
+
+  const body = await readJsonBody<{ body?: string }>(request);
+  const commentBody = body?.body?.trim() || "";
+  if (!commentBody) {
+    return json(request, env, { error: "Comment body is required." }, 400);
+  }
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+
+  await env.HRMS
+    .prepare(
+      `INSERT INTO helpdesk_comments (id, ticket_id, company_id, author_id, author_name, author_role, body, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(id, ticketId, user.tenantId, user.userId, user.name, user.role, commentBody, now)
+    .run();
+
+  // Update ticket's updated_at and auto-set to in-progress if it was open
+  const newStatus = ticket.status === "open" && isHrManager(user.role) ? "in-progress" : ticket.status;
+  await env.HRMS
+    .prepare(`UPDATE helpdesk_tickets SET status = ?, updated_at = ? WHERE id = ?`)
+    .bind(newStatus, now, ticketId)
+    .run();
+
+  // Notify the other party
+  const notifyUserId = isHrManager(user.role) ? ticket.created_by_id : null;
+  if (notifyUserId) {
+    await createNotification(env.HRMS, {
+      companyId: user.tenantId,
+      userId: notifyUserId,
+      type: "general",
+      title: "💬 New reply on your ticket",
+      body: `HR has replied to your help desk ticket.`,
+      link: "/hrms/helpdesk",
+    });
+  }
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+// ── Holiday Calendar Handlers ────────────────────────────────────────────────
+
+async function handleListHolidays(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const year = url.searchParams.get("year") ?? new Date().getFullYear().toString();
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, name, date, type, description, created_at
+       FROM holidays
+       WHERE company_id = ? AND strftime('%Y', date) = ?
+       ORDER BY date ASC`,
+    )
+    .bind(user.tenantId, year)
+    .all<{ id: string; name: string; date: string; type: string; description: string | null; created_at: string }>();
+  return json(request, env, { holidays: rows.results, year });
+}
+
+async function handleCreateHoliday(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{
+    name?: string; date?: string; type?: string; description?: string;
+  }>(request);
+  if (!body?.name?.trim() || !body.date?.trim()) {
+    return json(request, env, { error: "name and date are required." }, 400);
+  }
+  const validTypes = ["national", "restricted", "optional"];
+  const type = validTypes.includes(body.type ?? "") ? (body.type ?? "national") : "national";
+  const now = nowIso();
+  const id = `HOL${crypto.randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+  await env.HRMS
+    .prepare(
+      `INSERT INTO holidays (id, company_id, name, date, type, description, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(company_id, date, name) DO UPDATE SET
+         type = excluded.type,
+         description = excluded.description`,
+    )
+    .bind(id, user.tenantId, body.name.trim(), body.date.trim(), type,
+      body.description?.trim() || null, user.userId, now)
+    .run();
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleDeleteHoliday(holidayId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  await env.HRMS
+    .prepare(`DELETE FROM holidays WHERE id = ? AND company_id = ?`)
+    .bind(holidayId, user.tenantId)
+    .run();
+  return json(request, env, { ok: true });
+}
+
+// ── Salary Structure Handlers ────────────────────────────────────────────────
+
+interface SalaryStructureRow {
+  id: string;
+  company_id: string;
+  user_id: string;
+  basic_pct: number;
+  hra_pct: number;
+  conveyance: number;
+  lta: number;
+  medical_allowance: number;
+  special_allowance_pct: number;
+  effective_from: string;
+  created_at: string;
+  updated_at: string;
+  employee_name?: string;
+}
+
+async function handleListSalaryStructures(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const url = new URL(request.url);
+  const userId = url.searchParams.get("userId");
+  if (userId) {
+    const row = await env.HRMS
+      .prepare(
+        `SELECT ss.*, u.name as employee_name
+         FROM salary_structures ss
+         LEFT JOIN users u ON u.id = ss.user_id
+         WHERE ss.company_id = ? AND ss.user_id = ? LIMIT 1`,
+      )
+      .bind(user.tenantId, userId)
+      .first<SalaryStructureRow>();
+    return json(request, env, { structure: row ?? null });
+  }
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT ss.*, u.name as employee_name
+       FROM salary_structures ss
+       LEFT JOIN users u ON u.id = ss.user_id
+       WHERE ss.company_id = ?
+       ORDER BY u.name ASC`,
+    )
+    .bind(user.tenantId)
+    .all<SalaryStructureRow>();
+  return json(request, env, { structures: rows.results });
+}
+
+async function handleUpsertSalaryStructure(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{
+    userId?: string;
+    basicPct?: number;
+    hraPct?: number;
+    conveyance?: number;
+    lta?: number;
+    medicalAllowance?: number;
+    specialAllowancePct?: number;
+    effectiveFrom?: string;
+  }>(request);
+  if (!body?.userId?.trim()) return json(request, env, { error: "userId is required." }, 400);
+
+  // Validate percentages
+  const basicPct = Math.max(10, Math.min(80, Number(body.basicPct ?? 50)));
+  const hraPct = Math.max(0, Math.min(50, Number(body.hraPct ?? 20)));
+  if (basicPct + hraPct > 90) {
+    return json(request, env, { error: "basic% + hra% cannot exceed 90%." }, 400);
+  }
+
+  const now = nowIso();
+  const id = `SS${crypto.randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+  await env.HRMS
+    .prepare(
+      `INSERT INTO salary_structures
+         (id, company_id, user_id, basic_pct, hra_pct, conveyance, lta, medical_allowance,
+          special_allowance_pct, effective_from, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(company_id, user_id) DO UPDATE SET
+         basic_pct = excluded.basic_pct,
+         hra_pct = excluded.hra_pct,
+         conveyance = excluded.conveyance,
+         lta = excluded.lta,
+         medical_allowance = excluded.medical_allowance,
+         special_allowance_pct = excluded.special_allowance_pct,
+         effective_from = excluded.effective_from,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      id, user.tenantId, body.userId.trim(),
+      basicPct, hraPct,
+      Number(body.conveyance ?? 1600),
+      Number(body.lta ?? 0),
+      Number(body.medicalAllowance ?? 0),
+      Number(body.specialAllowancePct ?? 0),
+      body.effectiveFrom?.trim() || todayIsoDate(),
+      user.userId, now, now,
+    )
+    .run();
+  return json(request, env, { ok: true });
+}
+
+// ── Payroll Lock / Finalize / Disburse Handlers ──────────────────────────────
+
+async function handlePayrollRunStatus(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const url = new URL(request.url);
+  const monthKey = url.searchParams.get("monthKey");
+  if (!monthKey) return json(request, env, { error: "monthKey is required." }, 400);
+  const row = await env.HRMS
+    .prepare(
+      `SELECT id, month_key, status, processed_count, total_count,
+              locked, locked_by, locked_at,
+              finalized, finalized_by, finalized_at,
+              disbursed, disbursed_by, disbursed_at
+       FROM payroll_runs
+       WHERE COALESCE(company_id, org_id) = ? AND month_key = ?
+       LIMIT 1`,
+    )
+    .bind(user.tenantId, monthKey)
+    .first<{
+      id: string; month_key: string; status: string;
+      processed_count: number; total_count: number;
+      locked: number; locked_by: string | null; locked_at: string | null;
+      finalized: number; finalized_by: string | null; finalized_at: string | null;
+      disbursed: number; disbursed_by: string | null; disbursed_at: string | null;
+    }>();
+  if (!row) return json(request, env, { run: null });
+  return json(request, env, {
+    run: {
+      ...row,
+      locked: Boolean(row.locked),
+      finalized: Boolean(row.finalized),
+      disbursed: Boolean(row.disbursed),
+    },
+  });
+}
+
+async function handlePayrollLock(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ monthKey?: string }>(request);
+  if (!body?.monthKey) return json(request, env, { error: "monthKey is required." }, 400);
+  const run = await env.HRMS
+    .prepare(`SELECT id, locked FROM payroll_runs WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`)
+    .bind(user.tenantId, body.monthKey)
+    .first<{ id: string; locked: number }>();
+  if (!run) return json(request, env, { error: "Payroll run not found for this month." }, 404);
+  if (run.locked) return json(request, env, { error: "Payroll is already locked." }, 409);
+  await env.HRMS
+    .prepare(`UPDATE payroll_runs SET locked = 1, locked_by = ?, locked_at = ?, updated_at = ? WHERE id = ?`)
+    .bind(user.userId, nowIso(), nowIso(), run.id)
+    .run();
+  return json(request, env, { ok: true, monthKey: body.monthKey, locked: true });
+}
+
+async function handlePayrollUnlock(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Only admins can unlock payroll." }, 403);
+  const body = await readJsonBody<{ monthKey?: string }>(request);
+  if (!body?.monthKey) return json(request, env, { error: "monthKey is required." }, 400);
+  const run = await env.HRMS
+    .prepare(`SELECT id, finalized FROM payroll_runs WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`)
+    .bind(user.tenantId, body.monthKey)
+    .first<{ id: string; finalized: number }>();
+  if (!run) return json(request, env, { error: "Payroll run not found." }, 404);
+  if (run.finalized) return json(request, env, { error: "Finalized payroll cannot be unlocked." }, 409);
+  await env.HRMS
+    .prepare(`UPDATE payroll_runs SET locked = 0, locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
+    .bind(nowIso(), run.id)
+    .run();
+  return json(request, env, { ok: true, monthKey: body.monthKey, locked: false });
+}
+
+async function handlePayrollFinalize(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Only admins can finalize payroll." }, 403);
+  const body = await readJsonBody<{ monthKey?: string }>(request);
+  if (!body?.monthKey) return json(request, env, { error: "monthKey is required." }, 400);
+  const run = await env.HRMS
+    .prepare(`SELECT id, locked, finalized FROM payroll_runs WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`)
+    .bind(user.tenantId, body.monthKey)
+    .first<{ id: string; locked: number; finalized: number }>();
+  if (!run) return json(request, env, { error: "Payroll run not found." }, 404);
+  if (!run.locked) return json(request, env, { error: "Lock payroll before finalizing." }, 400);
+  if (run.finalized) return json(request, env, { error: "Already finalized." }, 409);
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE payroll_runs SET finalized = 1, finalized_by = ?, finalized_at = ?, status = 'finalized', updated_at = ? WHERE id = ?`)
+    .bind(user.userId, now, now, run.id)
+    .run();
+  return json(request, env, { ok: true, monthKey: body.monthKey, finalized: true });
+}
+
+async function handlePayrollDisburse(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) return json(request, env, { error: "Only admins can mark disbursement." }, 403);
+  const body = await readJsonBody<{ monthKey?: string }>(request);
+  if (!body?.monthKey) return json(request, env, { error: "monthKey is required." }, 400);
+  const run = await env.HRMS
+    .prepare(`SELECT id, finalized, disbursed FROM payroll_runs WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`)
+    .bind(user.tenantId, body.monthKey)
+    .first<{ id: string; finalized: number; disbursed: number }>();
+  if (!run) return json(request, env, { error: "Payroll run not found." }, 404);
+  if (!run.finalized) return json(request, env, { error: "Finalize payroll before disbursing." }, 400);
+  if (run.disbursed) return json(request, env, { error: "Already marked as disbursed." }, 409);
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE payroll_runs SET disbursed = 1, disbursed_by = ?, disbursed_at = ?, status = 'disbursed', updated_at = ? WHERE id = ?`)
+    .bind(user.userId, now, now, run.id)
+    .run();
+  return json(request, env, { ok: true, monthKey: body.monthKey, disbursed: true });
+}
+
+// ── Resignation Self-Service Handlers ────────────────────────────────────────
+
+async function handleListResignations(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const isAdmin = isHrManager(user.role);
+  if (isAdmin) {
+    const rows = await env.HRMS
+      .prepare(
+        `SELECT r.*, u.name as user_name_live, u.department, u.role as user_role
+         FROM resignations r
+         LEFT JOIN users u ON u.id = r.user_id
+         WHERE r.company_id = ?
+         ORDER BY r.created_at DESC`,
+      )
+      .bind(user.tenantId)
+      .all<{
+        id: string; user_id: string; user_name: string; department: string | null;
+        role: string | null; last_working_day: string; notice_period_days: number;
+        reason: string; status: string; manager_note: string | null;
+        decided_by: string | null; decided_at: string | null;
+        withdrawal_reason: string | null; withdrawn_at: string | null;
+        created_at: string; updated_at: string;
+      }>();
+    return json(request, env, { resignations: rows.results });
+  }
+  // Employee: own resignation only
+  const row = await env.HRMS
+    .prepare(`SELECT * FROM resignations WHERE company_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(user.tenantId, user.userId)
+    .first<{
+      id: string; user_id: string; user_name: string; department: string | null;
+      last_working_day: string; notice_period_days: number; reason: string;
+      status: string; manager_note: string | null; decided_at: string | null;
+      created_at: string;
+    }>();
+  return json(request, env, { resignation: row ?? null });
+}
+
+async function handleCreateResignation(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    lastWorkingDay?: string;
+    reason?: string;
+    noticePeriodDays?: number;
+  }>(request);
+  if (!body?.lastWorkingDay || !body.reason?.trim()) {
+    return json(request, env, { error: "lastWorkingDay and reason are required." }, 400);
+  }
+  // Check no active resignation already exists
+  const existing = await env.HRMS
+    .prepare(`SELECT id, status FROM resignations WHERE company_id = ? AND user_id = ? AND status IN ('pending', 'accepted') LIMIT 1`)
+    .bind(user.tenantId, user.userId)
+    .first<{ id: string; status: string }>();
+  if (existing) {
+    return json(request, env, { error: `You already have a ${existing.status} resignation on record.` }, 409);
+  }
+  // Fetch employee details
+  const emp = await env.HRMS
+    .prepare(`SELECT name, department, role FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(user.userId, user.tenantId)
+    .first<{ name: string; department: string | null; role: string | null }>();
+  const now = nowIso();
+  const id = `RES${crypto.randomUUID().replace(/-/g, "").slice(0, 10).toUpperCase()}`;
+  await env.HRMS
+    .prepare(
+      `INSERT INTO resignations
+         (id, company_id, user_id, user_name, department, role,
+          last_working_day, notice_period_days, reason, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    )
+    .bind(
+      id, user.tenantId, user.userId,
+      emp?.name ?? user.name,
+      emp?.department ?? null,
+      emp?.role ?? null,
+      body.lastWorkingDay,
+      Number(body.noticePeriodDays ?? 30),
+      body.reason.trim(),
+      now, now,
+    )
+    .run();
+
+  // Notify HR managers
+  try {
+    const hrManagers = await env.HRMS
+      .prepare(`SELECT id FROM users WHERE COALESCE(company_id, org_id) = ? AND LOWER(role) IN ('admin','hr admin','hr_admin','hr manager','hr_manager') LIMIT 20`)
+      .bind(user.tenantId)
+      .all<{ id: string }>();
+    await Promise.all(hrManagers.results.map((hr) =>
+      createNotification(env.HRMS, {
+        companyId: user.tenantId,
+        userId: hr.id,
+        type: "resignation",
+        title: `📋 Resignation Submitted: ${emp?.name ?? user.name}`,
+        body: `Last working day: ${body.lastWorkingDay}. Reason: ${body.reason!.trim().slice(0, 80)}`,
+        link: "/hrms/resignation",
+      }),
+    ));
+  } catch { /* notification failure is non-blocking */ }
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleResignationDecision(
+  resignId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ decision?: string; note?: string }>(request);
+  const decision = body?.decision;
+  if (decision !== "accepted" && decision !== "rejected") {
+    return json(request, env, { error: "decision must be accepted or rejected." }, 400);
+  }
+  const now = nowIso();
+  const result = await env.HRMS
+    .prepare(
+      `UPDATE resignations
+       SET status = ?, manager_note = ?, decided_by = ?, decided_at = ?, updated_at = ?
+       WHERE id = ? AND company_id = ? AND status = 'pending'`,
+    )
+    .bind(decision, body?.note?.trim() || null, user.userId, now, now, resignId, user.tenantId)
+    .run();
+  if (!result.meta.changes) return json(request, env, { error: "Resignation not found or already decided." }, 404);
+
+  // Notify employee
+  try {
+    const resign = await env.HRMS
+      .prepare(`SELECT user_id, last_working_day FROM resignations WHERE id = ? LIMIT 1`)
+      .bind(resignId)
+      .first<{ user_id: string; last_working_day: string }>();
+    if (resign) {
+      await createNotification(env.HRMS, {
+        companyId: user.tenantId,
+        userId: resign.user_id,
+        type: "resignation_decision",
+        title: decision === "accepted" ? "✅ Resignation Accepted" : "❌ Resignation Rejected",
+        body: decision === "accepted"
+          ? `Your resignation has been accepted. Last working day: ${resign.last_working_day}.`
+          : `Your resignation has been rejected by HR. ${body?.note ? "Note: " + body.note : ""}`,
+        link: "/hrms/resignation",
+      });
+    }
+  } catch { /* non-blocking */ }
+
+  return json(request, env, { ok: true, id: resignId, status: decision });
+}
+
+async function handleResignationWithdraw(
+  resignId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  const body = await readJsonBody<{ reason?: string }>(request);
+  const now = nowIso();
+  // Employees can only withdraw their own pending resignation
+  const result = await env.HRMS
+    .prepare(
+      `UPDATE resignations
+       SET status = 'withdrawn', withdrawal_reason = ?, withdrawn_at = ?, updated_at = ?
+       WHERE id = ? AND company_id = ? AND user_id = ? AND status = 'pending'`,
+    )
+    .bind(body?.reason?.trim() || null, now, now, resignId, user.tenantId, user.userId)
+    .run();
+  if (!result.meta.changes) return json(request, env, { error: "Resignation not found, not yours, or not pending." }, 404);
+  return json(request, env, { ok: true, id: resignId, status: "withdrawn" });
+}
+
+// ── Leave Policy Handlers ─────────────────────────────────────────────────────
+
+async function handleListLeavePolicies(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, leave_type, accrual_type, accrual_days, max_balance,
+              carry_forward_max, encashment_eligible, probation_lock_months, requires_approval,
+              created_at, updated_at
+       FROM leave_policies
+       WHERE company_id = ?
+       ORDER BY leave_type ASC`,
+    )
+    .bind(user.tenantId)
+    .all();
+  return json(request, env, { policies: rows.results });
+}
+
+async function handleUpsertLeavePolicy(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{
+    leaveType?: string;
+    accrualType?: string;
+    accrualDays?: number;
+    maxBalance?: number;
+    carryForwardMax?: number;
+    encashmentEligible?: boolean;
+    probationLockMonths?: number;
+    requiresApproval?: boolean;
+  }>(request);
+  if (!body?.leaveType?.trim()) return json(request, env, { error: "leaveType is required." }, 400);
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  await env.HRMS
+    .prepare(
+      `INSERT INTO leave_policies
+         (id, company_id, leave_type, accrual_type, accrual_days, max_balance,
+          carry_forward_max, encashment_eligible, probation_lock_months, requires_approval,
+          created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(company_id, leave_type) DO UPDATE SET
+         accrual_type = excluded.accrual_type,
+         accrual_days = excluded.accrual_days,
+         max_balance = excluded.max_balance,
+         carry_forward_max = excluded.carry_forward_max,
+         encashment_eligible = excluded.encashment_eligible,
+         probation_lock_months = excluded.probation_lock_months,
+         requires_approval = excluded.requires_approval,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      id, user.tenantId, body.leaveType.trim(),
+      body.accrualType ?? "yearly",
+      body.accrualDays ?? 18,
+      body.maxBalance ?? 45,
+      body.carryForwardMax ?? 15,
+      (body.encashmentEligible ?? false) ? 1 : 0,
+      body.probationLockMonths ?? 0,
+      (body.requiresApproval ?? true) ? 1 : 0,
+      user.userId, now, now,
+    )
+    .run();
+  return json(request, env, { ok: true });
+}
+
+async function handleCreditLeaveBalances(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ leaveType?: string; year?: number }>(request);
+  if (!body?.leaveType) return json(request, env, { error: "leaveType is required." }, 400);
+
+  const year = body.year ?? new Date().getFullYear();
+  const policy = await env.HRMS
+    .prepare(`SELECT * FROM leave_policies WHERE company_id = ? AND leave_type = ? LIMIT 1`)
+    .bind(user.tenantId, body.leaveType)
+    .first<{ accrual_days: number; max_balance: number }>();
+  if (!policy) return json(request, env, { error: "No policy found for this leave type." }, 404);
+
+  const users = await env.HRMS
+    .prepare(`SELECT id FROM users WHERE COALESCE(company_id, org_id) = ? AND LOWER(status) NOT IN ('inactive','disabled')`)
+    .bind(user.tenantId)
+    .all<{ id: string }>();
+
+  const now = nowIso();
+  let credited = 0;
+  for (const emp of users.results) {
+    const existing = await env.HRMS
+      .prepare(`SELECT id, total FROM leave_balances WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND leave_type = ? AND year = ?`)
+      .bind(user.tenantId, emp.id, body.leaveType, year)
+      .first<{ id: string; total: number }>();
+    if (existing) {
+      const newTotal = Math.min(existing.total + policy.accrual_days, policy.max_balance);
+      await env.HRMS
+        .prepare(`UPDATE leave_balances SET total = ?, remaining = ? - used - pending, updated_at = ? WHERE id = ?`)
+        .bind(newTotal, newTotal, now, existing.id)
+        .run();
+    } else {
+      await env.HRMS
+        .prepare(
+          `INSERT INTO leave_balances (id, company_id, org_id, user_id, leave_type, year, total, used, pending, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), user.tenantId, user.tenantId, emp.id, body.leaveType, year,
+          Math.min(policy.accrual_days, policy.max_balance), now, now)
+        .run();
+    }
+    credited++;
+  }
+  return json(request, env, { ok: true, credited, year, leaveType: body.leaveType });
+}
+
+// ── WFH Request Handlers ──────────────────────────────────────────────────────
+
+async function handleListWfhRequests(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const statusFilter = url.searchParams.get("status");
+  if (isHrManager(user.role)) {
+    let sql = `SELECT w.id, w.user_id, w.user_name, w.wfh_date, w.reason, w.status,
+                      w.decided_by, w.decided_at, w.decision_note, w.created_at
+               FROM wfh_requests w
+               WHERE w.company_id = ?`;
+    const params: (string | number)[] = [user.tenantId];
+    if (statusFilter) { sql += ` AND w.status = ?`; params.push(statusFilter); }
+    sql += ` ORDER BY w.wfh_date DESC LIMIT 200`;
+    const rows = await env.HRMS.prepare(sql).bind(...params).all();
+    return json(request, env, { wfhRequests: rows.results });
+  } else {
+    const rows = await env.HRMS
+      .prepare(
+        `SELECT id, wfh_date, reason, status, decided_at, decision_note, created_at
+         FROM wfh_requests WHERE company_id = ? AND user_id = ? ORDER BY wfh_date DESC LIMIT 60`,
+      )
+      .bind(user.tenantId, user.userId)
+      .all();
+    return json(request, env, { wfhRequests: rows.results });
+  }
+}
+
+async function handleCreateWfhRequest(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{ wfhDate?: string; reason?: string }>(request);
+  if (!body?.wfhDate || !body.reason?.trim()) {
+    return json(request, env, { error: "wfhDate and reason are required." }, 400);
+  }
+  const userName = await env.HRMS
+    .prepare(`SELECT name FROM users WHERE id = ? LIMIT 1`)
+    .bind(user.userId)
+    .first<{ name: string }>();
+  const now = nowIso();
+  const id = crypto.randomUUID();
+  try {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO wfh_requests (id, company_id, user_id, user_name, wfh_date, reason, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      )
+      .bind(id, user.tenantId, user.userId, userName?.name ?? user.userId,
+        body.wfhDate, body.reason.trim(), now, now)
+      .run();
+  } catch {
+    return json(request, env, { error: "A WFH request for that date already exists." }, 409);
+  }
+
+  // Notify HR managers
+  const managers = await env.HRMS
+    .prepare(`SELECT id FROM users WHERE COALESCE(company_id, org_id) = ? AND LOWER(role) IN ('admin','hr admin','hr_admin','hr manager','hr_manager') AND LOWER(COALESCE(status,'active')) NOT IN ('inactive','disabled')`)
+    .bind(user.tenantId)
+    .all<{ id: string }>();
+  await Promise.all(managers.results.map((m) =>
+    createNotification(env.HRMS, {
+      companyId: user.tenantId, userId: m.id, type: "wfh_request",
+      title: "🏠 WFH Request",
+      body: `${userName?.name ?? "An employee"} requested WFH on ${body.wfhDate}.`,
+      link: "/hrms/attendance",
+    }),
+  ));
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleWfhDecision(
+  wfhId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ decision?: string; note?: string }>(request);
+  if (!body?.decision || !["approved", "rejected"].includes(body.decision)) {
+    return json(request, env, { error: "decision must be approved or rejected." }, 400);
+  }
+  const wfh = await env.HRMS
+    .prepare(`SELECT id, user_id, wfh_date, status FROM wfh_requests WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(wfhId, user.tenantId)
+    .first<{ id: string; user_id: string; wfh_date: string; status: string }>();
+  if (!wfh) return json(request, env, { error: "WFH request not found." }, 404);
+  if (wfh.status !== "pending") return json(request, env, { error: "Only pending requests can be decided." }, 409);
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE wfh_requests SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, updated_at = ? WHERE id = ?`)
+    .bind(body.decision, user.userId, now, body.note?.trim() || null, now, wfhId)
+    .run();
+
+  // If approved → upsert attendance record as WFH
+  if (body.decision === "approved") {
+    const existing = await env.HRMS
+      .prepare(`SELECT id FROM attendance WHERE COALESCE(company_id, org_id) = ? AND user_id = ? AND attendance_date = ? LIMIT 1`)
+      .bind(user.tenantId, wfh.user_id, wfh.wfh_date)
+      .first<{ id: string }>();
+    if (existing) {
+      await env.HRMS
+        .prepare(`UPDATE attendance SET status = 'wfh', updated_at = ? WHERE id = ?`)
+        .bind(now, existing.id)
+        .run();
+    } else {
+      await env.HRMS
+        .prepare(`INSERT INTO attendance (id, company_id, org_id, user_id, attendance_date, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'wfh', ?, ?)`)
+        .bind(crypto.randomUUID(), user.tenantId, user.tenantId, wfh.user_id, wfh.wfh_date, now, now)
+        .run();
+    }
+  }
+
+  // Notify employee
+  await createNotification(env.HRMS, {
+    companyId: user.tenantId, userId: wfh.user_id, type: "wfh_decision",
+    title: body.decision === "approved" ? "✅ WFH Approved" : "❌ WFH Rejected",
+    body: `Your WFH request for ${wfh.wfh_date} was ${body.decision}.`,
+    link: "/hrms/attendance",
+  });
+
+  return json(request, env, { ok: true, id: wfhId, status: body.decision });
+}
+
+// ── Expense Reimbursement + Policy Handlers ───────────────────────────────────
+
+async function handleReimburseExpense(
+  claimId: string, request: Request, env: Env, user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ paymentRef?: string }>(request);
+  const claim = await env.HRMS
+    .prepare(`SELECT id, status, user_id, amount FROM expense_claims WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(claimId, user.tenantId)
+    .first<{ id: string; status: string; user_id: string; amount: number }>();
+  if (!claim) return json(request, env, { error: "Claim not found." }, 404);
+  if (claim.status !== "approved") return json(request, env, { error: "Only approved claims can be reimbursed." }, 409);
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE expense_claims SET status = 'reimbursed', reimbursed_at = ?, reimbursed_by = ?, payment_ref = ?, updated_at = ? WHERE id = ?`)
+    .bind(now, user.userId, body?.paymentRef?.trim() || null, now, claimId)
+    .run();
+
+  await createNotification(env.HRMS, {
+    companyId: user.tenantId, userId: claim.user_id, type: "expense_reimbursed",
+    title: "💵 Expense Reimbursed",
+    body: `Your expense claim of ₹${claim.amount.toLocaleString("en-IN")} has been reimbursed.`,
+    link: "/hrms/expenses",
+  });
+
+  return json(request, env, { ok: true, id: claimId, status: "reimbursed" });
+}
+
+async function handleListExpensePolicies(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const rows = await env.HRMS
+    .prepare(`SELECT id, category, max_amount, requires_receipt_above, created_at, updated_at FROM expense_policies WHERE company_id = ? ORDER BY category`)
+    .bind(user.tenantId)
+    .all();
+  return json(request, env, { policies: rows.results });
+}
+
+async function handleUpsertExpensePolicy(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ category?: string; maxAmount?: number; requiresReceiptAbove?: number }>(request);
+  if (!body?.category?.trim()) return json(request, env, { error: "category is required." }, 400);
+  const now = nowIso();
+  const id = crypto.randomUUID();
+  await env.HRMS
+    .prepare(
+      `INSERT INTO expense_policies (id, company_id, category, max_amount, requires_receipt_above, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(company_id, category) DO UPDATE SET
+         max_amount = excluded.max_amount,
+         requires_receipt_above = excluded.requires_receipt_above,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(id, user.tenantId, body.category.trim(), body.maxAmount ?? 0, body.requiresReceiptAbove ?? 500, user.userId, now, now)
+    .run();
+  return json(request, env, { ok: true });
+}
+
+// ── Loan & Advance Handlers ───────────────────────────────────────────────────
+
+async function handleListLoans(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const statusFilter = url.searchParams.get("status");
+  if (isHrManager(user.role)) {
+    let sql = `SELECT id, user_id, user_name, loan_type, amount, emi_amount, emi_months,
+                      emis_paid, outstanding, purpose, status, approved_by, approved_at,
+                      rejection_note, disburse_ref, disbursed_at, created_at
+               FROM employee_loans
+               WHERE company_id = ?`;
+    const params: (string | number)[] = [user.tenantId];
+    if (statusFilter) { sql += ` AND status = ?`; params.push(statusFilter); }
+    sql += ` ORDER BY created_at DESC LIMIT 200`;
+    const rows = await env.HRMS.prepare(sql).bind(...params).all();
+    return json(request, env, { loans: rows.results });
+  } else {
+    const rows = await env.HRMS
+      .prepare(
+        `SELECT id, loan_type, amount, emi_amount, emi_months, emis_paid, outstanding,
+                purpose, status, approved_at, rejection_note, disburse_ref, disbursed_at, created_at
+         FROM employee_loans WHERE company_id = ? AND user_id = ? ORDER BY created_at DESC`,
+      )
+      .bind(user.tenantId, user.userId)
+      .all();
+    return json(request, env, { loans: rows.results });
+  }
+}
+
+async function handleApplyLoan(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const body = await readJsonBody<{
+    loanType?: string;
+    amount?: number;
+    emiMonths?: number;
+    purpose?: string;
+  }>(request);
+  if (!body?.amount || body.amount <= 0) return json(request, env, { error: "Amount is required." }, 400);
+  const loanType = body.loanType?.trim() || "salary_advance";
+  const emiMonths = Math.max(1, body.emiMonths ?? 1);
+  const emiAmount = Math.ceil(body.amount / emiMonths);
+
+  const userName = await env.HRMS
+    .prepare(`SELECT name FROM users WHERE id = ? LIMIT 1`)
+    .bind(user.userId)
+    .first<{ name: string }>();
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  await env.HRMS
+    .prepare(
+      `INSERT INTO employee_loans
+         (id, company_id, user_id, user_name, loan_type, amount, emi_amount, emi_months,
+          emis_paid, outstanding, purpose, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'pending', ?, ?)`,
+    )
+    .bind(
+      id, user.tenantId, user.userId, userName?.name ?? user.userId,
+      loanType, body.amount, emiAmount, emiMonths,
+      body.amount, body.purpose?.trim() || null, now, now,
+    )
+    .run();
+
+  const managers = await env.HRMS
+    .prepare(
+      `SELECT id FROM users
+       WHERE COALESCE(company_id, org_id) = ?
+         AND LOWER(role) IN ('admin','hr admin','hr_admin','hr manager','hr_manager')
+         AND LOWER(COALESCE(status,'active')) NOT IN ('inactive','disabled')`,
+    )
+    .bind(user.tenantId)
+    .all<{ id: string }>();
+  await Promise.all(managers.results.map((m) =>
+    createNotification(env.HRMS, {
+      companyId: user.tenantId, userId: m.id, type: "loan_request",
+      title: "💰 Loan Application",
+      body: `${userName?.name ?? "An employee"} applied for a ${loanType.replace(/_/g, " ")} of ₹${body.amount!.toLocaleString("en-IN")}.`,
+      link: "/hrms/loans",
+    }),
+  ));
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleLoanDecision(loanId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ decision?: string; rejectionNote?: string; disburseRef?: string }>(request);
+  if (!body?.decision || !["approved", "rejected"].includes(body.decision)) {
+    return json(request, env, { error: "decision must be approved or rejected." }, 400);
+  }
+  const loan = await env.HRMS
+    .prepare(`SELECT id, user_id, amount, user_name, status FROM employee_loans WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(loanId, user.tenantId)
+    .first<{ id: string; user_id: string; amount: number; user_name: string; status: string }>();
+  if (!loan) return json(request, env, { error: "Loan not found." }, 404);
+  if (loan.status !== "pending") return json(request, env, { error: "Only pending loans can be decided." }, 409);
+
+  const now = nowIso();
+  if (body.decision === "approved") {
+    await env.HRMS
+      .prepare(
+        `UPDATE employee_loans
+         SET status = 'active', approved_by = ?, approved_at = ?, disburse_ref = ?, disbursed_at = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(user.userId, now, body.disburseRef?.trim() || null, now, now, loanId)
+      .run();
+  } else {
+    await env.HRMS
+      .prepare(
+        `UPDATE employee_loans
+         SET status = 'rejected', approved_by = ?, approved_at = ?, rejection_note = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(user.userId, now, body.rejectionNote?.trim() || null, now, loanId)
+      .run();
+  }
+
+  await createNotification(env.HRMS, {
+    companyId: user.tenantId, userId: loan.user_id, type: "loan_decision",
+    title: body.decision === "approved" ? "✅ Loan Approved" : "❌ Loan Rejected",
+    body: body.decision === "approved"
+      ? `Your loan of ₹${loan.amount.toLocaleString("en-IN")} has been approved and disbursed.`
+      : `Your loan application was rejected.${body.rejectionNote ? ` Reason: ${body.rejectionNote}` : ""}`,
+    link: "/hrms/loans",
+  });
+
+  return json(request, env, { ok: true, id: loanId, status: body.decision === "approved" ? "active" : "rejected" });
+}
+
+async function handleCloseLoan(loanId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const loan = await env.HRMS
+    .prepare(`SELECT id, user_id, status FROM employee_loans WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(loanId, user.tenantId)
+    .first<{ id: string; user_id: string; status: string }>();
+  if (!loan) return json(request, env, { error: "Loan not found." }, 404);
+  if (loan.status !== "active") return json(request, env, { error: "Only active loans can be closed." }, 409);
+
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`UPDATE employee_loans SET status = 'closed', outstanding = 0, updated_at = ? WHERE id = ?`)
+    .bind(now, loanId)
+    .run();
+  await createNotification(env.HRMS, {
+    companyId: user.tenantId, userId: loan.user_id, type: "loan_closed",
+    title: "🎉 Loan Closed",
+    body: "Your loan has been fully repaid and closed.",
+    link: "/hrms/loans",
+  });
+  return json(request, env, { ok: true, id: loanId, status: "closed" });
+}
+
+async function handleRecordLoanEmi(loanId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ monthKey?: string; emiAmount?: number }>(request);
+  if (!body?.monthKey) return json(request, env, { error: "monthKey (YYYY-MM) is required." }, 400);
+
+  const loan = await env.HRMS
+    .prepare(
+      `SELECT id, user_id, emi_amount, emi_months, emis_paid, outstanding, status
+       FROM employee_loans WHERE id = ? AND company_id = ? LIMIT 1`,
+    )
+    .bind(loanId, user.tenantId)
+    .first<{ id: string; user_id: string; emi_amount: number; emi_months: number; emis_paid: number; outstanding: number; status: string }>();
+  if (!loan) return json(request, env, { error: "Loan not found." }, 404);
+  if (loan.status !== "active") return json(request, env, { error: "Loan is not active." }, 409);
+
+  const deductAmount = body.emiAmount ?? loan.emi_amount;
+  const now = nowIso();
+  try {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO loan_emis (id, loan_id, company_id, user_id, month_key, emi_amount, status, deducted_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'deducted', ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), loanId, user.tenantId, loan.user_id, body.monthKey, deductAmount, now, now)
+      .run();
+  } catch {
+    return json(request, env, { error: "EMI already recorded for this month." }, 409);
+  }
+
+  const newOutstanding = Math.max(0, loan.outstanding - deductAmount);
+  const newEmisPaid = loan.emis_paid + 1;
+  const newStatus = newOutstanding === 0 || newEmisPaid >= loan.emi_months ? "closed" : "active";
+
+  await env.HRMS
+    .prepare(`UPDATE employee_loans SET emis_paid = ?, outstanding = ?, status = ?, updated_at = ? WHERE id = ?`)
+    .bind(newEmisPaid, newOutstanding, newStatus, now, loanId)
+    .run();
+
+  return json(request, env, { ok: true, outstanding: newOutstanding, status: newStatus, emisPaid: newEmisPaid });
+}
+
+// ── Full & Final Settlement Handlers ─────────────────────────────────────────
+
+async function handleListFnf(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, user_id, user_name, last_working_day, pending_salary, leave_encashment,
+              gratuity, bonus, other_earnings, loan_recovery, tds_recovery, other_deductions,
+              gross_payable, total_deductions, net_payable, status,
+              approved_at, disbursed_at, payment_ref, notes, created_at
+       FROM fnf_settlements WHERE company_id = ? ORDER BY created_at DESC`,
+    )
+    .bind(user.tenantId)
+    .all();
+  return json(request, env, { settlements: rows.results });
+}
+
+async function handleComputeFnf(targetUserId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const emp = await env.HRMS
+    .prepare(`SELECT id, name, COALESCE(joined_on, created_at) as joined_on FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(targetUserId, user.tenantId)
+    .first<{ id: string; name: string; joined_on: string }>();
+  if (!emp) return json(request, env, { error: "Employee not found." }, 404);
+
+  const salRow = await env.HRMS
+    .prepare(`SELECT annual_ctc FROM employee_salaries WHERE COALESCE(company_id, org_id) = ? AND user_id = ? LIMIT 1`)
+    .bind(user.tenantId, targetUserId)
+    .first<{ annual_ctc: number }>();
+  const annualCtc = salRow?.annual_ctc ?? 0;
+  const monthlySalary = Math.round(annualCtc / 12);
+
+  const structRow = await env.HRMS
+    .prepare(`SELECT basic_pct FROM salary_structures WHERE company_id = ? AND user_id = ? LIMIT 1`)
+    .bind(user.tenantId, targetUserId)
+    .first<{ basic_pct: number }>();
+  const basicPct = structRow?.basic_pct ?? 50;
+  const monthlyBasic = Math.round(monthlySalary * basicPct / 100);
+
+  // Gratuity: statutory (Payment of Gratuity Act) — eligible after 5 years
+  const joinDate = new Date(emp.joined_on);
+  const today = new Date();
+  const yearsOfService = (today.getTime() - joinDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000);
+  const completeYears = Math.floor(yearsOfService);
+  const gratuity = yearsOfService >= 5
+    ? Math.round((15 * monthlyBasic * completeYears) / 26)
+    : 0;
+
+  // Leave encashment: only encashment-eligible leave types
+  const currentYear = today.getFullYear();
+  const balances = await env.HRMS
+    .prepare(
+      `SELECT lb.leave_type, lb.remaining, lp.encashment_eligible
+       FROM leave_balances lb
+       LEFT JOIN leave_policies lp
+         ON lp.company_id = COALESCE(lb.company_id, lb.org_id) AND lp.leave_type = lb.leave_type
+       WHERE COALESCE(lb.company_id, lb.org_id) = ? AND lb.user_id = ? AND lb.year = ?`,
+    )
+    .bind(user.tenantId, targetUserId, currentYear)
+    .all<{ leave_type: string; remaining: number; encashment_eligible: number }>();
+  const perDayRate = annualCtc > 0 ? Math.round(annualCtc / 365) : 0;
+  let leaveEncashment = 0;
+  for (const b of balances.results) {
+    if (b.encashment_eligible) leaveEncashment += (b.remaining ?? 0) * perDayRate;
+  }
+  leaveEncashment = Math.round(leaveEncashment);
+
+  // Outstanding loan recovery
+  const loansRow = await env.HRMS
+    .prepare(`SELECT COALESCE(SUM(outstanding), 0) as total FROM employee_loans WHERE company_id = ? AND user_id = ? AND status = 'active'`)
+    .bind(user.tenantId, targetUserId)
+    .first<{ total: number }>();
+  const loanRecovery = loansRow?.total ?? 0;
+
+  const grossPayable = monthlySalary + leaveEncashment + gratuity;
+  const totalDeductions = loanRecovery;
+  const netPayable = Math.max(0, grossPayable - totalDeductions);
+
+  return json(request, env, {
+    userId: targetUserId,
+    name: emp.name,
+    annualCtc,
+    monthlySalary,
+    yearsOfService: parseFloat(yearsOfService.toFixed(2)),
+    completeYears,
+    gratuityEligible: yearsOfService >= 5,
+    computed: {
+      pendingSalary: monthlySalary,
+      leaveEncashment,
+      gratuity,
+      bonus: 0,
+      otherEarnings: 0,
+      loanRecovery,
+      tdsRecovery: 0,
+      otherDeductions: 0,
+      grossPayable,
+      totalDeductions,
+      netPayable,
+    },
+  });
+}
+
+async function handleCreateFnf(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{
+    userId?: string;
+    exitId?: string;
+    lastWorkingDay?: string;
+    pendingSalary?: number;
+    leaveEncashment?: number;
+    gratuity?: number;
+    bonus?: number;
+    otherEarnings?: number;
+    loanRecovery?: number;
+    tdsRecovery?: number;
+    otherDeductions?: number;
+    notes?: string;
+  }>(request);
+  if (!body?.userId || !body.lastWorkingDay) {
+    return json(request, env, { error: "userId and lastWorkingDay are required." }, 400);
+  }
+
+  const emp = await env.HRMS
+    .prepare(`SELECT name FROM users WHERE id = ? AND COALESCE(company_id, org_id) = ? LIMIT 1`)
+    .bind(body.userId, user.tenantId)
+    .first<{ name: string }>();
+  if (!emp) return json(request, env, { error: "Employee not found." }, 404);
+
+  const pendingSalary  = body.pendingSalary    ?? 0;
+  const leaveEncash    = body.leaveEncashment  ?? 0;
+  const gratuity       = body.gratuity         ?? 0;
+  const bonus          = body.bonus            ?? 0;
+  const otherEarnings  = body.otherEarnings    ?? 0;
+  const loanRecovery   = body.loanRecovery     ?? 0;
+  const tdsRecovery    = body.tdsRecovery      ?? 0;
+  const otherDed       = body.otherDeductions  ?? 0;
+  const grossPayable   = pendingSalary + leaveEncash + gratuity + bonus + otherEarnings;
+  const totalDed       = loanRecovery + tdsRecovery + otherDed;
+  const netPayable     = Math.max(0, grossPayable - totalDed);
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  await env.HRMS
+    .prepare(
+      `INSERT INTO fnf_settlements
+         (id, company_id, user_id, user_name, exit_id, last_working_day,
+          pending_salary, leave_encashment, gratuity, bonus, other_earnings,
+          loan_recovery, tds_recovery, other_deductions,
+          gross_payable, total_deductions, net_payable, notes, status, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
+    )
+    .bind(
+      id, user.tenantId, body.userId, emp.name, body.exitId || null, body.lastWorkingDay,
+      pendingSalary, leaveEncash, gratuity, bonus, otherEarnings,
+      loanRecovery, tdsRecovery, otherDed,
+      grossPayable, totalDed, netPayable,
+      body.notes?.trim() || null, user.userId, now, now,
+    )
+    .run();
+
+  return json(request, env, { ok: true, id }, 201);
+}
+
+async function handleFnfAction(
+  fnfId: string,
+  action: "approve" | "disburse",
+  request: Request,
+  env: Env,
+  user: ApiUser,
+): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const fnf = await env.HRMS
+    .prepare(`SELECT id, user_id, status, net_payable FROM fnf_settlements WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(fnfId, user.tenantId)
+    .first<{ id: string; user_id: string; status: string; net_payable: number }>();
+  if (!fnf) return json(request, env, { error: "Settlement not found." }, 404);
+
+  const now = nowIso();
+  if (action === "approve") {
+    if (fnf.status !== "draft") return json(request, env, { error: "Only draft settlements can be approved." }, 409);
+    await env.HRMS
+      .prepare(`UPDATE fnf_settlements SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?`)
+      .bind(user.userId, now, now, fnfId)
+      .run();
+    await createNotification(env.HRMS, {
+      companyId: user.tenantId, userId: fnf.user_id, type: "fnf_approved",
+      title: "✅ F&F Approved",
+      body: `Your Full & Final settlement of ₹${fnf.net_payable.toLocaleString("en-IN")} has been approved.`,
+      link: "/hrms/exit",
+    });
+  } else {
+    if (fnf.status !== "approved") return json(request, env, { error: "Only approved settlements can be disbursed." }, 409);
+    const body = await readJsonBody<{ paymentRef?: string }>(request);
+    await env.HRMS
+      .prepare(`UPDATE fnf_settlements SET status = 'disbursed', disbursed_by = ?, disbursed_at = ?, payment_ref = ?, updated_at = ? WHERE id = ?`)
+      .bind(user.userId, now, body?.paymentRef?.trim() || null, now, fnfId)
+      .run();
+    await createNotification(env.HRMS, {
+      companyId: user.tenantId, userId: fnf.user_id, type: "fnf_disbursed",
+      title: "💰 F&F Disbursed",
+      body: `Your Full & Final settlement of ₹${fnf.net_payable.toLocaleString("en-IN")} has been disbursed.`,
+      link: "/hrms/exit",
+    });
+  }
+  return json(request, env, { ok: true, id: fnfId, status: action === "approve" ? "approved" : "disbursed" });
 }
 
 // ── Recruitment Handlers ──────────────────────────────────────────────────────
@@ -2297,12 +4049,14 @@ Answer helpfully and concisely. Use bullet points when listing items. If you don
     ...body.messages.map((m) => ({ role: m.role, content: m.content })),
   ];
 
+  const refererBase = env.HRMS_BASE_URL ?? new URL(request.url).origin;
+
   const orResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://vite-react-template.keshavpandit9696.workers.dev",
+      "HTTP-Referer": refererBase,
       "X-Title": "JWithKP HRMS HRBot",
     },
     body: JSON.stringify({
@@ -2361,14 +4115,17 @@ Answer helpfully and concisely. Use bullet points when listing items. If you don
     }
   })();
 
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-      ...withCors(request, env),
-    },
-  });
+  return withCors(
+    new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      },
+    }),
+    request,
+    env,
+  );
 }
 
 // ── Company Settings Handlers ────────────────────────────────────────────────
@@ -2399,10 +4156,25 @@ async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser
       setup_completed: number;
     }>();
 
+  // Fetch company display name with backward-compatible fallback:
+  // some tenants map to organizations.id while others map to companies.id.
+  const company = await env.HRMS
+    .prepare(`SELECT company_name FROM companies WHERE id = ? LIMIT 1`)
+    .bind(user.tenantId)
+    .first<{ company_name: string | null }>();
+
+  const organization = await env.HRMS
+    .prepare(`SELECT name FROM organizations WHERE id = ? LIMIT 1`)
+    .bind(user.tenantId)
+    .first<{ name: string | null }>();
+
+  const companyName = company?.company_name ?? organization?.name ?? null;
+
   if (!row) {
     // Return defaults when no settings row exists yet
     return json(request, env, {
       settings: {
+        companyName,
         timezone: "Asia/Kolkata",
         dateFormat: "DD/MM/YYYY",
         currency: "INR",
@@ -2420,6 +4192,7 @@ async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser
 
   return json(request, env, {
     settings: {
+      companyName,
       timezone: row.timezone,
       dateFormat: row.date_format,
       currency: row.currency,
@@ -2450,9 +4223,27 @@ async function handleSaveTenantSettings(request: Request, env: Env, user: ApiUse
     payrollDay?: number;
     companyLogoUrl?: string | null;
     setupCompleted?: boolean;
+    companyName?: string | null;
   }>(request);
 
+
   if (!body) return json(request, env, { error: "Invalid request body." }, 400);
+
+  // Update company display name in both tables for compatibility.
+  if (body.companyName != null && body.companyName.trim().length > 0) {
+    const trimmedCompanyName = body.companyName.trim();
+    const now = nowIso();
+
+    await env.HRMS
+      .prepare(`UPDATE organizations SET name = ?, updated_at = ? WHERE id = ?`)
+      .bind(trimmedCompanyName, now, user.tenantId)
+      .run();
+
+    await env.HRMS
+      .prepare(`UPDATE companies SET company_name = ?, updated_at = ? WHERE id = ? OR lower(owner_id) = lower(?)`)
+      .bind(trimmedCompanyName, now, user.tenantId, user.email)
+      .run();
+  }
 
   const now = nowIso();
   const existing = await env.HRMS
@@ -3056,6 +4847,279 @@ async function handleReportHeadcount(request: Request, env: Env, user: ApiUser):
   return json(request, env, { rows: rows.results, byDept, byStatus, byType, total });
 }
 
+async function ensureStatutoryFilingsTable(db: D1Database): Promise<void> {
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS statutory_filings (
+         id TEXT PRIMARY KEY,
+         company_id TEXT NOT NULL,
+         filing_type TEXT NOT NULL,
+         period TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'pending',
+         file_path TEXT,
+         filed_by TEXT,
+         filed_at TEXT,
+         error_message TEXT,
+         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         UNIQUE(company_id, filing_type, period)
+       )`,
+    )
+    .run();
+}
+
+async function handleListStatutoryFilings(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  await ensureStatutoryFilingsTable(env.HRMS);
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, filing_type, period, status, file_path, filed_by, filed_at, error_message, created_at, updated_at
+       FROM statutory_filings
+       WHERE company_id = ?
+       ORDER BY period DESC, filing_type ASC`,
+    )
+    .bind(user.tenantId)
+    .all<StatutoryFilingRow>();
+
+  return json(request, env, { filings: rows.results });
+}
+
+async function handleUpsertStatutoryFiling(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const body = await readJsonBody<{
+    filingType?: string;
+    period?: string;
+    status?: "pending" | "filed" | "failed";
+    filePath?: string;
+    errorMessage?: string;
+  }>(request);
+
+  const filingType = body?.filingType?.trim().toUpperCase() ?? "";
+  const period = body?.period?.trim() ?? "";
+  const status = body?.status ?? "filed";
+
+  if (!filingType || !period) {
+    return json(request, env, { error: "filingType and period are required." }, 400);
+  }
+  if (!["pending", "filed", "failed"].includes(status)) {
+    return json(request, env, { error: "status must be pending, filed, or failed." }, 400);
+  }
+
+  await ensureStatutoryFilingsTable(env.HRMS);
+  const now = nowIso();
+  await env.HRMS
+    .prepare(
+      `INSERT INTO statutory_filings (id, company_id, filing_type, period, status, file_path, filed_by, filed_at, error_message, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(company_id, filing_type, period)
+       DO UPDATE SET
+         status = excluded.status,
+         file_path = excluded.file_path,
+         filed_by = excluded.filed_by,
+         filed_at = excluded.filed_at,
+         error_message = excluded.error_message,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      user.tenantId,
+      filingType,
+      period,
+      status,
+      body?.filePath?.trim() || null,
+      user.userId,
+      status === "pending" ? null : now,
+      body?.errorMessage?.trim() || null,
+      now,
+      now,
+    )
+    .run();
+
+  return json(request, env, { ok: true });
+}
+
+// ── IT Declaration Handlers ───────────────────────────────────────────────────
+
+interface ITDeclarationRow {
+  id: string;
+  company_id: string;
+  user_id: string;
+  financial_year: string;
+  tax_regime: "new" | "old";
+  ppf: number;
+  elss: number;
+  lic: number;
+  nsc: number;
+  ulip: number;
+  home_loan_principal: number;
+  tuition_fees: number;
+  other_80c: number;
+  medical_self: number;
+  medical_parents: number;
+  monthly_rent: number;
+  is_metro: number;
+  home_loan_interest: number;
+  nps_80ccd1b: number;
+  other_deductions: number;
+  status: "draft" | "submitted" | "approved";
+  submitted_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  user_name?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+async function ensureITDeclarationsTable(db: D1Database): Promise<void> {
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS it_declarations (
+       id TEXT PRIMARY KEY,
+       company_id TEXT NOT NULL,
+       user_id TEXT NOT NULL,
+       financial_year TEXT NOT NULL,
+       tax_regime TEXT NOT NULL DEFAULT 'new',
+       ppf INTEGER NOT NULL DEFAULT 0,
+       elss INTEGER NOT NULL DEFAULT 0,
+       lic INTEGER NOT NULL DEFAULT 0,
+       nsc INTEGER NOT NULL DEFAULT 0,
+       ulip INTEGER NOT NULL DEFAULT 0,
+       home_loan_principal INTEGER NOT NULL DEFAULT 0,
+       tuition_fees INTEGER NOT NULL DEFAULT 0,
+       other_80c INTEGER NOT NULL DEFAULT 0,
+       medical_self INTEGER NOT NULL DEFAULT 0,
+       medical_parents INTEGER NOT NULL DEFAULT 0,
+       monthly_rent INTEGER NOT NULL DEFAULT 0,
+       is_metro INTEGER NOT NULL DEFAULT 0,
+       home_loan_interest INTEGER NOT NULL DEFAULT 0,
+       nps_80ccd1b INTEGER NOT NULL DEFAULT 0,
+       other_deductions INTEGER NOT NULL DEFAULT 0,
+       status TEXT NOT NULL DEFAULT 'draft',
+       submitted_at TEXT,
+       approved_by TEXT,
+       approved_at TEXT,
+       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       UNIQUE(company_id, user_id, financial_year)
+     )`,
+  ).run();
+}
+
+function currentFinancialYear(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1; // 1-indexed
+  // FY starts April 1: if month >= 4, FY is y-(y+1), else (y-1)-y
+  if (m >= 4) return `${y}-${String(y + 1).slice(2)}`;
+  return `${y - 1}-${String(y).slice(2)}`;
+}
+
+async function handleGetITDeclarations(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  await ensureITDeclarationsTable(env.HRMS);
+  const url = new URL(request.url);
+  const fy = url.searchParams.get("fy") ?? currentFinancialYear();
+  const isAdmin = isHrManager(user.role);
+
+  if (isAdmin) {
+    // HR view: all declarations for company, join with user name
+    const rows = await env.HRMS.prepare(
+      `SELECT d.*, u.name AS user_name
+       FROM it_declarations d
+       LEFT JOIN users u ON u.id = d.user_id
+       WHERE d.company_id = ? AND d.financial_year = ?
+       ORDER BY u.name ASC`,
+    ).bind(user.tenantId, fy).all<ITDeclarationRow>();
+    return json(request, env, { declarations: rows.results, financialYear: fy });
+  }
+
+  // Employee view: own declaration only
+  const row = await env.HRMS.prepare(
+    `SELECT * FROM it_declarations
+     WHERE company_id = ? AND user_id = ? AND financial_year = ?`,
+  ).bind(user.tenantId, user.userId, fy).first<ITDeclarationRow>();
+  return json(request, env, { declaration: row ?? null, financialYear: fy });
+}
+
+async function handleUpsertITDeclaration(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  await ensureITDeclarationsTable(env.HRMS);
+
+  const body = await readJsonBody<{
+    financialYear?: string;
+    taxRegime?: string;
+    ppf?: number; elss?: number; lic?: number; nsc?: number; ulip?: number;
+    homeLoanPrincipal?: number; tuitionFees?: number; other80c?: number;
+    medicalSelf?: number; medicalParents?: number;
+    monthlyRent?: number; isMetro?: boolean;
+    homeLoanInterest?: number; nps80ccd1b?: number; otherDeductions?: number;
+    submit?: boolean;
+  }>(request);
+
+  if (!body) return json(request, env, { error: "Invalid request body." }, 400);
+
+  const fy = body.financialYear?.trim() ?? currentFinancialYear();
+  const regime = body.taxRegime === "old" ? "old" : "new";
+  const status = body.submit ? "submitted" : "draft";
+  const now = nowIso();
+
+  // Employees can only upsert their own; HR can upsert for any employee
+  const targetUserId = user.userId;
+
+  const id = `ITD${crypto.randomUUID().replace(/-/g, "").slice(0, 14).toUpperCase()}`;
+
+  await env.HRMS.prepare(
+    `INSERT INTO it_declarations (
+       id, company_id, user_id, financial_year, tax_regime,
+       ppf, elss, lic, nsc, ulip, home_loan_principal, tuition_fees, other_80c,
+       medical_self, medical_parents, monthly_rent, is_metro,
+       home_loan_interest, nps_80ccd1b, other_deductions,
+       status, submitted_at, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(company_id, user_id, financial_year) DO UPDATE SET
+       tax_regime = excluded.tax_regime,
+       ppf = excluded.ppf, elss = excluded.elss, lic = excluded.lic,
+       nsc = excluded.nsc, ulip = excluded.ulip,
+       home_loan_principal = excluded.home_loan_principal,
+       tuition_fees = excluded.tuition_fees, other_80c = excluded.other_80c,
+       medical_self = excluded.medical_self, medical_parents = excluded.medical_parents,
+       monthly_rent = excluded.monthly_rent, is_metro = excluded.is_metro,
+       home_loan_interest = excluded.home_loan_interest,
+       nps_80ccd1b = excluded.nps_80ccd1b, other_deductions = excluded.other_deductions,
+       status = CASE WHEN it_declarations.status = 'approved' THEN 'approved' ELSE excluded.status END,
+       submitted_at = CASE WHEN excluded.status = 'submitted' AND it_declarations.status != 'approved'
+                           THEN excluded.submitted_at ELSE it_declarations.submitted_at END,
+       updated_at = excluded.updated_at`,
+  ).bind(
+    id, user.tenantId, targetUserId, fy, regime,
+    body.ppf ?? 0, body.elss ?? 0, body.lic ?? 0, body.nsc ?? 0, body.ulip ?? 0,
+    body.homeLoanPrincipal ?? 0, body.tuitionFees ?? 0, body.other80c ?? 0,
+    body.medicalSelf ?? 0, body.medicalParents ?? 0,
+    body.monthlyRent ?? 0, body.isMetro ? 1 : 0,
+    body.homeLoanInterest ?? 0, body.nps80ccd1b ?? 0, body.otherDeductions ?? 0,
+    status, status === "submitted" ? now : null,
+    now, now,
+  ).run();
+
+  return json(request, env, { ok: true, status });
+}
+
+async function handleApproveITDeclaration(declId: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  await ensureITDeclarationsTable(env.HRMS);
+
+  const now = nowIso();
+  const result = await env.HRMS.prepare(
+    `UPDATE it_declarations
+     SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ?
+     WHERE id = ? AND company_id = ? AND status = 'submitted'`,
+  ).bind(user.userId, now, now, declId, user.tenantId).run();
+
+  if (result.meta.changes === 0) {
+    return json(request, env, { error: "Declaration not found or not in submitted state." }, 404);
+  }
+  return json(request, env, { ok: true });
+}
+
 // ── Document Handlers ────────────────────────────────────────────────────────
 
 const DOC_CATEGORIES = ["offer-letter", "id-proof", "address-proof", "certificate", "payslip", "contract", "other"] as const;
@@ -3289,4 +5353,272 @@ async function handleDownloadDocument(docId: string, request: Request, env: Env,
   object.writeHttpMetadata(headers);
 
   return new Response(object.body, { headers });
+}
+
+// ── Offer Letters ─────────────────────────────────────────────────────────────
+
+interface OfferLetterRow {
+  id: string;
+  company_id: string;
+  candidate_name: string;
+  candidate_email: string;
+  position: string;
+  department: string | null;
+  start_date: string | null;
+  annual_ctc: number | null;
+  reporting_manager: string | null;
+  probation_days: number;
+  work_location: string | null;
+  expires_at: string | null;
+  status: string;
+  letter_body: string;
+  sent_at: string | null;
+  accepted_at: string | null;
+  rejected_at: string | null;
+  created_by_id: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function generateOfferLetterBody(params: {
+  companyName: string;
+  candidateName: string;
+  position: string;
+  department: string | null;
+  startDate: string | null;
+  annualCtc: number | null;
+  reportingManager: string | null;
+  probationDays: number;
+  workLocation: string | null;
+  expiresAt: string | null;
+}): string {
+  const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+  const startStr = params.startDate
+    ? new Date(params.startDate).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })
+    : "[Start Date TBD]";
+  const ctcStr = params.annualCtc
+    ? `₹${Number(params.annualCtc).toLocaleString("en-IN")} per annum (CTC)`
+    : "[Salary TBD]";
+  const expiryStr = params.expiresAt
+    ? new Date(params.expiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })
+    : "[Expiry Date]";
+
+  return `${params.companyName}
+Date: ${today}
+
+To,
+${params.candidateName}
+
+Subject: Offer of Employment – ${params.position}${params.department ? ` (${params.department})` : ""}
+
+Dear ${params.candidateName},
+
+We are delighted to extend this offer of employment for the position of ${params.position}${params.department ? ` in the ${params.department} department` : ""} at ${params.companyName}.
+
+TERMS OF EMPLOYMENT
+───────────────────────────────────────
+Position:           ${params.position}
+${params.department ? `Department:         ${params.department}\n` : ""}Start Date:         ${startStr}
+Compensation:       ${ctcStr}
+Work Location:      ${params.workLocation ?? "Company premises / Remote as agreed"}
+Reporting To:       ${params.reportingManager ?? "As designated by management"}
+Probation Period:   ${params.probationDays} days
+
+TERMS AND CONDITIONS
+───────────────────────────────────────
+1. This offer is contingent upon successful completion of background verification and submission of all required documents.
+2. During the probation period of ${params.probationDays} days, either party may terminate the employment with 7 days' written notice.
+3. After confirmation, the applicable notice period as per company policy will apply.
+4. This offer is strictly confidential and is intended solely for the addressee.
+5. This offer expires on ${expiryStr}. Please sign and return a copy by this date to confirm your acceptance.
+
+We look forward to you joining our team and believe you will make a valuable contribution to ${params.companyName}.
+
+Please confirm your acceptance of this offer by signing below and returning a copy to us.
+
+Yours sincerely,
+
+___________________________
+Authorized Signatory
+${params.companyName}
+
+
+ACCEPTANCE
+───────────────────────────────────────
+I, ${params.candidateName}, accept the offer of employment for the position of ${params.position} at ${params.companyName} on the terms and conditions set out above.
+
+Signature: ___________________________    Date: ___________________________`;
+}
+
+async function handleListOfferLetters(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const isAdmin = HR_ROLES.has(user.role);
+  let rows: OfferLetterRow[];
+  if (isAdmin) {
+    const result = await env.HRMS
+      .prepare(`SELECT * FROM offer_letters WHERE company_id = ? ORDER BY created_at DESC`)
+      .bind(user.tenantId)
+      .all<OfferLetterRow>();
+    rows = result.results;
+  } else {
+    const result = await env.HRMS
+      .prepare(`SELECT * FROM offer_letters WHERE company_id = ? AND candidate_email = ? ORDER BY created_at DESC`)
+      .bind(user.tenantId, user.email)
+      .all<OfferLetterRow>();
+    rows = result.results;
+  }
+  return json(request, env, { offerLetters: rows });
+}
+
+async function handleCreateOfferLetter(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!HR_ROLES.has(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+  const body = await request.json() as Record<string, unknown>;
+  const candidateName = String(body.candidateName ?? "").trim();
+  const candidateEmail = String(body.candidateEmail ?? "").trim().toLowerCase();
+  const position = String(body.position ?? "").trim();
+  if (!candidateName || !candidateEmail || !position) {
+    return json(request, env, { error: "candidateName, candidateEmail and position are required." }, 400);
+  }
+
+  // Fetch company name for the letter
+  const companyRow = await env.HRMS
+    .prepare(`SELECT name FROM organizations WHERE id = ? LIMIT 1`)
+    .bind(user.tenantId)
+    .first<{ name: string }>();
+  const companyName = companyRow?.name ?? "Our Company";
+
+  const department = body.department ? String(body.department) : null;
+  const startDate = body.startDate ? String(body.startDate) : null;
+  const annualCtc = body.annualCtc != null ? Number(body.annualCtc) : null;
+  const reportingManager = body.reportingManager ? String(body.reportingManager) : null;
+  const probationDays = body.probationDays != null ? Number(body.probationDays) : 90;
+  const workLocation = body.workLocation ? String(body.workLocation) : null;
+  const expiresAt = body.expiresAt ? String(body.expiresAt) : null;
+
+  const letterBody = generateOfferLetterBody({
+    companyName,
+    candidateName,
+    position,
+    department,
+    startDate,
+    annualCtc,
+    reportingManager,
+    probationDays,
+    workLocation,
+    expiresAt,
+  });
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  await env.HRMS
+    .prepare(`INSERT INTO offer_letters
+      (id, company_id, candidate_name, candidate_email, position, department, start_date,
+       annual_ctc, reporting_manager, probation_days, work_location, expires_at, status,
+       letter_body, created_by_id, created_by_name, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'draft',?,?,?,?,?)`)
+    .bind(id, user.tenantId, candidateName, candidateEmail, position, department, startDate,
+      annualCtc, reportingManager, probationDays, workLocation, expiresAt,
+      letterBody, user.userId, user.name, now, now)
+    .run();
+
+  const row = await env.HRMS
+    .prepare(`SELECT * FROM offer_letters WHERE id = ?`)
+    .bind(id)
+    .first<OfferLetterRow>();
+  return json(request, env, { offerLetter: row }, 201);
+}
+
+async function handleGetOfferLetter(id: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const row = await env.HRMS
+    .prepare(`SELECT * FROM offer_letters WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(id, user.tenantId)
+    .first<OfferLetterRow>();
+  if (!row) return json(request, env, { error: "Not found." }, 404);
+  const isAdmin = HR_ROLES.has(user.role);
+  if (!isAdmin && row.candidate_email !== user.email) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+  return json(request, env, { offerLetter: row });
+}
+
+async function handleUpdateOfferLetter(id: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const row = await env.HRMS
+    .prepare(`SELECT * FROM offer_letters WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(id, user.tenantId)
+    .first<OfferLetterRow>();
+  if (!row) return json(request, env, { error: "Not found." }, 404);
+
+  const isAdmin = HR_ROLES.has(user.role);
+  const body = await request.json() as Record<string, unknown>;
+  const now = nowIso();
+
+  // Employee can only accept/reject their own offer
+  if (!isAdmin) {
+    if (row.candidate_email !== user.email) {
+      return json(request, env, { error: "Forbidden." }, 403);
+    }
+    const action = String(body.action ?? "");
+    if (action === "accept") {
+      await env.HRMS.prepare(`UPDATE offer_letters SET status='accepted', accepted_at=?, updated_at=? WHERE id=?`)
+        .bind(now, now, id).run();
+    } else if (action === "reject") {
+      await env.HRMS.prepare(`UPDATE offer_letters SET status='rejected', rejected_at=?, updated_at=? WHERE id=?`)
+        .bind(now, now, id).run();
+    } else {
+      return json(request, env, { error: "Employees may only accept or reject an offer." }, 400);
+    }
+    const updated = await env.HRMS.prepare(`SELECT * FROM offer_letters WHERE id=?`).bind(id).first<OfferLetterRow>();
+    return json(request, env, { offerLetter: updated });
+  }
+
+  // Admin updates
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+
+  if (body.action === "send") {
+    sets.push("status='sent'", "sent_at=?");
+    vals.push(now);
+  } else if (body.action === "withdraw") {
+    sets.push("status='withdrawn'");
+  } else if (body.action === "draft") {
+    sets.push("status='draft'");
+  }
+
+  // Field edits
+  if (body.candidateName !== undefined) { sets.push("candidate_name=?"); vals.push(String(body.candidateName)); }
+  if (body.candidateEmail !== undefined) { sets.push("candidate_email=?"); vals.push(String(body.candidateEmail).toLowerCase()); }
+  if (body.position !== undefined) { sets.push("position=?"); vals.push(String(body.position)); }
+  if (body.department !== undefined) { sets.push("department=?"); vals.push(body.department ? String(body.department) : null); }
+  if (body.startDate !== undefined) { sets.push("start_date=?"); vals.push(body.startDate ? String(body.startDate) : null); }
+  if (body.annualCtc !== undefined) { sets.push("annual_ctc=?"); vals.push(body.annualCtc != null ? Number(body.annualCtc) : null); }
+  if (body.reportingManager !== undefined) { sets.push("reporting_manager=?"); vals.push(body.reportingManager ? String(body.reportingManager) : null); }
+  if (body.probationDays !== undefined) { sets.push("probation_days=?"); vals.push(Number(body.probationDays)); }
+  if (body.workLocation !== undefined) { sets.push("work_location=?"); vals.push(body.workLocation ? String(body.workLocation) : null); }
+  if (body.expiresAt !== undefined) { sets.push("expires_at=?"); vals.push(body.expiresAt ? String(body.expiresAt) : null); }
+  if (body.letterBody !== undefined) { sets.push("letter_body=?"); vals.push(String(body.letterBody)); }
+
+  if (sets.length === 0) return json(request, env, { error: "Nothing to update." }, 400);
+
+  sets.push("updated_at=?");
+  vals.push(now);
+  vals.push(id);
+
+  await env.HRMS.prepare(`UPDATE offer_letters SET ${sets.join(", ")} WHERE id=?`).bind(...vals).run();
+  const updated = await env.HRMS.prepare(`SELECT * FROM offer_letters WHERE id=?`).bind(id).first<OfferLetterRow>();
+  return json(request, env, { offerLetter: updated });
+}
+
+async function handleDeleteOfferLetter(id: string, request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!HR_ROLES.has(user.role)) {
+    return json(request, env, { error: "Forbidden." }, 403);
+  }
+  const row = await env.HRMS
+    .prepare(`SELECT id FROM offer_letters WHERE id = ? AND company_id = ? LIMIT 1`)
+    .bind(id, user.tenantId)
+    .first<{ id: string }>();
+  if (!row) return json(request, env, { error: "Not found." }, 404);
+  await env.HRMS.prepare(`DELETE FROM offer_letters WHERE id = ?`).bind(id).run();
+  return json(request, env, { ok: true });
 }

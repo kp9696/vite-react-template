@@ -3,6 +3,7 @@ import { useFetcher, useNavigate } from "react-router";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 import { isAdminRole } from "../lib/hrms.shared";
+import HRMSLayout from "../components/HRMSLayout";
 import type { Route } from "./+types/hrms.notifications";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ interface LoaderData {
   unreadCount: number;
   webhooks: WebhookRow[];
   isAdmin: boolean;
+  currentUser: { id: string; name: string; role: string; email: string };
 }
 
 // ── Loader ────────────────────────────────────────────────────────────────────
@@ -38,6 +40,7 @@ export async function loader({ request, context }: Route.LoaderArgs): Promise<Lo
   const env = context.cloudflare.env;
   const currentUser = await requireSignedInUser(request, env);
   const admin = isAdminRole(currentUser.role);
+
 
   const [notifData, webhookData] = await Promise.all([
     callCoreHrmsApi<{ notifications: NotificationRow[]; unreadCount: number }>({
@@ -57,6 +60,7 @@ export async function loader({ request, context }: Route.LoaderArgs): Promise<Lo
     unreadCount: notifData?.unreadCount ?? 0,
     webhooks: webhookData?.webhooks ?? [],
     isAdmin: admin,
+    currentUser: { id: currentUser.id, name: currentUser.name, role: currentUser.role, email: currentUser.email },
   };
 }
 
@@ -400,7 +404,7 @@ function NotifItem({
 // ── Default export ────────────────────────────────────────────────────────────
 
 export default function Notifications({ loaderData }: Route.ComponentProps) {
-  const { notifications, unreadCount, webhooks, isAdmin } = loaderData as LoaderData;
+  const { notifications, unreadCount, webhooks, isAdmin, currentUser } = loaderData as LoaderData;
   const fetcher = useFetcher<{ ok: boolean; intent: string }>();
   const navigate = useNavigate();
   const [filter, setFilter] = useState("all");
@@ -443,6 +447,7 @@ export default function Notifications({ loaderData }: Route.ComponentProps) {
   const grouped = groupByDate(filtered);
 
   return (
+    <HRMSLayout currentUser={currentUser}>
     <div style={{ maxWidth: 760, margin: "0 auto", padding: "24px 16px" }}>
 
       {/* ── Page header ── */}
@@ -558,5 +563,6 @@ export default function Notifications({ loaderData }: Route.ComponentProps) {
       {isAdmin && <WebhookPanel webhooks={webhooks} />}
 
     </div>
+    </HRMSLayout>
   );
 }
