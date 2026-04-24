@@ -1,3 +1,75 @@
+/**
+ * Generate Form 16 summary CSV for a given financial year.
+ * This is a simplified version. For official Form 16, use a government utility or certified software.
+ * Columns: Employee Name, PAN, Gross Salary, Total Deductions, Net Salary, Total TDS Deducted
+ * Assumes you have PAN and other required fields in your employee/user table.
+ */
+export function generateForm16CSV(form16Rows: Array<{
+  name: string;
+  pan: string;
+  gross: number;
+  deductions: number;
+  net: number;
+  tds: number;
+}>): string {
+  const header = [
+    "Employee Name", "PAN", "Gross Salary", "Total Deductions", "Net Salary", "Total TDS Deducted"
+  ];
+  const lines = [header.join(",")];
+  for (const row of form16Rows) {
+    lines.push([
+      row.name,
+      row.pan,
+      row.gross,
+      row.deductions,
+      row.net,
+      row.tds
+    ].join(","));
+  }
+  return lines.join("\n");
+}
+/**
+ * Generate ECR (PF) report CSV for a given month.
+ * ECR format: UAN, Member Name, Gross Wages, EPF Wages, EPS Wages, EDLI Wages, EPF Contribution, EPS Contribution, NCP Days, Refund, Reason for NCP
+ * This function assumes you have UAN and other required fields in your employee/user table.
+ * You may need to adjust field mappings as per your schema.
+ */
+export function generateECRCSV(payrollRows: Array<{
+  uan: string;
+  name: string;
+  gross: number;
+  pf: number;
+  basic: number;
+  ncpDays?: number;
+}>): string {
+  const header = [
+    "UAN", "Member Name", "Gross Wages", "EPF Wages", "EPS Wages", "EDLI Wages", "EPF Contribution", "EPS Contribution", "NCP Days", "Refund", "Reason for NCP"
+  ];
+  const lines = [header.join(",")];
+  for (const row of payrollRows) {
+    // For ECR, EPF/EPS/EDLI wages are usually Basic salary, contributions are split
+    const epfWages = row.basic;
+    const epsWages = row.basic;
+    const edliWages = row.basic;
+    const epfContribution = Math.round(row.pf * 0.8333); // Employee share (12%)
+    const epsContribution = Math.round(row.pf * 0.0833 * 100) / 100; // Employer share (8.33%)
+    const ncpDays = row.ncpDays ?? 0;
+    lines.push([
+      row.uan,
+      row.name,
+      row.gross,
+      epfWages,
+      epsWages,
+      edliWages,
+      epfContribution,
+      epsContribution,
+      ncpDays,
+      "",
+      ""
+    ].join(","));
+  }
+  return lines.join("\n");
+}
 export interface PayrollEmployee {
   name: string;
   id: string;
@@ -42,6 +114,13 @@ function currentMonthKey(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+/** Convert a monthKey like '2026-04' to financial year string '2026-27'. */
+function monthKeyToFinancialYear(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  if (m >= 4) return `${y}-${String(y + 1).slice(2)}`;
+  return `${y - 1}-${String(y).slice(2)}`;
+}
+
 function parseAnnualSalaryInInr(raw: string): number {
   const value = raw.trim();
 
@@ -53,6 +132,27 @@ function parseAnnualSalaryInInr(raw: string): number {
   const numeric = value.replace(/[^\d.]/g, "");
   if (!numeric) return 0;
   return Math.round(parseFloat(numeric));
+}
+
+/**
+ * IT Declaration fields used for TDS computation. Mirrors the it_declarations table.
+ * All monetary values are in INR (annual unless noted as monthly).
+ */
+export interface ITDeclarationForPayroll {
+  tax_regime: "new" | "old";
+  // 80C (annual amounts declared)
+  ppf: number; elss: number; lic: number; nsc: number; ulip: number;
+  home_loan_principal: number; tuition_fees: number; other_80c: number;
+  // 80D
+  medical_self: number; medical_parents: number;
+  // HRA
+  monthly_rent: number; is_metro: number; // 0|1
+  // 24(b)
+  home_loan_interest: number;
+  // 80CCD(1B)
+  nps_80ccd1b: number;
+  // other
+  other_deductions: number;
 }
 
 /**
@@ -91,7 +191,81 @@ function computeNewRegimeTDS(annualGross: number): number {
   return Math.round(tax * 1.04);
 }
 
-function computePayrollFromAnnual(annualInr: number): Omit<PayrollEmployee, "name" | "id" | "dept" | "status"> {
+/**
+ * Compute annual income tax under Old Tax Regime (FY 2025-26).
+ * Standard deduction: ₹50,000.
+ * Slabs: 0-2.5L nil, 2.5-5L 5%, 5-10L 20%, >10L 30%.
+ * Rebate u/s 87A: taxable ≤ ₹5L → tax = 0.
+ * Deductions: 80C (cap ₹1.5L), 80D self (cap ₹25k) + parents (cap ₹25k),
+ *             HRA exemption, 24(b) home loan interest (cap ₹2L), 80CCD(1B) (cap ₹50k).
+ * Health & Education Cess: 4%.
+ */
+export function computeOldRegimeTDS(
+  annualGross: number,
+  monthlyBasic: number,
+  monthlyHra: number,
+  decl: ITDeclarationForPayroll,
+): number {
+  // Standard deduction
+  const stdDeduction = 50_000;
+
+  // 80C aggregate cap ₹1,50,000
+  const c80Total = decl.ppf + decl.elss + decl.lic + decl.nsc + decl.ulip
+    + decl.home_loan_principal + decl.tuition_fees + decl.other_80c;
+  const c80 = Math.min(c80Total, 150_000);
+
+  // 80D caps
+  const d80 = Math.min(decl.medical_self, 25_000) + Math.min(decl.medical_parents, 25_000);
+
+  // HRA exemption (per year) — only if employee pays rent
+  let hraExemption = 0;
+  if (decl.monthly_rent > 0) {
+    const rentPA = decl.monthly_rent * 12;
+    const basicPA = monthlyBasic * 12;
+    const hraPA = monthlyHra * 12;
+    const hraActual = hraPA;
+    const hraPercent = decl.is_metro === 1 ? 0.50 : 0.40;
+    const hraPercentOfBasic = Math.round(basicPA * hraPercent);
+    const hraRentBased = Math.max(0, rentPA - Math.round(basicPA * 0.10));
+    hraExemption = Math.min(hraActual, hraPercentOfBasic, hraRentBased);
+  }
+
+  // Section 24(b): home loan interest cap ₹2,00,000
+  const sec24b = Math.min(decl.home_loan_interest, 200_000);
+
+  // 80CCD(1B): additional NPS cap ₹50,000
+  const nps = Math.min(decl.nps_80ccd1b, 50_000);
+
+  const totalDeductions = stdDeduction + c80 + d80 + hraExemption + sec24b + nps + decl.other_deductions;
+  const taxable = Math.max(0, annualGross - totalDeductions);
+
+  if (taxable === 0) return 0;
+
+  const slabs: Array<{ upto: number; rate: number }> = [
+    { upto: 250_000, rate: 0 },
+    { upto: 500_000, rate: 0.05 },
+    { upto: 1_000_000, rate: 0.20 },
+    { upto: Infinity, rate: 0.30 },
+  ];
+
+  let tax = 0;
+  let prev = 0;
+  for (const slab of slabs) {
+    if (taxable <= prev) break;
+    tax += (Math.min(taxable, slab.upto) - prev) * slab.rate;
+    prev = slab.upto;
+  }
+
+  // Rebate u/s 87A — if taxable ≤ ₹5,00,000, tax = 0
+  if (taxable <= 500_000) return 0;
+
+  return Math.round(tax * 1.04);
+}
+
+function computePayrollFromAnnual(
+  annualInr: number,
+  decl?: ITDeclarationForPayroll,
+): Omit<PayrollEmployee, "name" | "id" | "dept" | "status"> {
   const monthlyCtc = Math.round(annualInr / 12);
 
   // Salary structure: Basic 50%, HRA 20%, Special Allowance to fill up to CTC
@@ -111,8 +285,13 @@ function computePayrollFromAnnual(annualInr: number): Omit<PayrollEmployee, "nam
   // Professional Tax: ₹200/month flat (Karnataka / common states)
   const pt = 200;
 
-  // TDS: new tax regime (annualised gross - standard deduction → slabs) / 12
-  const annualTds = computeNewRegimeTDS(gross * 12);
+  // TDS: use declared regime and investments if available, else default to new regime
+  let annualTds: number;
+  if (decl?.tax_regime === "old") {
+    annualTds = computeOldRegimeTDS(gross * 12, basic, hra, decl);
+  } else {
+    annualTds = computeNewRegimeTDS(gross * 12);
+  }
   const tds = Math.round(annualTds / 12);
 
   const deductions = pf + esi + tds + pt;
@@ -180,7 +359,7 @@ export async function runPayrollForMonth(
   db: D1Database,
   companyId: string,
   monthLabel: string,
-): Promise<{ month: string; processed: number; pending: number }> {
+): Promise<{ month: string; monthKey: string; processed: number; pending: number }> {
   await ensurePayrollTables(db);
 
   const monthKey = toMonthKey(monthLabel);
@@ -221,12 +400,44 @@ export async function runPayrollForMonth(
     .bind(companyId, companyId)
     .all<{ id: string; name: string; department: string; annual_ctc: number; status: string }>();
 
+  // Fetch IT declarations (submitted or approved) for this financial year
+  const fy = monthKeyToFinancialYear(monthKey);
+  let declMap = new Map<string, ITDeclarationForPayroll>();
+  try {
+    const declRows = await db
+      .prepare(
+        `SELECT user_id, tax_regime, ppf, elss, lic, nsc, ulip,
+                home_loan_principal, tuition_fees, other_80c,
+                medical_self, medical_parents, monthly_rent, is_metro,
+                home_loan_interest, nps_80ccd1b, other_deductions
+         FROM it_declarations
+         WHERE company_id = ? AND financial_year = ?
+           AND status IN ('submitted', 'approved')`,
+      )
+      .bind(companyId, fy)
+      .all<{ user_id: string } & Omit<ITDeclarationForPayroll, never>>();
+    for (const d of declRows.results) {
+      declMap.set(d.user_id, {
+        tax_regime: (d.tax_regime === "old" ? "old" : "new") as "new" | "old",
+        ppf: d.ppf, elss: d.elss, lic: d.lic, nsc: d.nsc, ulip: d.ulip,
+        home_loan_principal: d.home_loan_principal, tuition_fees: d.tuition_fees, other_80c: d.other_80c,
+        medical_self: d.medical_self, medical_parents: d.medical_parents,
+        monthly_rent: d.monthly_rent, is_metro: d.is_metro,
+        home_loan_interest: d.home_loan_interest, nps_80ccd1b: d.nps_80ccd1b,
+        other_deductions: d.other_deductions,
+      });
+    }
+  } catch {
+    // it_declarations table may not exist yet; proceed with default TDS
+  }
+
   let processed = 0;
   let pending = 0;
 
   for (const emp of employees.results) {
     const annual = Number(emp.annual_ctc ?? 0);
-    const calc = computePayrollFromAnnual(annual);
+    const decl = declMap.get(emp.id);
+    const calc = computePayrollFromAnnual(annual, decl);
     const itemStatus: "Processed" | "Pending" = emp.status.toLowerCase() === "active" ? "Processed" : "Pending";
 
     if (itemStatus === "Processed") processed++;
@@ -292,12 +503,60 @@ export async function runPayrollForMonth(
     .bind(processed, processed + pending, now, runId)
     .run();
 
+  // Auto-create pending statutory filings for this payroll month
+  await upsertPendingFilingsForMonth(db, companyId, monthKey);
+
   return {
     month: toMonthLabel(monthKey),
     monthKey,
     processed,
     pending,
   };
+}
+
+/**
+ * Upserts pending statutory filing placeholders for ECR, TDS, and PT
+ * for the given month. Runs after payroll so the compliance dashboard
+ * pre-populates automatically. Uses ON CONFLICT DO NOTHING so existing
+ * filed/failed records are never overwritten.
+ */
+async function upsertPendingFilingsForMonth(
+  db: D1Database,
+  companyId: string,
+  monthKey: string,
+): Promise<void> {
+  // Ensure table exists (idempotent)
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS statutory_filings (
+         id TEXT PRIMARY KEY,
+         company_id TEXT NOT NULL,
+         filing_type TEXT NOT NULL,
+         period TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'pending',
+         file_path TEXT,
+         filed_by TEXT,
+         filed_at TEXT,
+         error_message TEXT,
+         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         UNIQUE(company_id, filing_type, period)
+       )`,
+    )
+    .run();
+
+  const now = new Date().toISOString();
+  for (const filingType of ["ECR", "TDS", "PT"] as const) {
+    const id = `SF${crypto.randomUUID().replace(/-/g, "").slice(0, 14).toUpperCase()}`;
+    await db
+      .prepare(
+        `INSERT INTO statutory_filings (id, company_id, filing_type, period, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)
+         ON CONFLICT(company_id, filing_type, period) DO NOTHING`,
+      )
+      .bind(id, companyId, filingType, monthKey, now, now)
+      .run();
+  }
 }
 
 export async function getPayrollDashboard(
