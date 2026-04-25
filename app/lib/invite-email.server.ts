@@ -6,6 +6,8 @@ interface InviteEmailPayload {
   email: string;
   role: string;
   department: string;
+  companyId?: string;
+  phone?: string;
 }
 
 function hasMailConfig(env: Env): boolean {

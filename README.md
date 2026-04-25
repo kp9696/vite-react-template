@@ -30,20 +30,43 @@ npx wrangler d1 migrations apply HRMS
 
 ## Required secrets and vars
 
-Set these before production deploy:
+**Never put secrets in `wrangler.json` vars.** Use `wrangler secret put` for all sensitive values.
 
-- `JWT_ACCESS_SECRET`
-- `CORS_ALLOWED_ORIGIN`
+### Set secrets via CLI (required before deploy)
+
+```bash
+npx wrangler secret put JWT_ACCESS_SECRET
+npx wrangler secret put JWT_SECRET
+npx wrangler secret put OPENROUTER_API_KEY
+```
 
 Email provider (choose one path):
 
-- Resend: `RESEND_API_KEY`
-- Microsoft Graph: `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_FROM_EMAIL`
-- Fallback bridge: `EMAIL_API_URL`, `API_KEY`
+```bash
+# Option A — Resend
+npx wrangler secret put RESEND_API_KEY
 
-Optional:
+# Option B — Microsoft Graph
+npx wrangler secret put MS_TENANT_ID
+npx wrangler secret put MS_CLIENT_ID
+npx wrangler secret put MS_CLIENT_SECRET
+npx wrangler secret put MS_FROM_EMAIL
 
-- `HRMS_BASE_URL`
+# Option C — Fallback bridge
+npx wrangler secret put EMAIL_API_URL
+npx wrangler secret put API_KEY
+```
+
+Optional CORS:
+
+```bash
+npx wrangler secret put CORS_ALLOWED_ORIGIN
+```
+
+### Non-sensitive vars (safe in `wrangler.json`)
+
+- `HRMS_BASE_URL` — public worker URL
+- `LOGIN_DEBUG_ENABLED` — debug flag, set to `"false"` in production
 
 ## Local commands
 

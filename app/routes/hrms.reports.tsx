@@ -164,6 +164,24 @@ export default function ReportsPage() {
     downloadCSV(`payroll-${month}.csv`, [header, ...rows] as string[][]);
   }
 
+  // ── Form 16 Export Handler ──
+  async function exportForm16() {
+    try {
+      const year = new Date().getFullYear(); // Optionally, let user select year
+      const res = await fetch(`/api/reports/form16?year=${year}`);
+      if (!res.ok) throw new Error("Failed to export Form 16");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Form16-${year}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Form 16 export failed");
+    }
+  }
+
   function exportAttendance() {
     const header = ["Employee", "Department", "Date", "Status", "Check In", "Check Out", "Hours"];
     const rows = attRows.map(r => [
@@ -237,7 +255,13 @@ export default function ReportsPage() {
               </label>
               <button onClick={applyFilter} style={applyBtn}>Apply</button>
               {payrollRows.length > 0 && (
-                <button onClick={exportPayroll} style={exportBtn}>⬇ Export CSV</button>
+                <>
+                  <button onClick={exportPayroll} style={exportBtn}>⬇ Export CSV</button>
+                  {/* Admin-only: Form 16 Export */}
+                  {currentUser?.role === "admin" && (
+                    <button onClick={exportForm16} style={{ ...exportBtn, marginLeft: 8 }}>⬇ Export Form 16</button>
+                  )}
+                </>
               )}
             </div>
 

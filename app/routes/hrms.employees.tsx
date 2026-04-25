@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.employees";
 import HRMSLayout from "../components/HRMSLayout";
 import {
+  bulkImportEmployees,
   createOrUpdateInvitedUser,
   deleteUser,
   getOrganizationById,
@@ -10,7 +11,7 @@ import {
   listUsers,
   updateUserDetails,
 } from "../lib/hrms.server";
-import type { HRMSUser } from "../lib/hrms.server";
+import type { HRMSUser, ImportEmployeeRow, ImportResult } from "../lib/hrms.server";
 import { sendInviteEmail } from "../lib/invite-email.server";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { isAdminRole, avatarColor, getInitials } from "../lib/hrms.shared";
@@ -20,7 +21,12 @@ const departments = ["Engineering", "Design", "Analytics", "Sales", "People Ops"
 const genders = ["Male", "Female", "Other", "Prefer not to say"];
 const employmentTypes = ["Full-time", "Part-time", "Contract", "Intern", "Consultant"];
 
-type ActionResult = { ok: boolean; message: string; type: "success" | "error" };
+type ActionResult = {
+  ok: boolean;
+  message: string;
+  type: "success" | "error";
+  importResult?: ImportResult;
+};
 
 export function meta() {
   return [{ title: "JWithKP HRMS - Employees" }];
@@ -122,10 +128,275 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
       return { ok: true, type: "success", message: "Employee removed successfully." };
     }
 
+    if (intent === "csv-import") {
+      const rowsJson = String(formData.get("rowsJson") || "[]");
+      const skipDuplicates = formData.get("skipDuplicates") !== "false";
+      let rows: ImportEmployeeRow[];
+      try {
+        rows = JSON.parse(rowsJson);
+        if (!Array.isArray(rows)) throw new Error("Invalid rows");
+      } catch {
+        return { ok: false, type: "error", message: "Could not parse import data." };
+      }
+      if (rows.length === 0) return { ok: false, type: "error", message: "No rows to import." };
+      if (rows.length > 500) return { ok: false, type: "error", message: "Maximum 500 employees per import." };
+
+      const result = await bulkImportEmployees(
+        db,
+        tenantId,
+        rows,
+        skipDuplicates,
+        organization.inviteLimit,
+      );
+
+      if (result.imported === 0 && result.errors.length > 0) {
+        return { ok: false, type: "error", message: `Import failed — ${result.errors.length} error(s). See details below.`, importResult: result };
+      }
+      const msg = `Imported ${result.imported} employee(s)${result.skipped > 0 ? `, skipped ${result.skipped} duplicate(s)` : ""}${result.errors.length > 0 ? `, ${result.errors.length} row error(s)` : ""}.`;
+      return { ok: true, type: "success", message: msg, importResult: result };
+    }
+
     return { ok: false, type: "error", message: "Unknown action." };
   } catch (error) {
     return { ok: false, type: "error", message: error instanceof Error ? error.message : "Something went wrong." };
   }
+}
+
+// ── CSV helpers ───────────────────────────────────────────────────────────────
+
+const CSV_COLUMNS = ["name", "email", "role", "department", "designation", "phone", "gender", "dob", "employmentType", "joinedOn"] as const;
+const CSV_TEMPLATE_HEADER = CSV_COLUMNS.join(",");
+const CSV_TEMPLATE_EXAMPLE = `Priya Sharma,priya.sharma@company.com,Employee,Engineering,Software Engineer,9876543210,Female,1995-06-15,Full-time,2024-01-10
+Rahul Verma,rahul.verma@company.com,Manager,Sales,Sales Manager,9123456789,Male,1988-03-22,Full-time,2023-07-01`;
+
+function downloadCsvTemplate() {
+  const content = [CSV_TEMPLATE_HEADER, CSV_TEMPLATE_EXAMPLE].join("\n");
+  const blob = new Blob([content], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "employee_import_template.csv";
+  a.click(); URL.revokeObjectURL(url);
+}
+
+function parseCsv(text: string): ImportEmployeeRow[] {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim());
+  if (lines.length === 0) return [];
+
+  // Detect header row
+  const firstLine = lines[0].toLowerCase().replace(/\s/g, "");
+  const hasHeader = firstLine.includes("name") || firstLine.includes("email");
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+
+  return dataLines
+    .filter((l) => l.trim())
+    .map((line) => {
+      // Simple CSV parser: handles quoted fields
+      const fields: string[] = [];
+      let cur = ""; let inQuote = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') { inQuote = !inQuote; }
+        else if (ch === "," && !inQuote) { fields.push(cur.trim()); cur = ""; }
+        else { cur += ch; }
+      }
+      fields.push(cur.trim());
+      const [name = "", email = "", role = "", department = "", designation = "", phone = "", gender = "", dob = "", employmentType = "", joinedOn = ""] = fields;
+      return { name, email, role: role || undefined, department: department || undefined, designation: designation || undefined, phone: phone || undefined, gender: gender || undefined, dob: dob || undefined, employmentType: employmentType || undefined, joinedOn: joinedOn || undefined };
+    })
+    .filter((r) => r.name || r.email);
+}
+
+// ── Import Modal ───────────────────────────────────────────────────────────────
+
+function ImportModal({ onClose, fetcher }: { onClose: () => void; fetcher: ReturnType<typeof useFetcher<ActionResult>> }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [rows, setRows] = useState<ImportEmployeeRow[]>([]);
+  const [fileName, setFileName] = useState("");
+  const [parseError, setParseError] = useState("");
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
+  const submitting = fetcher.state !== "idle";
+  const result = fetcher.data?.importResult;
+  const isDone = fetcher.data?.ok !== undefined && fetcher.state === "idle" && result !== undefined;
+
+  const PREVIEW_LIMIT = 8;
+  const preview = rows.slice(0, PREVIEW_LIMIT);
+
+  function handleFile(file: File) {
+    if (!file.name.endsWith(".csv") && file.type !== "text/csv") {
+      setParseError("Please select a .csv file."); return;
+    }
+    setParseError(""); setRows([]); setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = parseCsv(e.target?.result as string);
+        if (parsed.length === 0) { setParseError("No data rows found. Make sure the file has at least one row below the header."); return; }
+        if (parsed.length > 500) { setParseError("Maximum 500 rows per import."); return; }
+        setRows(parsed);
+      } catch {
+        setParseError("Could not parse the CSV file.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function handleSubmit() {
+    if (rows.length === 0 || submitting) return;
+    const fd = new FormData();
+    fd.set("intent", "csv-import");
+    fd.set("rowsJson", JSON.stringify(rows));
+    fd.set("skipDuplicates", String(skipDuplicates));
+    fetcher.submit(fd, { method: "POST" });
+  }
+
+  const ovStyle: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", backdropFilter: "blur(4px)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center" };
+  const boxStyle: React.CSSProperties = { background: "white", borderRadius: 18, width: 760, maxWidth: "calc(100vw - 32px)", maxHeight: "92vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.2)", border: "1px solid #e2e8f0" };
+  const hdrStyle: React.CSSProperties = { padding: "20px 24px", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", justifyContent: "space-between", background: "linear-gradient(135deg,#0ea5e9,#6366f1)", flexShrink: 0 };
+  const bodyStyle: React.CSSProperties = { padding: "24px", overflowY: "auto", flex: 1 };
+  const lblSt: React.CSSProperties = { display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 5, textTransform: "uppercase" as const, letterSpacing: 0.5 };
+
+  return (
+    <div style={ovStyle} onClick={onClose}>
+      <div style={boxStyle} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div style={hdrStyle}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "white", letterSpacing: -0.3 }}>Import Employees from CSV</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 2 }}>Bulk-add up to 500 employees · Status set to "Invited"</div>
+          </div>
+          <button onClick={onClose} style={{ background: "rgba(255,255,255,0.12)", border: "none", color: "white", width: 32, height: 32, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "grid", placeItems: "center" }}>×</button>
+        </div>
+
+        <div style={bodyStyle}>
+          {/* Done state — show result */}
+          {isDone && result ? (
+            <div>
+              <div style={{ padding: "16px 20px", borderRadius: 12, background: fetcher.data?.ok ? "#f0fdf4" : "#fef2f2", border: `1px solid ${fetcher.data?.ok ? "#bbf7d0" : "#fecaca"}`, marginBottom: 20 }}>
+                <div style={{ fontWeight: 700, fontSize: 15, color: fetcher.data?.ok ? "#15803d" : "#dc2626", marginBottom: 6 }}>
+                  {fetcher.data?.ok ? "✓ Import complete" : "Import finished with errors"}
+                </div>
+                <div style={{ fontSize: 13, color: "#334155", display: "flex", gap: 20, flexWrap: "wrap" }}>
+                  <span>✅ <strong>{result.imported}</strong> imported</span>
+                  {result.skipped > 0 && <span>⏭ <strong>{result.skipped}</strong> skipped (duplicates)</span>}
+                  {result.errors.length > 0 && <span>⚠ <strong>{result.errors.length}</strong> row error(s)</span>}
+                </div>
+              </div>
+              {result.errors.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 8, textTransform: "uppercase" }}>Row Errors</div>
+                  <div style={{ maxHeight: 200, overflowY: "auto", borderRadius: 8, border: "1px solid #fecaca", background: "#fef2f2" }}>
+                    {result.errors.map((e, i) => (
+                      <div key={i} style={{ padding: "8px 12px", fontSize: 12, borderBottom: i < result.errors.length - 1 ? "1px solid #fecaca" : "none", color: "#7f1d1d" }}>
+                        {e.row > 0 ? `Row ${e.row}` : "—"}{e.email ? ` · ${e.email}` : ""} — {e.error}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={onClose} style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#0ea5e9,#6366f1)", color: "white", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Done</button>
+                <button onClick={() => { setRows([]); setFileName(""); fetcher.load?.(""); }} style={{ padding: "10px 20px", borderRadius: 10, border: "1.5px solid #e2e8f0", background: "white", color: "#334155", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Import another file</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Step 1 — template */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>Step 1 — Download the template</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>
+                  Columns: <code style={{ background: "#f1f5f9", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>{CSV_TEMPLATE_HEADER}</code>
+                </div>
+                <button onClick={downloadCsvTemplate} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "white", color: "#334155", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+                  <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Download Template CSV
+                </button>
+              </div>
+
+              {/* Step 2 — file upload */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>Step 2 — Upload your CSV</div>
+                <div
+                  style={{ border: "2px dashed #cbd5e1", borderRadius: 12, padding: "24px", textAlign: "center", cursor: "pointer", background: "#f8fafc" }}
+                  onClick={() => fileRef.current?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+                >
+                  <svg style={{ margin: "0 auto 8px", display: "block", color: "#94a3b8" }} width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>{fileName ? fileName : "Click to select or drag & drop your CSV"}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>Max 500 rows · .csv only</div>
+                  <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+                </div>
+                {parseError && <div style={{ marginTop: 8, fontSize: 12, color: "#dc2626" }}>{parseError}</div>}
+              </div>
+
+              {/* Step 3 — preview */}
+              {rows.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>
+                    Step 3 — Preview ({rows.length} row{rows.length !== 1 ? "s" : ""})
+                  </div>
+                  <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: "#f8fafc" }}>
+                          {["#", "Name", "Email", "Role", "Department", "Designation", "Employment Type", "Joining Date"].map((h) => (
+                            <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontWeight: 700, color: "#64748b", borderBottom: "1px solid #e2e8f0", whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.map((r, i) => {
+                          const missingName = !r.name?.trim();
+                          const missingEmail = !r.email?.trim();
+                          const hasError = missingName || missingEmail;
+                          return (
+                            <tr key={i} style={{ background: hasError ? "#fef2f2" : "white", borderBottom: "1px solid #f1f5f9" }}>
+                              <td style={{ padding: "7px 10px", color: "#94a3b8" }}>{i + 1}</td>
+                              <td style={{ padding: "7px 10px", fontWeight: 600, color: missingName ? "#dc2626" : "#0f172a" }}>{r.name || <em style={{ color: "#dc2626" }}>missing</em>}</td>
+                              <td style={{ padding: "7px 10px", color: missingEmail ? "#dc2626" : "#334155" }}>{r.email || <em style={{ color: "#dc2626" }}>missing</em>}</td>
+                              <td style={{ padding: "7px 10px", color: "#334155" }}>{r.role || <span style={{ color: "#94a3b8" }}>Employee</span>}</td>
+                              <td style={{ padding: "7px 10px", color: "#334155" }}>{r.department || <span style={{ color: "#94a3b8" }}>General</span>}</td>
+                              <td style={{ padding: "7px 10px", color: "#64748b" }}>{r.designation || "—"}</td>
+                              <td style={{ padding: "7px 10px", color: "#64748b" }}>{r.employmentType || <span style={{ color: "#94a3b8" }}>Full-time</span>}</td>
+                              <td style={{ padding: "7px 10px", color: "#64748b" }}>{r.joinedOn || "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {rows.length > PREVIEW_LIMIT && (
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6, textAlign: "center" }}>
+                      … and {rows.length - PREVIEW_LIMIT} more row(s) not shown
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Options + submit */}
+              {rows.length > 0 && (
+                <div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155", cursor: "pointer", marginBottom: 20, userSelect: "none" as const }}>
+                    <input type="checkbox" checked={skipDuplicates} onChange={(e) => setSkipDuplicates(e.target.checked)} style={{ width: 15, height: 15 }} />
+                    <span><strong>Skip duplicate emails</strong> — rows whose email already exists will be silently skipped</span>
+                  </label>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button
+                      disabled={submitting}
+                      onClick={handleSubmit}
+                      style={{ padding: "10px 24px", borderRadius: 10, border: "none", background: submitting ? "#cbd5e1" : "linear-gradient(135deg,#0ea5e9,#6366f1)", color: "white", fontWeight: 700, fontSize: 13, cursor: submitting ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+                      {submitting ? `Importing ${rows.length} employee(s)…` : `Import ${rows.length} Employee${rows.length !== 1 ? "s" : ""}`}
+                    </button>
+                    <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1.5px solid #e2e8f0", background: "white", color: "#64748b", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Shared styles ──────────────────────────────────────────────────────────────
@@ -281,8 +552,9 @@ export default function EmployeesPage() {
   const { currentUser, isAdmin, organization, users, memberUsage } = useLoaderData<typeof loader>();
   const actionFetcher = useFetcher<ActionResult>();
   const resendFetcher = useFetcher<ActionResult>();
+  const importFetcher = useFetcher<ActionResult>();
 
-  const [modal, setModal] = useState<null | "add" | "edit" | "delete">(null);
+  const [modal, setModal] = useState<null | "add" | "edit" | "delete" | "import">(null);
   const [selectedUser, setSelectedUser] = useState<HRMSUser | null>(null);
   const [toast, setToast] = useState<ActionResult | null>(null);
   const [search, setSearch] = useState("");
@@ -299,6 +571,12 @@ export default function EmployeesPage() {
   }, [actionFetcher.data]);
 
   useEffect(() => { if (resendFetcher.data) setToast(resendFetcher.data); }, [resendFetcher.data]);
+
+  useEffect(() => {
+    const d = importFetcher.data;
+    if (!d) return;
+    if (d.ok || d.type === "error") setToast(d);
+  }, [importFetcher.data]);
 
   useEffect(() => {
     if (!toast) return;
@@ -382,21 +660,33 @@ export default function EmployeesPage() {
       {modal === "delete" && selectedUser && (
         <DeleteModal user={selectedUser} onClose={() => { setModal(null); setSelectedUser(null); }} fetcher={actionFetcher} />
       )}
+      {modal === "import" && (
+        <ImportModal onClose={() => setModal(null)} fetcher={importFetcher} />
+      )}
 
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
         <div>
           <div className="page-title">Employees</div>
           <div className="page-sub">{organization?.name ?? "Your Organisation"} · {users.length} total · {seatsLeft} seats available</div>
         </div>
-        <button
-          onClick={() => { setSelectedUser(null); setModal("add"); }}
-          disabled={seatsLeft === 0}
-          style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 20px", borderRadius: 10, border: "none", background: seatsLeft === 0 ? "#e2e8f0" : "linear-gradient(135deg,#6366f1,#8b5cf6)", color: seatsLeft === 0 ? "#94a3b8" : "white", fontWeight: 700, fontSize: 13, cursor: seatsLeft === 0 ? "not-allowed" : "pointer", boxShadow: seatsLeft === 0 ? "none" : "0 4px 14px rgba(99,102,241,0.35)", fontFamily: "inherit" }}
-        >
-          <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          Invite Employee
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={() => setModal("import")}
+            style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 18px", borderRadius: 10, border: "1.5px solid #e2e8f0", background: "white", color: "#334155", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Import CSV
+          </button>
+          <button
+            onClick={() => { setSelectedUser(null); setModal("add"); }}
+            disabled={seatsLeft === 0}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 20px", borderRadius: 10, border: "none", background: seatsLeft === 0 ? "#e2e8f0" : "linear-gradient(135deg,#6366f1,#8b5cf6)", color: seatsLeft === 0 ? "#94a3b8" : "white", fontWeight: 700, fontSize: 13, cursor: seatsLeft === 0 ? "not-allowed" : "pointer", boxShadow: seatsLeft === 0 ? "none" : "0 4px 14px rgba(99,102,241,0.35)", fontFamily: "inherit" }}
+          >
+            <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            Invite Employee
+          </button>
+        </div>
       </div>
 
       {/* Stats */}

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.settings";
 import HRMSLayout from "../components/HRMSLayout";
+import { StatutoryFilingsAdmin } from "../components/StatutoryFilingsAdmin";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
 import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
 import { isAdminRole } from "../lib/hrms.shared";
@@ -9,6 +10,7 @@ import { isAdminRole } from "../lib/hrms.shared";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface TenantSettings {
+  companyName: string | null;
   timezone: string;
   dateFormat: string;
   currency: string;
@@ -31,7 +33,7 @@ interface Department {
   member_count: number;
 }
 
-type Tab = "company" | "departments" | "geofence";
+type Tab = "company" | "departments" | "geofence" | "compliance";
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
 
@@ -64,6 +66,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     currentUser,
     isAdmin,
     settings: settingsRes?.settings ?? {
+      companyName: null,
       timezone: "Asia/Kolkata",
       dateFormat: "DD/MM/YYYY",
       currency: "INR",
@@ -96,6 +99,8 @@ export async function action({ request, context }: Route.ActionArgs) {
       path: "/api/tenant/settings",
       method: "POST",
       body: {
+        companyName: String(formData.get("companyName") || "").trim() || undefined,
+        companyLogoUrl: String(formData.get("companyLogoUrl") || "").trim() || null,
         timezone: String(formData.get("timezone") || "Asia/Kolkata"),
         dateFormat: String(formData.get("dateFormat") || "DD/MM/YYYY"),
         currency: String(formData.get("currency") || "INR"),
@@ -150,6 +155,8 @@ export default function SettingsPage() {
   const [newDeptName, setNewDeptName] = useState("");
   const [newDeptDesc, setNewDeptDesc] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [companyLogoData, setCompanyLogoData] = useState<string>(settings.companyLogoUrl ?? "");
+  const [logoError, setLogoError] = useState<string | null>(null);
 
   // Show toast on action result
   useEffect(() => {
@@ -167,6 +174,40 @@ export default function SettingsPage() {
       setNewDeptDesc("");
     }
   }, [fetcher.data]);
+
+  useEffect(() => {
+    setCompanyLogoData(settings.companyLogoUrl ?? "");
+  }, [settings.companyLogoUrl]);
+
+  const handleLogoUpload = (file: File | null) => {
+    setLogoError(null);
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setLogoError("Please upload an image file (PNG, JPG, SVG, or WebP).");
+      return;
+    }
+
+    const maxBytes = 1024 * 1024;
+    if (file.size > maxBytes) {
+      setLogoError("Logo is too large. Maximum file size is 1 MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (!result) {
+        setLogoError("Could not read this file. Please try another image.");
+        return;
+      }
+      setCompanyLogoData(result);
+    };
+    reader.onerror = () => {
+      setLogoError("Could not read this file. Please try another image.");
+    };
+    reader.readAsDataURL(file);
+  };
 
   const saving = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "save-settings";
   const creatingDept = fetcher.state !== "idle" && fetcher.formData?.get("intent") === "create-dept";
@@ -216,6 +257,7 @@ export default function SettingsPage() {
             { key: "company", label: "Company Profile" },
             { key: "departments", label: "Departments" },
             { key: "geofence", label: "Geo-fence" },
+            { key: "compliance", label: "Statutory Filings" },
           ] as { key: Tab; label: string }[]).map((t) => (
             <button
               key={t.key}
@@ -254,12 +296,68 @@ export default function SettingsPage() {
 
             <fetcher.Form method="post">
               <input type="hidden" name="intent" value="save-settings" />
+              <input type="hidden" name="companyLogoUrl" value={companyLogoData} />
+
+              {/* ── Company Branding ── */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Company Name</span>
+                  <input
+                    name="companyName"
+                    type="text"
+                    defaultValue={settings.companyName ?? ""}
+                    placeholder="e.g. Acme Corp"
+                    style={inputStyle}
+                    disabled={!isAdmin}
+                  />
+                </label>
+                <label style={labelStyle}>
+                  <span style={labelTextStyle}>Company Logo</span>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    style={inputStyle}
+                    disabled={!isAdmin}
+                    onChange={(e) => handleLogoUpload(e.currentTarget.files?.[0] ?? null)}
+                  />
+                  <span style={{ marginTop: 6, color: "#6b7280", fontSize: 12 }}>
+                    Upload PNG, JPG, SVG, or WebP (max 1 MB).
+                  </span>
+                  {logoError ? <span style={{ marginTop: 6, color: "#dc2626", fontSize: 12 }}>{logoError}</span> : null}
+                  {companyLogoData ? (
+                    <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                      <img
+                        src={companyLogoData}
+                        alt="Company logo preview"
+                        style={{ width: 42, height: 42, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setCompanyLogoData("")}
+                        disabled={!isAdmin}
+                        style={{
+                          border: "1px solid #e5e7eb",
+                          background: "#fff",
+                          color: "#374151",
+                          borderRadius: 8,
+                          padding: "6px 10px",
+                          cursor: "pointer",
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        Remove logo
+                      </button>
+                    </div>
+                  ) : null}
+                </label>
+              </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
                 {/* Timezone */}
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Timezone</span>
-                  <select name="timezone" defaultValue={settings.timezone} style={inputStyle}>
+                  <select name="timezone" defaultValue={settings.timezone} style={inputStyle} disabled={!isAdmin}>
                     <option value="Asia/Kolkata">Asia/Kolkata (IST, +5:30)</option>
                     <option value="UTC">UTC</option>
                     <option value="America/New_York">America/New_York (EST)</option>
@@ -272,7 +370,7 @@ export default function SettingsPage() {
                 {/* Date Format */}
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Date Format</span>
-                  <select name="dateFormat" defaultValue={settings.dateFormat} style={inputStyle}>
+                  <select name="dateFormat" defaultValue={settings.dateFormat} style={inputStyle} disabled={!isAdmin}>
                     <option value="DD/MM/YYYY">DD/MM/YYYY</option>
                     <option value="MM/DD/YYYY">MM/DD/YYYY</option>
                     <option value="YYYY-MM-DD">YYYY-MM-DD (ISO)</option>
@@ -282,7 +380,7 @@ export default function SettingsPage() {
                 {/* Currency */}
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Currency</span>
-                  <select name="currency" defaultValue={settings.currency} style={inputStyle}>
+                  <select name="currency" defaultValue={settings.currency} style={inputStyle} disabled={!isAdmin}>
                     <option value="INR">INR — Indian Rupee (₹)</option>
                     <option value="USD">USD — US Dollar ($)</option>
                     <option value="EUR">EUR — Euro (€)</option>
@@ -295,7 +393,7 @@ export default function SettingsPage() {
                 {/* Payroll Day */}
                 <label style={labelStyle}>
                   <span style={labelTextStyle}>Payroll Processing Day</span>
-                  <select name="payrollDay" defaultValue={String(settings.payrollDay)} style={inputStyle}>
+                  <select name="payrollDay" defaultValue={String(settings.payrollDay)} style={inputStyle} disabled={!isAdmin}>
                     {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
                       <option key={d} value={String(d)}>
                         {d}{d === 1 ? "st" : d === 2 ? "nd" : d === 3 ? "rd" : "th"} of every month
@@ -625,6 +723,20 @@ export default function SettingsPage() {
                 </span>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── Tab: Statutory Filings (Compliance) ── */}
+        {activeTab === "compliance" && (
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #e5e7eb",
+              borderRadius: 12,
+              padding: 28,
+            }}
+          >
+            <StatutoryFilingsAdmin companyId={currentUser.companyId ?? ""} />
           </div>
         )}
       </div>

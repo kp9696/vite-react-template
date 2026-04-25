@@ -34,9 +34,6 @@
 	"upload_source_maps": true,
 	"vars": {
 		"HRMS_BASE_URL": "https://vite-react-template.keshavpandit9696.workers.dev",
-		"JWT_ACCESS_SECRET": "dev-jwt-access-secret-change-me",
-    "JWT_SECRET": "dev-jwt-secret-change-me",
-    "LOGIN_DEBUG_ENABLED": "true",
-    "OPENROUTER_API_KEY": "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"
+		"LOGIN_DEBUG_ENABLED": "false"
 	}
 }

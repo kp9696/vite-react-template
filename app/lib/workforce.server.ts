@@ -1,19 +1,3 @@
-// Employee Work History CRUD
-export async function listEmployeeWorkHistory(db: D1Database, employeeId: string) {
-  const result = await db.prepare(
-    `SELECT id, company, role, duration, description, created_at, updated_at FROM employee_work_history WHERE employee_id = ? ORDER BY created_at DESC`
-  ).bind(employeeId).all<Record<string, unknown>>();
-  return result.results;
-}
-
-export async function addEmployeeWorkHistory(db: D1Database, employeeId: string, data: { company: string; role: string; duration: string; description?: string }) {
-  const id = `WH${crypto.randomUUID().replace(/-/g, '').slice(0, 8).toUpperCase()}`;
-  const now = new Date().toISOString();
-  await db.prepare(
-    `INSERT INTO employee_work_history (id, employee_id, company, role, duration, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, employeeId, data.company, data.role, data.duration, data.description || '', now, now).run();
-}
-
 // Employee Custom Fields CRUD
 export async function listEmployeeCustomFields(db: D1Database, employeeId: string) {
   const result = await db.prepare(

@@ -7,6 +7,7 @@ export default [
   route("forgot-password", "routes/forgot-password.tsx"),
   route("hrms", "routes/hrms.tsx"),
   route("hrms/employees", "routes/hrms.employees.tsx"),
+    route("hrms/branding", "routes/hrms.branding.tsx"),
   route("hrms/employees/:id", "routes/hrms.employee.$id.tsx"),
   route("hrms/recruitment", "routes/hrms.recruitment.tsx"),
   route("hrms/onboarding", "routes/hrms.onboarding.tsx"),
@@ -29,4 +30,13 @@ export default [
   route("hrms/reports", "routes/hrms.reports.tsx"),
   route("hrms/setup", "routes/hrms.setup.tsx"),
   route("hrms/documents", "routes/hrms.documents.tsx"),
+  route("hrms/it-declaration", "routes/hrms.it-declaration.tsx"),
+  route("hrms/holidays", "routes/hrms.holidays.tsx"),
+  route("hrms/resignation", "routes/hrms.resignation.tsx"),
+  route("hrms/loans", "routes/hrms.loans.tsx"),
+  route("hrms/fnf", "routes/hrms.fnf.tsx"),
+  route("hrms/helpdesk", "routes/hrms.helpdesk.tsx"),
+  route("hrms/offer-letters", "routes/hrms.offer-letters.tsx"),
+  // ── Resource / API routes (used by useFetcher.load) ──────────────────────
+  route("api/payroll/run-status", "routes/api.payroll.run-status.ts"),
 ] satisfies RouteConfig;

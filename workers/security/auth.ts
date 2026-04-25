@@ -74,7 +74,7 @@ export async function verifyToken(token: string, secret: string): Promise<AuthTo
   const valid = await crypto.subtle.verify(
     "HMAC",
     key,
-    base64UrlDecode(sig),
+    base64UrlDecode(sig).buffer as ArrayBuffer,
     new TextEncoder().encode(signingInput),
   );
 
@@ -117,30 +117,6 @@ export async function createAccessToken(
       typ: "access",
       iat: now,
       exp: now + ACCESS_TOKEN_TTL_SECONDS,
-    },
-    secret,
-  );
-}
-
-export async function createRefreshToken(
-  subjectEmail: string,
-  name: string,
-  userId: string,
-  tenantId: string,
-  role: string,
-  secret: string,
-): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  return signToken(
-    {
-      sub: subjectEmail,
-      name,
-      userId,
-      tenantId,
-      role,
-      typ: "refresh",
-      iat: now,
-      exp: now + REFRESH_TOKEN_TTL_SECONDS,
     },
     secret,
   );

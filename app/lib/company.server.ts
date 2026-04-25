@@ -30,21 +30,6 @@ export const PLAN_LIMITS: Record<string, number> = {
 
 // ─── Company queries ──────────────────────────────────────────────────────────
 
-export async function getCompanyByEmail(
-  db: D1Database,
-  email: string,
-): Promise<Company | null> {
-  return db
-    .prepare(
-      `SELECT c.* FROM companies c
-       JOIN auth_users au ON au.email = lower(?)
-       WHERE c.owner_id = au.email
-       LIMIT 1`,
-    )
-    .bind(email.trim().toLowerCase())
-    .first<Company>();
-}
-
 export async function getCompanyByOwnerId(
   db: D1Database,
   ownerEmail: string,

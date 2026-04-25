@@ -7,6 +7,100 @@ import { clearRefreshCookie, createAuthSessionCookie, destroyAuthSession, loginW
 
 type ActionData = { error?: string };
 
+type LoginBranding = {
+  companyName: string | null;
+  companyLogoUrl: string | null;
+};
+
+function toInitials(name: string | null): string {
+  if (!name) return "JK";
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "JK";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+}
+
+async function resolveBrandingByTenantId(db: D1Database, tenantId: string): Promise<LoginBranding | null> {
+  const companyRow = await db
+    .prepare(
+      `SELECT c.company_name AS company_name, ts.company_logo_url AS company_logo_url
+       FROM companies c
+       LEFT JOIN tenant_settings ts ON COALESCE(ts.company_id, ts.org_id) = c.id
+       WHERE c.id = ?
+       LIMIT 1`,
+    )
+    .bind(tenantId)
+    .first<{ company_name: string | null; company_logo_url: string | null }>();
+
+  const orgRow = await db
+    .prepare(
+      `SELECT o.name AS company_name, ts.company_logo_url AS company_logo_url
+       FROM organizations o
+       LEFT JOIN tenant_settings ts ON COALESCE(ts.company_id, ts.org_id) = o.id
+       WHERE o.id = ?
+       LIMIT 1`,
+    )
+    .bind(tenantId)
+    .first<{ company_name: string | null; company_logo_url: string | null }>();
+
+  const companyName = companyRow?.company_name ?? orgRow?.company_name ?? null;
+  const companyLogoUrl = companyRow?.company_logo_url ?? orgRow?.company_logo_url ?? null;
+  if (!companyName && !companyLogoUrl) return null;
+  return { companyName, companyLogoUrl };
+}
+
+async function resolveBrandingByHost(db: D1Database, hostname: string): Promise<LoginBranding | null> {
+  const host = hostname.trim().toLowerCase();
+  if (!host || host === "localhost" || host.endsWith(".localhost") || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    return null;
+  }
+
+  const parts = host.split(".").filter(Boolean);
+  const baseDomain = parts.length >= 2 ? parts.slice(-2).join(".") : host;
+  const orgByDomain = await db
+    .prepare(`SELECT id FROM organizations WHERE lower(domain) = ? OR lower(domain) = ? LIMIT 1`)
+    .bind(host, baseDomain)
+    .first<{ id: string }>();
+
+  if (orgByDomain?.id) {
+    return resolveBrandingByTenantId(db, orgByDomain.id);
+  }
+
+  // Future-ready subdomain mapping: acme.yourapp.com -> "acme" matches company/org name slug.
+  const subdomain = parts.length >= 3 ? parts[0] : null;
+  if (!subdomain) return null;
+
+  const orgBySlug = await db
+    .prepare(
+      `SELECT id
+       FROM organizations
+       WHERE lower(replace(replace(name, ' ', '-'), '_', '-')) = ?
+       LIMIT 1`,
+    )
+    .bind(subdomain)
+    .first<{ id: string }>();
+
+  if (orgBySlug?.id) {
+    return resolveBrandingByTenantId(db, orgBySlug.id);
+  }
+
+  const companyBySlug = await db
+    .prepare(
+      `SELECT id
+       FROM companies
+       WHERE lower(replace(replace(company_name, ' ', '-'), '_', '-')) = ?
+       LIMIT 1`,
+    )
+    .bind(subdomain)
+    .first<{ id: string }>();
+
+  if (companyBySlug?.id) {
+    return resolveBrandingByTenantId(db, companyBySlug.id);
+  }
+
+  return null;
+}
+
 export function meta() {
   return [{ title: "JWithKP HRMS - Login" }];
 }
@@ -14,22 +108,39 @@ export function meta() {
 export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const inviteToken = url.searchParams.get("invite");
+  const hostBranding = await resolveBrandingByHost(context.cloudflare.env.HRMS, url.hostname);
 
-  if (!inviteToken) return {};
+  if (!inviteToken) return { branding: hostBranding };
 
   const tokenData = await peekInviteToken(context.cloudflare.env.HRMS, inviteToken);
 
   if (!tokenData) {
-    return { inviteError: "This invite link is invalid, has already been used, or has expired." };
+    return {
+      branding: hostBranding,
+      inviteError: "This invite link is invalid, has already been used, or has expired.",
+    };
   }
 
   const user = await getUserById(context.cloudflare.env.HRMS, tokenData.userId);
   if (!user) {
-    return { inviteError: "This invite is no longer attached to a valid user account." };
+    return {
+      branding: hostBranding,
+      inviteError: "This invite is no longer attached to a valid user account.",
+    };
   }
+
+  const tenantRow = await context.cloudflare.env.HRMS
+    .prepare(`SELECT COALESCE(company_id, org_id) AS tenant_id FROM users WHERE id = ? LIMIT 1`)
+    .bind(tokenData.userId)
+    .first<{ tenant_id: string | null }>();
+
+  const inviteBranding = tenantRow?.tenant_id
+    ? await resolveBrandingByTenantId(context.cloudflare.env.HRMS, tenantRow.tenant_id)
+    : null;
 
   // Show the account-setup form — do NOT consume the token yet
   return {
+    branding: inviteBranding ?? hostBranding,
     inviteSetup: true as const,
     inviteToken,
     invitedName: user.name,
@@ -119,6 +230,9 @@ export default function Login() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
+  const companyName = loaderData.branding?.companyName ?? "JWithKP";
+  const companyLogoUrl = loaderData.branding?.companyLogoUrl ?? null;
+  const companyInitials = toInitials(companyName);
 
   const isSetup = "inviteSetup" in loaderData && loaderData.inviteSetup === true;
 
@@ -128,9 +242,17 @@ export default function Login() {
       <div className="login-left">
         <div className="left-inner">
           <div className="brand">
-            <div className="brand-logo">JK</div>
+            <div className="brand-logo">
+              {companyLogoUrl ? (
+                <img
+                  src={companyLogoUrl}
+                  alt={`${companyName} logo`}
+                  style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }}
+                />
+              ) : companyInitials}
+            </div>
             <div className="brand-text">
-              <span className="brand-name">JWithKP</span>
+              <span className="brand-name">{companyName}</span>
               <span className="brand-tag">HRMS Platform</span>
             </div>
           </div>
@@ -171,7 +293,15 @@ export default function Login() {
           {"inviteError" in loaderData && loaderData.inviteError ? (
             <>
               <div className="form-header">
-                <div className="form-logo">JK</div>
+                <div className="form-logo">
+                  {companyLogoUrl ? (
+                    <img
+                      src={companyLogoUrl}
+                      alt={`${companyName} logo`}
+                      style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }}
+                    />
+                  ) : companyInitials}
+                </div>
                 <h2>Invite Invalid</h2>
                 <p>This invite link could not be processed.</p>
               </div>
@@ -184,7 +314,15 @@ export default function Login() {
             /* ── Account Setup Form ── */
             <>
               <div className="form-header">
-                <div className="form-logo" style={{ background: "linear-gradient(135deg,#10b981,#059669)" }}>JK</div>
+                <div className="form-logo" style={{ background: companyLogoUrl ? undefined : "linear-gradient(135deg,#10b981,#059669)" }}>
+                  {companyLogoUrl ? (
+                    <img
+                      src={companyLogoUrl}
+                      alt={`${companyName} logo`}
+                      style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }}
+                    />
+                  ) : companyInitials}
+                </div>
                 <h2>Set Up Your Account</h2>
                 <p>Create a password to complete your onboarding.</p>
               </div>
@@ -257,7 +395,15 @@ export default function Login() {
             /* ── Normal Login Form ── */
             <>
               <div className="form-header">
-                <div className="form-logo">JK</div>
+                <div className="form-logo">
+                  {companyLogoUrl ? (
+                    <img
+                      src={companyLogoUrl}
+                      alt={`${companyName} logo`}
+                      style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }}
+                    />
+                  ) : companyInitials}
+                </div>
                 <h2>Welcome back</h2>
                 <p>Sign in to your account.</p>
               </div>
