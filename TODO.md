@@ -1,27 +1,6 @@
-# HRMS UI Upgrades (5 Features)
+# TODO - Secrets/config risk remediation
 
-## Current Progress
-- [x] **Plan approved** by user
-- [x] **1. Create TODO.md** ← Completed
-
-## Implementation Steps (Execute in order)
-
-### Phase 1: Foundation (CSS + Context)
-- [ ] `app/app.css` - Dark mode vars, mobile overlay, skeleton styles ← Current step
-- [ ] `app/root.tsx` - ThemeContext provider + useEffect sync
-
-### Phase 2: Layout Enhancements
-- [ ] `app/components/HRMSLayout.tsx` 
-  - Mobile sidebar overlay + backdrop
-  - Dark mode toggle button (topbar)
-  - Quick actions dropdown (New Employee, Export, Settings)
-
-### Phase 3: Page Skeletons
-- [ ] `app/routes/hrms.tsx` - Stat cards + table skeletons
-- [ ] `app/routes/hrms.leave.tsx` - Leave table + balance cards skeletons
-
-### Phase 4: Verification
-- [ ] Static code review complete
-- [ ] User confirmation
-
-**Status**: Implementing Phase 1 (starting with `app/app.css`)
+- [x] Remove hardcoded secrets from `wrangler.json` (`JWT_ACCESS_SECRET`, `JWT_SECRET`, `OPENROUTER_API_KEY`)
+- [x] Keep only non-sensitive vars in `wrangler.json` (e.g., `HRMS_BASE_URL`, optional debug toggles if desired)
+- [x] Add deployment/runbook docs in `README.md` for required `wrangler secret put ...` commands
+- [x] Verify no hardcoded secret values remain in `wrangler.json`

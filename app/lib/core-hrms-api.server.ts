@@ -69,6 +69,20 @@ async function signAccessToken(user: SignedInUserShape, secret: string): Promise
 }
 
 /**
+ * Sign a short-lived access token for the given user — used when the client
+ * needs to make authenticated fetch() calls directly (e.g. HRBot streaming).
+ */
+export async function signApiToken(currentUser: SignedInUserShape, env: Env): Promise<string> {
+  const accessSecret = env.JWT_ACCESS_SECRET ?? env.JWT_SECRET;
+  if (!accessSecret) throw new Error("JWT secret not configured");
+  const userWithTenant: SignedInUserShape = {
+    ...currentUser,
+    companyId: currentUser.companyId ?? currentUser.id,
+  };
+  return signAccessToken(userWithTenant, accessSecret);
+}
+
+/**
  * Call an internal HRMS API handler directly (no HTTP self-fetch).
  *
  * Cloudflare Workers block loop-back subrequests to their own domain
@@ -80,7 +94,7 @@ export async function callCoreHrmsApi<T>(params: {
   env: Env;
   currentUser: SignedInUserShape;
   path: string;
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: Record<string, unknown>;
 }): Promise<T | null> {
   const { request, env, currentUser, path, method = "GET", body } = params;
@@ -116,12 +130,26 @@ export async function callCoreHrmsApi<T>(params: {
 
     if (!response) {
       // Route not matched — should not happen for known paths.
+      console.warn(`[callCoreHrmsApi] No handler matched for path: ${path}`);
+      return null;
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "(unreadable body)");
+      console.error(
+        `[callCoreHrmsApi] Handler returned ${response.status} for ${method} ${path}:`,
+        errorText,
+      );
       return null;
     }
 
     const data = (await response.json()) as T;
     return data;
-  } catch {
+  } catch (err) {
+    console.error(
+      `[callCoreHrmsApi] Unexpected error calling ${method} ${path}:`,
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
 }

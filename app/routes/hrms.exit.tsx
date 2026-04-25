@@ -16,7 +16,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const tenantId = currentUser.companyId;
   const data = tenantId
     ? await getExitDashboard(context.cloudflare.env.HRMS, tenantId)
-    : { exits: [] };
+    : { exits: [], totalEmployees: 0 };
   return { currentUser, ...data };
 }
 

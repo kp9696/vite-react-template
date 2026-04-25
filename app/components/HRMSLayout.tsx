@@ -26,6 +26,7 @@ const adminNavGroups = [
       { label: "Dashboard",   icon: SVGGrid,      path: "/hrms" },
       { label: "Employees",   icon: SVGUsers,     path: "/hrms/employees" },
       { label: "Recruitment", icon: SVGTarget,    path: "/hrms/recruitment" },
+      { label: "Offer Letters", icon: SVGEnvelope,  path: "/hrms/offer-letters" },
       { label: "Onboarding",  icon: SVGRocket,    path: "/hrms/onboarding" },
     ],
   },
@@ -35,16 +36,21 @@ const adminNavGroups = [
       { label: "Leave",       icon: SVGCalendar,  path: "/hrms/leave" },
       { label: "Attendance",  icon: SVGClock,     path: "/hrms/attendance" },
       { label: "Payroll",     icon: SVGCoin,      path: "/hrms/payroll" },
+      { label: "IT Decl.",    icon: SVGShield,    path: "/hrms/it-declaration" },
       { label: "Expenses",    icon: SVGReceipt,   path: "/hrms/expenses" },
+      { label: "Loans",       icon: SVGCoin2,     path: "/hrms/loans" },
       { label: "Performance", icon: SVGTrending,  path: "/hrms/performance" },
       { label: "Learning",    icon: SVGBook,      path: "/hrms/learning" },
       { label: "Assets",      icon: SVGLaptop,    path: "/hrms/assets" },
+      { label: "Holidays",    icon: SVGCalendar,  path: "/hrms/holidays" },
     ],
   },
   {
     title: "Insights",
     items: [
       { label: "Exit Mgmt",   icon: SVGDoor,         path: "/hrms/exit" },
+      { label: "Resignation",  icon: SVGDoor,         path: "/hrms/resignation" },
+      { label: "F&F Settlement", icon: SVGHandCoins,  path: "/hrms/fnf" },
       { label: "Analytics",   icon: SVGChart,        path: "/hrms/analytics" },
       { label: "Reports",     icon: SVGClipboard,    path: "/hrms/reports" },
       { label: "HRBot AI",    icon: SVGBot,          path: "/hrms/hrbot" },
@@ -54,6 +60,7 @@ const adminNavGroups = [
   {
     title: "Admin",
     items: [
+      { label: "Help Desk",   icon: SVGTicket,       path: "/hrms/helpdesk" },
       { label: "Documents",   icon: SVGFolder,       path: "/hrms/documents" },
       { label: "Shifts",      icon: SVGClock2,       path: "/hrms/shifts" },
       { label: "Settings",    icon: SVGSettings,     path: "/hrms/settings" },
@@ -69,6 +76,7 @@ const employeeNavGroups = [
       { label: "Dashboard",   icon: SVGGrid,       path: "/hrms" },
       { label: "Attendance",  icon: SVGClock,      path: "/hrms/attendance" },
       { label: "Expenses",    icon: SVGReceipt,    path: "/hrms/expenses" },
+      { label: "Loans",       icon: SVGCoin2,      path: "/hrms/loans" },
     ],
   },
   {
@@ -76,12 +84,16 @@ const employeeNavGroups = [
     items: [
       { label: "Leave",       icon: SVGCalendar,   path: "/hrms/leave" },
       { label: "Payroll",     icon: SVGCoin,       path: "/hrms/payroll" },
+      { label: "IT Decl.",    icon: SVGShield,     path: "/hrms/it-declaration" },
       { label: "Assets",      icon: SVGLaptop,     path: "/hrms/assets" },
+      { label: "Holidays",    icon: SVGCalendar,   path: "/hrms/holidays" },
+      { label: "Resign",      icon: SVGDoor,       path: "/hrms/resignation" },
     ],
   },
   {
     title: "Company",
     items: [
+      { label: "Help Desk",   icon: SVGTicket,     path: "/hrms/helpdesk" },
       { label: "Noticeboard", icon: SVGMegaphone,  path: "/hrms/announcements" },
       { label: "My Shifts",   icon: SVGClock2,     path: "/hrms/shifts" },
       { label: "Documents",   icon: SVGFolder,     path: "/hrms/documents" },
@@ -123,7 +135,11 @@ function SVGClipboard() { return <svg width="15" height="15" fill="none" stroke=
 function SVGClock2() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>; }
 function SVGRocket2() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>; }
 function SVGSettings() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>; }
+function SVGCoin2() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0"/><path d="M6 12h.01M18 12h.01"/></svg>; }
+function SVGHandCoins() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M11 15h2a2 2 0 0 0 0-4H9a2 2 0 0 1 0-4h2"/><path d="M12 6v2m0 8v2"/><path d="M5 9H3a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2h-2"/></svg>; }
 
+function SVGEnvelope() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>; }
+function SVGTicket() { return <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2z"/><line x1="9" y1="9" x2="9" y2="15"/></svg>; }
 function SVGMenu() { return <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>; }
 
 export default function HRMSLayout({
@@ -165,6 +181,24 @@ export default function HRMSLayout({
     if (!currentUser) return;
     notifFetcher.load("/hrms/notifications");
   }, [location.pathname, currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+  const brandingFetcher = useFetcher<{ companyName: string | null; companyLogoUrl: string | null }>();
+  const [companyName, setCompanyName] = useState<string | null>(null);
+  const [companyLogoUrl, setCompanyLogoUrl] = useState<string | null>(null);
+  const [logoLoadFailed, setLogoLoadFailed] = useState(false);
+
+  // Load branding once on mount
+  useEffect(() => {
+    if (!currentUser) return;
+    brandingFetcher.load("/hrms/branding");
+  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (brandingFetcher.data?.companyName != null) setCompanyName(brandingFetcher.data.companyName);
+    if (brandingFetcher.data?.companyLogoUrl != null) {
+      setCompanyLogoUrl(brandingFetcher.data.companyLogoUrl);
+      setLogoLoadFailed(false);
+    }
+  }, [brandingFetcher.data]);
 
   const handleMarkAllRead = () => {
     markFetcher.submit(
@@ -238,12 +272,25 @@ export default function HRMSLayout({
         <div className="sidebar-top-strip" />
 
         <div className="sidebar-header">
-          <div className="logo-mark">
-            <span style={{ color: "white", fontWeight: 800, fontSize: 12, letterSpacing: -0.5 }}>JK</span>
-          </div>
+          {companyLogoUrl && !logoLoadFailed ? (
+            <img
+              src={companyLogoUrl}
+              alt={companyName ?? "Company logo"}
+              onError={() => setLogoLoadFailed(true)}
+              style={{ width: 36, height: 36, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+            />
+          ) : (
+            <div className="logo-mark">
+              <span style={{ color: "white", fontWeight: 800, fontSize: 12, letterSpacing: -0.5 }}>
+                {companyName ? companyName.slice(0, 2).toUpperCase() : "JK"}
+              </span>
+            </div>
+          )}
           {!collapsed ? (
-            <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.25 }}>
-              <span className="logo-text">JWithKP</span>
+            <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.25, overflow: "hidden" }}>
+              <span className="logo-text" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {companyName ?? "JWithKP"}
+              </span>
               <span className="logo-sub">HRMS Platform</span>
             </div>
           ) : null}

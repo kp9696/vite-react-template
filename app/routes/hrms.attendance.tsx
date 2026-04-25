@@ -53,6 +53,41 @@ interface RegularisationResponse {
   status?: string;
 }
 
+interface WfhRequest {
+  id: string;
+  user_id?: string;
+  user_name: string;
+  wfh_date: string;
+  reason: string;
+  status: string;
+  decided_at?: string | null;
+  decision_note?: string | null;
+  created_at: string;
+}
+
+interface WfhResponse {
+  ok?: boolean;
+  error?: string;
+  id?: string;
+  status?: string;
+}
+
+interface AttendancePolicySettings {
+  workStartTime: string;
+  workEndTime: string;
+  lateThresholdMinutes: number;
+  halfDayThresholdHours: number;
+  minHoursForPresent: number;
+  overtimeThresholdHours: number;
+  attendanceTimezone: string;
+}
+
+interface PolicyResponse {
+  ok?: boolean;
+  error?: string;
+  recomputed?: number;
+}
+
 interface TodayResponse {
   date: string;
   records: AttendanceRecord[];
@@ -172,12 +207,42 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   });
   const regularisations = regularisationsRes?.regularisations ?? [];
 
-  return { currentUser, isManager, todayRecords, myRecords, myToday, today, regularisations };
+  // WFH requests
+  const wfhRes = await callCoreHrmsApi<{ wfhRequests?: WfhRequest[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/wfh-requests",
+  });
+  const wfhRequests = wfhRes?.wfhRequests ?? [];
+
+  // Attendance policy settings (admin only)
+  let attendancePolicy: AttendancePolicySettings | null = null;
+  if (isManager) {
+    const settingsRes = await callCoreHrmsApi<{ settings?: Record<string, unknown> }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/tenant/settings",
+    });
+    const s = settingsRes?.settings ?? {};
+    attendancePolicy = {
+      workStartTime: String(s.workStartTime ?? "09:00"),
+      workEndTime: String(s.workEndTime ?? "18:00"),
+      lateThresholdMinutes: Number(s.lateThresholdMinutes ?? 15),
+      halfDayThresholdHours: Number(s.halfDayThresholdHours ?? 4),
+      minHoursForPresent: Number(s.minHoursForPresent ?? 2),
+      overtimeThresholdHours: Number(s.overtimeThresholdHours ?? 9),
+      attendanceTimezone: String(s.attendanceTimezone ?? "Asia/Kolkata"),
+    };
+  }
+
+  return { currentUser, isManager, todayRecords, myRecords, myToday, today, regularisations, wfhRequests, attendancePolicy };
 }
 
 // ── Action ───────────────────────────────────────────────────────────────────
 
-export async function action({ request, context }: Route.ActionArgs): Promise<CheckInOutResponse & RegularisationResponse> {
+export async function action({ request, context }: Route.ActionArgs): Promise<CheckInOutResponse & RegularisationResponse & WfhResponse & PolicyResponse> {
   const currentUser = await requireSignedInUser(request, context.cloudflare.env);
   const formData = await request.formData();
   const intent = String(formData.get("intent") || "");
@@ -250,18 +315,91 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ch
     return { ok: true, id, status: res.status };
   }
 
+  if (intent === "wfh-submit") {
+    const wfhDate = String(formData.get("wfhDate") || "").trim();
+    const reason = String(formData.get("reason") || "").trim();
+    const res = await callCoreHrmsApi<WfhResponse>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/wfh-requests",
+      method: "POST",
+      body: { wfhDate, reason },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to submit WFH request." };
+    return { ok: true, id: res.id };
+  }
+
+  if (intent === "wfh-decide") {
+    const id = String(formData.get("id") || "").trim();
+    const decision = String(formData.get("decision") || "").trim();
+    const note = String(formData.get("note") || "").trim();
+    const res = await callCoreHrmsApi<WfhResponse>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: `/api/wfh-requests/${encodeURIComponent(id)}/decision`,
+      method: "PATCH",
+      body: { decision, note: note || undefined },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to process WFH decision." };
+    return { ok: true, id, status: res.status };
+  }
+
+  if (intent === "save-policy") {
+    if (!isAdminRole(currentUser.role)) return { error: "Forbidden." };
+    const res = await callCoreHrmsApi<PolicyResponse>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/tenant/settings",
+      method: "POST",
+      body: {
+        workStartTime: String(formData.get("workStartTime") || "09:00"),
+        workEndTime: String(formData.get("workEndTime") || "18:00"),
+        lateThresholdMinutes: Number(formData.get("lateThresholdMinutes") || 15),
+        halfDayThresholdHours: Number(formData.get("halfDayThresholdHours") || 4),
+        minHoursForPresent: Number(formData.get("minHoursForPresent") || 2),
+        overtimeThresholdHours: Number(formData.get("overtimeThresholdHours") || 9),
+        attendanceTimezone: String(formData.get("attendanceTimezone") || "Asia/Kolkata"),
+      },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to save attendance policy." };
+    return { ok: true };
+  }
+
+  if (intent === "recompute") {
+    if (!isAdminRole(currentUser.role)) return { error: "Forbidden." };
+    const res = await callCoreHrmsApi<PolicyResponse & { recomputed?: number }>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/attendance/recompute",
+      method: "POST",
+      body: {},
+    });
+    if (!res?.ok) return { error: res?.error || "Recompute failed." };
+    return { ok: true, recomputed: res.recomputed };
+  }
+
   return { error: "Unsupported action." };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Attendance() {
-  const { currentUser, isManager, todayRecords, myRecords, myToday, today, regularisations: initialRegularisations } =
+  const { currentUser, isManager, todayRecords, myRecords, myToday, today, regularisations: initialRegularisations, wfhRequests: initialWfhRequests, attendancePolicy: initialPolicy } =
     useLoaderData<typeof loader>();
 
-  const fetcher = useFetcher<CheckInOutResponse & RegularisationResponse>();
+  const fetcher = useFetcher<CheckInOutResponse & RegularisationResponse & WfhResponse & PolicyResponse>();
   const regulariseFetcher = useFetcher<RegularisationResponse>();
-  const [tab, setTab] = useState<"today" | "my" | "calendar" | "regularise">(isManager ? "today" : "my");
+  const wfhFetcher = useFetcher<WfhResponse>();
+  const policyFetcher = useFetcher<PolicyResponse>();
+  const [tab, setTab] = useState<"today" | "my" | "calendar" | "regularise" | "wfh" | "policy">(isManager ? "today" : "my");
+  const [wfhRequests, setWfhRequests] = useState<WfhRequest[]>(initialWfhRequests);
+  const [wfhForm, setWfhForm] = useState({ date: "", reason: "" });
+  const [wfhDecideModal, setWfhDecideModal] = useState<{ req: WfhRequest; action: "approved" | "rejected" } | null>(null);
+  const [wfhDecideNote, setWfhDecideNote] = useState("");
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [localToday, setLocalToday] = useState(myToday);
   const [calDate, setCalDate] = useState(() => {
@@ -276,6 +414,17 @@ export default function Attendance() {
   // Admin decision modal state
   const [decideModal, setDecideModal] = useState<{ rec: RegularisationRecord; action: "approved" | "rejected" } | null>(null);
   const [decideNote, setDecideNote] = useState("");
+
+  // Attendance policy state (admin only)
+  const defaultPolicy: AttendancePolicySettings = {
+    workStartTime: "09:00", workEndTime: "18:00",
+    lateThresholdMinutes: 15, halfDayThresholdHours: 4,
+    minHoursForPresent: 2, overtimeThresholdHours: 9,
+    attendanceTimezone: "Asia/Kolkata",
+  };
+  const [policyForm, setPolicyForm] = useState<AttendancePolicySettings>(initialPolicy ?? defaultPolicy);
+  const [recomputeConfirm, setRecomputeConfirm] = useState(false);
+  const [recomputeResult, setRecomputeResult] = useState<number | null>(null);
 
   // Build calendar data from myRecords
   const recordsByDate = Object.fromEntries(myRecords.map((r) => [r.attendance_date, r]));
@@ -335,6 +484,40 @@ export default function Attendance() {
       setDecideNote("");
     }
   }, [regulariseFetcher.data]);
+
+  // Handle WFH fetcher
+  useEffect(() => {
+    const data = wfhFetcher.data;
+    if (!data) return;
+    if (data.error) { setToast({ msg: data.error, ok: false }); return; }
+    if (data.ok && data.status) {
+      // decision result
+      setWfhRequests((prev) => prev.map((r) => r.id === data.id ? { ...r, status: data.status! } : r));
+      setToast({ msg: `WFH request ${data.status}.`, ok: true });
+      setWfhDecideModal(null);
+      setWfhDecideNote("");
+    } else if (data.ok) {
+      // submit result
+      setToast({ msg: "WFH request submitted!", ok: true });
+      setWfhForm({ date: "", reason: "" });
+    }
+  }, [wfhFetcher.data]);
+
+  // Handle policy fetcher (save + recompute)
+  useEffect(() => {
+    const data = policyFetcher.data;
+    if (!data) return;
+    if (data.error) { setToast({ msg: data.error, ok: false }); return; }
+    if (data.ok) {
+      if (typeof data.recomputed === "number") {
+        setRecomputeResult(data.recomputed);
+        setRecomputeConfirm(false);
+        setToast({ msg: `Recomputed ${data.recomputed} attendance record(s).`, ok: true });
+      } else {
+        setToast({ msg: "Attendance policy saved.", ok: true });
+      }
+    }
+  }, [policyFetcher.data]);
 
   const handleCheckIn = () => {
     const fd = new FormData();
@@ -556,6 +739,14 @@ export default function Attendance() {
         <button className={`tab-btn ${tab === "regularise" ? "active" : ""}`} onClick={() => setTab("regularise")}>
           Regularise{isManager && pendingRegs.length > 0 ? ` (${pendingRegs.length})` : ""}
         </button>
+        <button className={`tab-btn ${tab === "wfh" ? "active" : ""}`} onClick={() => setTab("wfh")}>
+          WFH{isManager && wfhRequests.filter(w => w.status === "pending").length > 0 ? ` (${wfhRequests.filter(w => w.status === "pending").length})` : ""}
+        </button>
+        {isManager && (
+          <button className={`tab-btn ${tab === "policy" ? "active" : ""}`} onClick={() => setTab("policy")}>
+            Policy
+          </button>
+        )}
       </div>
 
       {/* Today's team tab (HR only) */}
@@ -917,6 +1108,257 @@ export default function Attendance() {
                   </tbody>
                 </table>
               )}
+            </div>
+          )}
+        </div>
+      )}
+      {/* WFH tab */}
+      {tab === "wfh" && (
+        <div>
+          {!isManager && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <div className="card-title">Request Work From Home</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 480 }}>
+                <div>
+                  <label style={lblStyle}>Date <span style={{ color: "var(--red)" }}>*</span></label>
+                  <input type="date" style={inpStyle} value={wfhForm.date} min={today}
+                    onChange={(e) => setWfhForm((f) => ({ ...f, date: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={lblStyle}>Reason <span style={{ color: "var(--red)" }}>*</span></label>
+                  <textarea rows={3} style={{ ...inpStyle, resize: "vertical" as const }}
+                    placeholder="Why are you working from home?" value={wfhForm.reason}
+                    onChange={(e) => setWfhForm((f) => ({ ...f, reason: e.target.value }))} />
+                </div>
+                <button className="btn btn-primary"
+                  disabled={!wfhForm.date || !wfhForm.reason.trim() || wfhFetcher.state !== "idle"}
+                  onClick={() => {
+                    const fd = new FormData();
+                    fd.set("intent", "wfh-submit");
+                    fd.set("wfhDate", wfhForm.date);
+                    fd.set("reason", wfhForm.reason.trim());
+                    wfhFetcher.submit(fd, { method: "POST" });
+                  }}>
+                  {wfhFetcher.state !== "idle" ? "Submitting..." : "Submit WFH Request"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* WFH decide modal */}
+          {wfhDecideModal && (
+            <div className="modal-overlay" onClick={() => { setWfhDecideModal(null); setWfhDecideNote(""); }}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-title">
+                  {wfhDecideModal.action === "approved" ? "Approve" : "Reject"} WFH Request
+                  <button className="modal-close" onClick={() => { setWfhDecideModal(null); setWfhDecideNote(""); }}>✕</button>
+                </div>
+                <div style={{ background: "var(--surface)", borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)", marginBottom: 4 }}>{wfhDecideModal.req.user_name}</div>
+                  <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Date: <strong>{wfhDecideModal.req.wfh_date}</strong></div>
+                  <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>{wfhDecideModal.req.reason}</div>
+                </div>
+                <div>
+                  <label style={lblStyle}>Note (optional)</label>
+                  <textarea rows={2} style={{ ...inpStyle, resize: "vertical" as const }}
+                    value={wfhDecideNote} onChange={(e) => setWfhDecideNote(e.target.value)} />
+                </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                  <button
+                    className={wfhDecideModal.action === "approved" ? "btn btn-success" : "btn btn-danger"}
+                    disabled={wfhFetcher.state !== "idle"}
+                    onClick={() => {
+                      const fd = new FormData();
+                      fd.set("intent", "wfh-decide");
+                      fd.set("id", wfhDecideModal.req.id);
+                      fd.set("decision", wfhDecideModal.action);
+                      fd.set("note", wfhDecideNote);
+                      wfhFetcher.submit(fd, { method: "POST" });
+                    }}>
+                    {wfhFetcher.state !== "idle" ? "Saving..." : wfhDecideModal.action === "approved" ? "Approve" : "Reject"}
+                  </button>
+                  <button className="btn btn-outline" onClick={() => { setWfhDecideModal(null); setWfhDecideNote(""); }}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="card">
+            <div className="card-title" style={{ marginBottom: 12 }}>
+              {isManager ? "Team WFH Requests" : "My WFH Requests"}
+            </div>
+            {wfhRequests.length === 0 ? (
+              <div style={{ fontSize: 13, color: "var(--ink-3)", padding: "12px 0" }}>No WFH requests yet.</div>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    {isManager && <th>Employee</th>}
+                    <th>Date</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    {isManager && <th>Actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {wfhRequests.map((w) => (
+                    <tr key={w.id}>
+                      {isManager && (
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span className="avatar-sm" style={{ background: avatarColor(w.user_name) }}>{getInitials(w.user_name)}</span>
+                            <span style={{ fontWeight: 600 }}>{w.user_name}</span>
+                          </div>
+                        </td>
+                      )}
+                      <td style={{ fontWeight: 600 }}>{w.wfh_date}</td>
+                      <td style={{ fontSize: 12, color: "var(--ink-3)", maxWidth: 200 }}>{w.reason}</td>
+                      <td>
+                        <span className={`badge ${w.status === "approved" ? "badge-green" : w.status === "rejected" ? "badge-red" : "badge-amber"}`}
+                          style={{ textTransform: "capitalize" }}>{w.status}</span>
+                      </td>
+                      {isManager && (
+                        <td>
+                          {w.status === "pending" && (
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button className="btn btn-success" style={{ padding: "4px 10px", fontSize: 12 }}
+                                onClick={() => setWfhDecideModal({ req: w, action: "approved" })}>Approve</button>
+                              <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 12 }}
+                                onClick={() => setWfhDecideModal({ req: w, action: "rejected" })}>Reject</button>
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Attendance Policy tab (admin only) */}
+      {tab === "policy" && isManager && (
+        <div>
+          <div className="card" style={{ marginBottom: 20 }}>
+            <div className="card-title" style={{ marginBottom: 4 }}>Attendance Policy</div>
+            <div style={{ fontSize: 13, color: "var(--ink-3)", marginBottom: 20 }}>
+              These settings define how check-in status is computed (late, half-day, absent, overtime). Changes take effect on the next check-out. Use "Recompute" to back-fill historical records.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 18, maxWidth: 800 }}>
+              <div>
+                <label style={lblStyle}>Work Start Time</label>
+                <input type="time" style={inpStyle} value={policyForm.workStartTime}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, workStartTime: e.target.value }))} />
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Standard office start time</div>
+              </div>
+              <div>
+                <label style={lblStyle}>Work End Time</label>
+                <input type="time" style={inpStyle} value={policyForm.workEndTime}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, workEndTime: e.target.value }))} />
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Standard office end time</div>
+              </div>
+              <div>
+                <label style={lblStyle}>Late Grace Period (minutes)</label>
+                <input type="number" min={0} max={120} style={inpStyle} value={policyForm.lateThresholdMinutes}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, lateThresholdMinutes: Number(e.target.value) }))} />
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Check-in after start + this = "late"</div>
+              </div>
+              <div>
+                <label style={lblStyle}>Half-Day Threshold (hours)</label>
+                <input type="number" min={0} max={12} step={0.5} style={inpStyle} value={policyForm.halfDayThresholdHours}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, halfDayThresholdHours: Number(e.target.value) }))} />
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Hours worked below this = half-day</div>
+              </div>
+              <div>
+                <label style={lblStyle}>Minimum Hours for Present (hours)</label>
+                <input type="number" min={0} max={12} step={0.5} style={inpStyle} value={policyForm.minHoursForPresent}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, minHoursForPresent: Number(e.target.value) }))} />
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Below this = absent</div>
+              </div>
+              <div>
+                <label style={lblStyle}>Overtime Threshold (hours)</label>
+                <input type="number" min={4} max={24} step={0.5} style={inpStyle} value={policyForm.overtimeThresholdHours}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, overtimeThresholdHours: Number(e.target.value) }))} />
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Hours beyond this are overtime</div>
+              </div>
+              <div>
+                <label style={lblStyle}>Attendance Timezone</label>
+                <select style={inpStyle} value={policyForm.attendanceTimezone}
+                  onChange={(e) => setPolicyForm((f) => ({ ...f, attendanceTimezone: e.target.value }))}>
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST, UTC+5:30)</option>
+                  <option value="Asia/Dubai">Asia/Dubai (GST, UTC+4)</option>
+                  <option value="Asia/Singapore">Asia/Singapore (SGT, UTC+8)</option>
+                  <option value="UTC">UTC</option>
+                </select>
+                <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>Used for late/shift time comparisons</div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 12, marginTop: 24, flexWrap: "wrap" }}>
+              <button
+                className="btn btn-primary"
+                disabled={policyFetcher.state !== "idle"}
+                onClick={() => {
+                  const fd = new FormData();
+                  fd.set("intent", "save-policy");
+                  fd.set("workStartTime", policyForm.workStartTime);
+                  fd.set("workEndTime", policyForm.workEndTime);
+                  fd.set("lateThresholdMinutes", String(policyForm.lateThresholdMinutes));
+                  fd.set("halfDayThresholdHours", String(policyForm.halfDayThresholdHours));
+                  fd.set("minHoursForPresent", String(policyForm.minHoursForPresent));
+                  fd.set("overtimeThresholdHours", String(policyForm.overtimeThresholdHours));
+                  fd.set("attendanceTimezone", policyForm.attendanceTimezone);
+                  policyFetcher.submit(fd, { method: "POST" });
+                }}>
+                {policyFetcher.state !== "idle" && !recomputeConfirm ? "Saving..." : "Save Policy"}
+              </button>
+              <button
+                className="btn btn-outline"
+                style={{ borderColor: "var(--amber)", color: "var(--amber)" }}
+                disabled={policyFetcher.state !== "idle"}
+                onClick={() => { setRecomputeConfirm(true); setRecomputeResult(null); }}>
+                Recompute Historical Records
+              </button>
+            </div>
+
+            {recomputeResult !== null && (
+              <div style={{ marginTop: 16, padding: "10px 16px", background: "var(--green-bg, #f0faf0)", borderRadius: 8, color: "var(--green, #1a7f4b)", fontSize: 13 }}>
+                ✓ Recomputed <strong>{recomputeResult}</strong> attendance record(s) using the current policy.
+              </div>
+            )}
+          </div>
+
+          {/* Recompute confirmation modal */}
+          {recomputeConfirm && (
+            <div className="modal-overlay" onClick={() => setRecomputeConfirm(false)}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-title">
+                  Recompute Historical Attendance?
+                  <button className="modal-close" onClick={() => setRecomputeConfirm(false)}>✕</button>
+                </div>
+                <p style={{ fontSize: 14, color: "var(--ink-2)", margin: "0 0 16px" }}>
+                  This will re-calculate <strong>status</strong>, <strong>hours_worked</strong>, and <strong>overtime_minutes</strong> for all past attendance records that have both check-in and check-out timestamps, using the current policy settings.
+                </p>
+                <p style={{ fontSize: 13, color: "var(--amber)", margin: "0 0 20px" }}>
+                  This updates data in-place. Regularisation-approved records will also be recomputed. Ensure the policy is saved before running.
+                </p>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    className="btn btn-danger"
+                    disabled={policyFetcher.state !== "idle"}
+                    onClick={() => {
+                      const fd = new FormData();
+                      fd.set("intent", "recompute");
+                      policyFetcher.submit(fd, { method: "POST" });
+                    }}>
+                    {policyFetcher.state !== "idle" ? "Recomputing..." : "Yes, Recompute All"}
+                  </button>
+                  <button className="btn btn-outline" onClick={() => setRecomputeConfirm(false)}>Cancel</button>
+                </div>
+              </div>
             </div>
           )}
         </div>

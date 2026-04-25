@@ -2,6 +2,7 @@ import { generateECRCSV, generateForm16CSV } from "../../app/lib/payroll.server"
 import { hashPassword, requireAuth } from "../security/auth";
 import { withCors } from "../security/cors";
 import { sendEmail, buildLeaveDecisionHtml, buildExpenseDecisionHtml } from "../lib/email";
+import { computePayroll, deriveSalaryComponents, getFyKey } from "./hrms-payroll-engine";
 
 // ── Form 16 Export Handler ─────────────────────────────────────────────────
 
@@ -115,6 +116,115 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+// ── Attendance Policy Types & Pure Computation ────────────────────────────────
+
+interface AttendancePolicy {
+  workStartTime: string;          // "HH:MM" local time
+  lateThresholdMinutes: number;   // grace period after workStartTime
+  halfDayThresholdHours: number;  // hours worked < this → half_day
+  minHoursForPresent: number;     // hours worked < this → absent
+  overtimeThresholdHours: number; // hours worked > this → overtime
+  timezone: string;               // IANA timezone, e.g. "Asia/Kolkata"
+}
+
+interface ComputedAttendanceStatus {
+  status: "present" | "late" | "half_day" | "absent";
+  hoursWorked: number;           // rounded to 2 decimal places
+  overtimeMinutes: number;       // 0 if no overtime
+}
+
+/**
+ * Derives attendance status from raw clock-in/out times against a policy.
+ * Pure function — no DB access. Safe to call from checkout and recompute.
+ */
+function computeAttendanceStatus(
+  checkInAt: string,
+  checkOutAt: string,
+  policy: AttendancePolicy,
+  attendanceDate: string,   // YYYY-MM-DD, used to anchor workStartTime to the correct day
+): ComputedAttendanceStatus {
+  const checkIn  = new Date(checkInAt);
+  const checkOut = new Date(checkOutAt);
+
+  if (Number.isNaN(checkIn.getTime()) || Number.isNaN(checkOut.getTime())) {
+    return { status: "absent", hoursWorked: 0, overtimeMinutes: 0 };
+  }
+
+  const hoursWorked = Math.round(
+    ((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60)) * 100,
+  ) / 100;
+
+  // Too short → absent
+  if (hoursWorked < policy.minHoursForPresent) {
+    return { status: "absent", hoursWorked, overtimeMinutes: 0 };
+  }
+
+  // Half day
+  if (hoursWorked < policy.halfDayThresholdHours) {
+    return { status: "half_day", hoursWorked, overtimeMinutes: 0 };
+  }
+
+  // Overtime
+  const overtimeMinutes = hoursWorked > policy.overtimeThresholdHours
+    ? Math.round((hoursWorked - policy.overtimeThresholdHours) * 60)
+    : 0;
+
+  // Late check: compare check-in local time against workStartTime + grace
+  let status: "present" | "late" = "present";
+  try {
+    // Parse check-in time in the tenant's timezone
+    const localTimeStr = new Intl.DateTimeFormat("en-GB", {
+      timeZone: policy.timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(checkIn);
+
+    // Intl may return "24:xx" for midnight in some locales — normalise
+    const [hStr, mStr] = localTimeStr.replace("24:", "00:").split(":");
+    const checkInMinutes = Number(hStr) * 60 + Number(mStr);
+
+    const [wsH, wsM] = policy.workStartTime.split(":").map(Number);
+    const cutoffMinutes = wsH * 60 + wsM + policy.lateThresholdMinutes;
+
+    if (checkInMinutes > cutoffMinutes) {
+      status = "late";
+    }
+  } catch {
+    // Timezone/parse failure — default to "present"
+  }
+
+  return { status, hoursWorked, overtimeMinutes };
+}
+
+/** Fetch the attendance policy from tenant_settings, returning safe defaults. */
+async function fetchAttendancePolicy(db: D1Database, tenantId: string): Promise<AttendancePolicy> {
+  const row = await db
+    .prepare(
+      `SELECT work_start_time, late_threshold_minutes, half_day_threshold_hours,
+              min_hours_for_present, overtime_threshold_hours, attendance_timezone
+       FROM tenant_settings WHERE COALESCE(company_id, org_id) = ? LIMIT 1`,
+    )
+    .bind(tenantId)
+    .first<{
+      work_start_time: string | null;
+      late_threshold_minutes: number | null;
+      half_day_threshold_hours: number | null;
+      min_hours_for_present: number | null;
+      overtime_threshold_hours: number | null;
+      attendance_timezone: string | null;
+    }>();
+
+  return {
+    workStartTime:          row?.work_start_time          ?? "09:00",
+    lateThresholdMinutes:   row?.late_threshold_minutes   ?? 15,
+    halfDayThresholdHours:  row?.half_day_threshold_hours ?? 4,
+    minHoursForPresent:     row?.min_hours_for_present    ?? 2,
+    overtimeThresholdHours: row?.overtime_threshold_hours ?? 9,
+    timezone:               row?.attendance_timezone      ?? "Asia/Kolkata",
+  };
+}
+
 function calculateLeaveDays(startDate: string, endDate: string): number {
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -127,6 +237,22 @@ function calculateLeaveDays(startDate: string, endDate: string): number {
 
 function isHrManager(role: string): boolean {
   return HR_ROLES.has(role);
+}
+
+/**
+ * Strip HTML tags and decode common HTML entities from user-supplied text.
+ * Prevents stored XSS when announcement content is rendered in the browser.
+ */
+function stripHtml(input: string): string {
+  return input
+    .replace(/<[^>]*>/g, "")         // remove all HTML tags
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#x2F;/gi, "/")
+    .trim();
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -515,16 +641,80 @@ async function handleAttendanceCheckOut(request: Request, env: Env, user: ApiUse
     return json(request, env, { error: "Check-out already recorded for today." }, 409);
   }
 
+  // Compute attendance status against tenant policy
+  const policy = await fetchAttendancePolicy(env.HRMS, user.tenantId);
+  const computed = computeAttendanceStatus(existing.check_in_at, now, policy, date);
+
   await env.HRMS
     .prepare(
       `UPDATE attendance
-       SET check_out_at = ?, check_out_ip = ?, check_out_geo = ?, updated_at = ?
+       SET check_out_at = ?, check_out_ip = ?, check_out_geo = ?,
+           status = ?, hours_worked = ?, overtime_minutes = ?,
+           updated_at = ?
        WHERE id = ?`,
     )
-    .bind(now, ip, geo, now, existing.id)
+    .bind(now, ip, geo, computed.status, computed.hoursWorked, computed.overtimeMinutes, now, existing.id)
     .run();
 
-  return json(request, env, { ok: true, attendanceDate: date, checkOutAt: now });
+  return json(request, env, {
+    ok: true,
+    attendanceDate: date,
+    checkOutAt: now,
+    hoursWorked: computed.hoursWorked,
+    status: computed.status,
+    overtimeMinutes: computed.overtimeMinutes,
+  });
+}
+
+// ── POST /api/attendance/recompute ────────────────────────────────────────────
+// Admin-only. Re-derives status, hours_worked, overtime_minutes for every
+// attendance row that has both check_in_at and check_out_at, using the
+// current tenant policy. Safe to run after a policy change.
+
+async function handleAttendanceRecompute(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+
+  const policy = await fetchAttendancePolicy(env.HRMS, user.tenantId);
+
+  // Fetch all completed attendance rows (paginate in memory — Workers memory is ample for SMB)
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT id, attendance_date, check_in_at, check_out_at
+       FROM attendance
+       WHERE COALESCE(company_id, org_id) = ?
+         AND check_in_at IS NOT NULL
+         AND check_out_at IS NOT NULL`,
+    )
+    .bind(user.tenantId)
+    .all<{ id: string; attendance_date: string; check_in_at: string; check_out_at: string }>();
+
+  const now = nowIso();
+  const statements: D1PreparedStatement[] = rows.results.map((row) => {
+    const computed = computeAttendanceStatus(row.check_in_at, row.check_out_at, policy, row.attendance_date);
+    return env.HRMS
+      .prepare(
+        `UPDATE attendance
+         SET status = ?, hours_worked = ?, overtime_minutes = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(computed.status, computed.hoursWorked, computed.overtimeMinutes, now, row.id);
+  });
+
+  for (let i = 0; i < statements.length; i += 100) {
+    await env.HRMS.batch(statements.slice(i, i + 100));
+  }
+
+  return json(request, env, {
+    ok: true,
+    recomputed: rows.results.length,
+    policy: {
+      workStartTime: policy.workStartTime,
+      lateThresholdMinutes: policy.lateThresholdMinutes,
+      halfDayThresholdHours: policy.halfDayThresholdHours,
+      minHoursForPresent: policy.minHoursForPresent,
+      overtimeThresholdHours: policy.overtimeThresholdHours,
+    },
+  });
 }
 
 async function handleAttendanceToday(request: Request, env: Env, user: ApiUser): Promise<Response> {
@@ -640,6 +830,44 @@ async function handleApplyLeave(request: Request, env: Env, user: ApiUser): Prom
       }
     }
   }
+
+  // ── Probation lock check ────────────────────────────────────────────────────
+  // Only enforce for the actual employee (admins/HR bypass probation lock)
+  if (!isHrManager(user.role)) {
+    const leavePolicy = await env.HRMS
+      .prepare(
+        `SELECT probation_lock_months FROM leave_policies
+         WHERE company_id = ? AND leave_type = ? LIMIT 1`,
+      )
+      .bind(user.tenantId, body.leaveType.trim())
+      .first<{ probation_lock_months: number }>();
+
+    if (leavePolicy && leavePolicy.probation_lock_months > 0) {
+      const empRow = await env.HRMS
+        .prepare(`SELECT joined_on FROM users WHERE id = ? LIMIT 1`)
+        .bind(effectiveUserId)
+        .first<{ joined_on: string }>();
+
+      if (empRow?.joined_on) {
+        try {
+          const joinDate = new Date(empRow.joined_on);
+          const leaveStart = new Date(body.startDate);
+          const monthsSince =
+            (leaveStart.getUTCFullYear() - joinDate.getUTCFullYear()) * 12 +
+            (leaveStart.getUTCMonth() - joinDate.getUTCMonth());
+          if (monthsSince < leavePolicy.probation_lock_months) {
+            const unlockDate = new Date(joinDate);
+            unlockDate.setUTCMonth(unlockDate.getUTCMonth() + leavePolicy.probation_lock_months);
+            const unlockLabel = unlockDate.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+            return json(request, env, {
+              error: `${body.leaveType} is locked during probation. Available from ${unlockLabel}.`,
+            }, 400);
+          }
+        } catch { /* unparseable joined_on — skip probation check */ }
+      }
+    }
+  }
+  // ────────────────────────────────────────────────────────────────────────────
 
   await env.HRMS
     .prepare(
@@ -1243,7 +1471,10 @@ async function handleTestWebhook(request: Request, env: Env, user: ApiUser): Pro
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  }).catch(() => null);
+  }).catch((err) => {
+    console.error("[webhook] Delivery network error:", err instanceof Error ? err.message : String(err));
+    return null;
+  });
 
   if (!response?.ok) {
     return json(request, env, { error: "Webhook delivery failed." }, 502);
@@ -1423,7 +1654,8 @@ async function handleSubmitRegularisation(request: Request, env: Env, user: ApiU
       )
       .bind(id, user.tenantId, user.tenantId, user.userId, body.attendanceDate, body.requestedCheckIn || null, body.requestedCheckOut || null, body.reason.trim(), now, now)
       .run();
-  } catch {
+  } catch (err) {
+    console.error("[attendance] Failed to insert regularisation request:", err instanceof Error ? err.message : String(err));
     return json(request, env, { error: "Failed to submit regularisation request." }, 500);
   }
 
@@ -1638,8 +1870,15 @@ async function handleGetPayslipData(request: Request, env: Env, user: ApiUser): 
     .prepare(
       `SELECT pi.employee_id as id, u.name, COALESCE(u.department,'General') as dept,
               pi.basic, pi.hra, pi.conveyance, pi.pf, pi.esi, pi.tds, pi.pt,
-              pi.gross, pi.deductions, pi.net, pi.status,
-              pi.month_key
+              pi.gross, pi.deductions, pi.net, pi.status, pi.month_key,
+              pi.breakdown_json,
+              COALESCE(pi.esi_employee,  pi.esi)   AS esi_employee,
+              COALESCE(pi.lwf_employee,  0)         AS lwf_employee,
+              COALESCE(pi.lop_days,      0)         AS lop_days,
+              COALESCE(pi.lop_deduction, 0)         AS lop_deduction,
+              COALESCE(pi.pf_employer,   0)         AS pf_employer,
+              COALESCE(pi.esi_employer,  0)         AS esi_employer,
+              COALESCE(pi.lwf_employer,  0)         AS lwf_employer
        FROM payroll_items pi
        JOIN users u ON u.id = pi.employee_id
        WHERE COALESCE(pi.company_id, pi.org_id) = ?
@@ -1654,6 +1893,10 @@ async function handleGetPayslipData(request: Request, env: Env, user: ApiUser): 
       pf: number; esi: number; tds: number; pt: number;
       gross: number; deductions: number; net: number;
       status: string; month_key: string;
+      breakdown_json: string | null;
+      esi_employee: number; lwf_employee: number;
+      lop_days: number; lop_deduction: number;
+      pf_employer: number; esi_employer: number; lwf_employer: number;
     }>();
 
   if (!row) return json(request, env, { error: "Payslip not found." }, 404);
@@ -1665,6 +1908,57 @@ async function handleGetPayslipData(request: Request, env: Env, user: ApiUser): 
     .first<{ tax_regime: string }>();
 
   return json(request, env, { payslip: { ...row, tax_regime: declRow?.tax_regime ?? "new" } });
+}
+
+// ── GET /api/payroll/my-payslips ──────────────────────────────────────────────
+// Employee self-service: paginated list of all months' payslips for the caller.
+
+async function handleMyPayslips(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  const url = new URL(request.url);
+  const limit  = Math.min(Math.max(Number(url.searchParams.get("limit")  ?? 24), 1), 60);
+  const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
+
+  const rows = await env.HRMS
+    .prepare(
+      `SELECT pi.month_key, pi.gross, pi.deductions, pi.net, pi.status,
+              pi.basic, pi.hra, pi.conveyance, pi.pf, pi.esi, pi.tds, pi.pt,
+              pi.breakdown_json,
+              COALESCE(pi.esi_employee,  pi.esi) AS esi_employee,
+              COALESCE(pi.lwf_employee,  0)       AS lwf_employee,
+              COALESCE(pi.lop_days,      0)       AS lop_days,
+              COALESCE(pi.lop_deduction, 0)       AS lop_deduction,
+              COALESCE(pi.pf_employer,   0)       AS pf_employer,
+              COALESCE(pi.esi_employer,  0)       AS esi_employer,
+              COALESCE(pi.lwf_employer,  0)       AS lwf_employer,
+              u.name, COALESCE(u.department,'General') as dept
+       FROM payroll_items pi
+       JOIN users u ON u.id = pi.employee_id
+       WHERE COALESCE(pi.company_id, pi.org_id) = ?
+         AND pi.employee_id = ?
+       ORDER BY pi.month_key DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .bind(user.tenantId, user.userId, limit, offset)
+    .all<{
+      month_key: string; gross: number; deductions: number; net: number; status: string;
+      basic: number; hra: number; conveyance: number; pf: number; esi: number;
+      tds: number; pt: number;
+      breakdown_json: string | null;
+      esi_employee: number; lwf_employee: number;
+      lop_days: number; lop_deduction: number;
+      pf_employer: number; esi_employer: number; lwf_employer: number;
+      name: string; dept: string;
+    }>();
+
+  const countRow = await env.HRMS
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM payroll_items
+       WHERE COALESCE(company_id, org_id) = ? AND employee_id = ?`,
+    )
+    .bind(user.tenantId, user.userId)
+    .first<{ cnt: number }>();
+
+  return json(request, env, { payslips: rows.results, total: countRow?.cnt ?? 0 });
 }
 
 export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Response | null> {
@@ -1719,6 +2013,10 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
 
   if (method === "POST" && pathname === "/api/attendance/check-out") {
     return handleAttendanceCheckOut(request, env, user!);
+  }
+
+  if (method === "POST" && pathname === "/api/attendance/recompute") {
+    return handleAttendanceRecompute(request, env, user!);
   }
 
   if (method === "GET" && pathname === "/api/attendance/today") {
@@ -1819,6 +2117,9 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   }
   if (method === "GET" && pathname === "/api/payslip") {
     return handleGetPayslipData(request, env, user!);
+  }
+  if (method === "GET" && pathname === "/api/payroll/my-payslips") {
+    return handleMyPayslips(request, env, user!);
   }
 
   if (method === "POST" && pathname === "/api/hrbot/chat") {
@@ -2036,11 +2337,18 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   }
 
   // ── Salary Structure ─────────────────────────────────────────────────────────
-  if (method === "GET" && pathname === "/api/salary-structures") {
-    return handleListSalaryStructures(request, env, user!);
-  }
+  // NOTE: GET /api/salary-structures is intentionally NOT handled here.
+  // The browser's useFetcher sends cookies (not a Bearer token), so handling it
+  // here would return 401. It falls through to the React Router resource route
+  // (app/routes/api.salary-structures.tsx) which uses cookie-based auth.
+  // POST is also excluded for consistency (can be added back if needed for server-side).
   if (method === "POST" && pathname === "/api/salary-structures") {
     return handleUpsertSalaryStructure(request, env, user!);
+  }
+
+  // ── Payroll Engine: compute salaries for a month ────────────────────────────
+  if (method === "POST" && pathname === "/api/payroll/compute") {
+    return handlePayrollCompute(request, env, user!);
   }
 
   // ── Payroll Lock / Finalize / Disburse ───────────────────────────────────────
@@ -2086,6 +2394,12 @@ export async function handleCoreHrmsApi(request: Request, env: Env): Promise<Res
   }
   if (method === "POST" && pathname === "/api/leave-policies/credit") {
     return handleCreditLeaveBalances(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/leaves/run-accrual") {
+    return handleRunMonthlyAccrual(request, env, user!);
+  }
+  if (method === "POST" && pathname === "/api/leaves/year-end-rollover") {
+    return handleRunYearEndRollover(request, env, user!);
   }
 
   // ── WFH Requests ─────────────────────────────────────────────────────────────
@@ -2608,6 +2922,247 @@ async function handleUpsertSalaryStructure(request: Request, env: Env, user: Api
   return json(request, env, { ok: true });
 }
 
+// ── Payroll Compute Handler ───────────────────────────────────────────────────
+
+/**
+ * POST /api/payroll/compute
+ *
+ * Runs the Indian payroll engine for every active employee in the tenant
+ * for the requested monthKey. Creates/updates payroll_runs and payroll_items.
+ *
+ * Body: {
+ *   monthKey: "YYYY-MM",          -- required
+ *   lopData?: [                   -- optional LOP overrides per employee
+ *     { userId: string, lopDays: number, workingDaysInMonth?: number }
+ *   ],
+ *   ptState?: string,             -- default PT state for the company (e.g. "MH")
+ *   force?: boolean               -- re-compute even if run already exists (default false)
+ * }
+ */
+async function handlePayrollCompute(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isAdminUser(user.role)) {
+    return json(request, env, { error: "Only admins can compute payroll." }, 403);
+  }
+
+  const body = await readJsonBody<{
+    monthKey?: string;
+    lopData?: Array<{ userId: string; lopDays: number; workingDaysInMonth?: number }>;
+    ptState?: string;
+    force?: boolean;
+  }>(request);
+
+  if (!body?.monthKey || !/^\d{4}-\d{2}$/.test(body.monthKey)) {
+    return json(request, env, { error: "monthKey is required in format YYYY-MM." }, 400);
+  }
+
+  const { monthKey, lopData = [], ptState: defaultPtState = "NONE", force = false } = body;
+
+  // ── Guard: don't re-run if finalized ──────────────────────────────────────
+  const existingRun = await env.HRMS
+    .prepare(
+      `SELECT id, finalized, locked FROM payroll_runs
+       WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`,
+    )
+    .bind(user.tenantId, monthKey)
+    .first<{ id: string; finalized: number; locked: number }>();
+
+  if (existingRun?.finalized) {
+    return json(request, env, { error: "Payroll for this month is already finalized and cannot be recomputed." }, 409);
+  }
+  if (existingRun?.locked && !force) {
+    return json(request, env, { error: "Payroll run is locked. Pass force:true to recompute." }, 409);
+  }
+
+  // ── Fetch all active employees with salary data ────────────────────────────
+  const employees = await env.HRMS
+    .prepare(
+      `SELECT
+         u.id, u.name, u.department,
+         es.annual_ctc,
+         ss.basic_pct, ss.hra_pct, ss.conveyance, ss.lta,
+         ss.medical_allowance, ss.special_allowance_pct,
+         itd.tax_regime, itd.pt_state
+       FROM users u
+       LEFT JOIN employee_salaries es
+              ON es.user_id = u.id AND COALESCE(es.company_id, es.org_id) = ?
+       LEFT JOIN salary_structures ss
+              ON ss.user_id = u.id AND ss.company_id = ?
+       LEFT JOIN it_declarations itd
+              ON itd.user_id = u.id AND COALESCE(itd.company_id, itd.org_id) = ?
+              AND itd.status = 'approved'
+       WHERE COALESCE(u.company_id, u.org_id) = ?
+         AND LOWER(COALESCE(u.status, 'active')) NOT IN ('inactive', 'disabled', 'terminated')
+       ORDER BY u.name`,
+    )
+    .bind(user.tenantId, user.tenantId, user.tenantId, user.tenantId)
+    .all<{
+      id: string; name: string; department: string | null;
+      annual_ctc: number | null;
+      basic_pct: number | null; hra_pct: number | null; conveyance: number | null;
+      lta: number | null; medical_allowance: number | null; special_allowance_pct: number | null;
+      tax_regime: string | null; pt_state: string | null;
+    }>();
+
+  if (!employees.results.length) {
+    return json(request, env, { error: "No active employees found." }, 404);
+  }
+
+  // Build LOP lookup keyed by userId
+  const lopMap = new Map<string, { lopDays: number; workingDaysInMonth: number }>();
+  for (const l of lopData) {
+    lopMap.set(l.userId, { lopDays: l.lopDays, workingDaysInMonth: l.workingDaysInMonth ?? 26 });
+  }
+
+  // Months elapsed in FY for TDS annualization (April = 1 … March = 12)
+  const mo = parseInt(monthKey.split("-")[1], 10);
+  const monthsElapsedInFY = mo >= 4 ? mo - 3 : mo + 9;
+
+  const now = nowIso();
+  const runId = existingRun?.id ?? crypto.randomUUID();
+
+  // ── Compute payroll for each employee (single pass) ───────────────────────
+  type ComputedRow = {
+    emp: typeof employees.results[number];
+    result: ReturnType<typeof computePayroll>;
+    ptState: string;
+    taxRegime: "new" | "old";
+  };
+
+  const computed: ComputedRow[] = [];
+
+  for (const emp of employees.results) {
+    const annualCtc = emp.annual_ctc ?? 0;
+    if (annualCtc <= 0) continue;
+
+    const components = deriveSalaryComponents({
+      annualCtc,
+      basicPct:            emp.basic_pct              ?? 50,
+      hraPct:              emp.hra_pct                ?? 20,
+      conveyanceFixed:     emp.conveyance             ?? 1_600,
+      ltaFixed:            emp.lta                    ?? 0,
+      medicalFixed:        emp.medical_allowance      ?? 0,
+      specialAllowancePct: emp.special_allowance_pct  ?? 0,
+    });
+
+    const lop       = lopMap.get(emp.id) ?? { lopDays: 0, workingDaysInMonth: 26 };
+    const ptState   = emp.pt_state ?? defaultPtState;
+    const taxRegime: "new" | "old" = emp.tax_regime === "old" ? "old" : "new";
+
+    const result = computePayroll({
+      employeeId: emp.id,
+      components,
+      ptState,
+      taxRegime,
+      pfOptOut: false,
+      monthKey,
+      monthsElapsedInFY,
+      lopDays: lop.lopDays,
+      workingDaysInMonth: lop.workingDaysInMonth,
+    });
+
+    computed.push({ emp, result, ptState, taxRegime });
+  }
+
+  if (computed.length === 0) {
+    return json(request, env, { error: "No employees had salary configured. Add salary structures first." }, 422);
+  }
+
+  // ── Upsert payroll_run ────────────────────────────────────────────────────
+  if (existingRun) {
+    await env.HRMS
+      .prepare(
+        `UPDATE payroll_runs
+         SET processed_count = ?, total_count = ?, status = 'processed', updated_at = ?
+         WHERE id = ?`,
+      )
+      .bind(computed.length, computed.length, now, runId)
+      .run();
+  } else {
+    await env.HRMS
+      .prepare(
+        `INSERT INTO payroll_runs
+           (id, org_id, company_id, month_key, status, processed_count, total_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'processed', ?, ?, ?, ?)`,
+      )
+      .bind(runId, user.tenantId, user.tenantId, monthKey, computed.length, computed.length, now, now)
+      .run();
+  }
+
+  // ── Batch upsert payroll_items (chunked at 100 for D1 limits) ────────────
+  const BATCH_SIZE = 100;
+  const INSERT_SQL = `
+    INSERT INTO payroll_items
+      (id, run_id, org_id, company_id, month_key, employee_id, employee_name, department,
+       basic, hra, conveyance, pf, tds, pt, gross, deductions, net,
+       esi_employee, lwf_employee, pf_employer, esi_employer, lwf_employer,
+       lop_days, lop_deduction, pt_state, tax_regime, breakdown_json,
+       status, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, 'processed',?,?)
+    ON CONFLICT(org_id, month_key, employee_id) DO UPDATE SET
+      run_id=excluded.run_id, basic=excluded.basic, hra=excluded.hra,
+      conveyance=excluded.conveyance, pf=excluded.pf, tds=excluded.tds, pt=excluded.pt,
+      gross=excluded.gross, deductions=excluded.deductions, net=excluded.net,
+      esi_employee=excluded.esi_employee, lwf_employee=excluded.lwf_employee,
+      pf_employer=excluded.pf_employer, esi_employer=excluded.esi_employer,
+      lwf_employer=excluded.lwf_employer, lop_days=excluded.lop_days,
+      lop_deduction=excluded.lop_deduction, pt_state=excluded.pt_state,
+      tax_regime=excluded.tax_regime, breakdown_json=excluded.breakdown_json,
+      updated_at=excluded.updated_at`;
+
+  for (let i = 0; i < computed.length; i += BATCH_SIZE) {
+    const chunk = computed.slice(i, i + BATCH_SIZE);
+    await env.HRMS.batch(
+      chunk.map(({ emp, result, ptState, taxRegime }) =>
+        env.HRMS.prepare(INSERT_SQL).bind(
+          crypto.randomUUID(), runId, user.tenantId, user.tenantId, monthKey,
+          emp.id, emp.name, emp.department ?? "General",
+          result.basic, result.hra, result.conveyance,
+          result.pf.employeeContribution, result.tds.monthlyTds, result.pt.monthlyPt,
+          result.grossAfterLop, result.totalEmployeeDeductions, result.netPay,
+          result.esi.employeeContribution, result.lwf.employeeContribution,
+          result.employerPf, result.employerEsi, result.employerLwf,
+          result.lop.lopDays, result.lop.deductionAmount,
+          ptState, taxRegime, JSON.stringify(result),
+          now, now,
+        ),
+      ),
+    );
+  }
+
+  // ── Build response summary ────────────────────────────────────────────────
+  const summary = computed.reduce(
+    (s, { result }) => ({
+      totalGross: s.totalGross + result.grossAfterLop,
+      totalNet:   s.totalNet   + result.netPay,
+      totalPf:    s.totalPf    + result.pf.employeeContribution,
+      totalEsi:   s.totalEsi   + result.esi.employeeContribution,
+      totalTds:   s.totalTds   + result.tds.monthlyTds,
+    }),
+    { totalGross: 0, totalNet: 0, totalPf: 0, totalEsi: 0, totalTds: 0 },
+  );
+
+  return json(request, env, {
+    ok: true,
+    runId,
+    monthKey,
+    processedCount: computed.length,
+    fyKey: getFyKey(monthKey),
+    summary,
+    employees: computed.map(({ emp, result }) => ({
+      employeeId: emp.id,
+      name: emp.name,
+      grossAfterLop: result.grossAfterLop,
+      netPay: result.netPay,
+      pf: result.pf.employeeContribution,
+      esi: result.esi.employeeContribution,
+      tds: result.tds.monthlyTds,
+      pt: result.pt.monthlyPt,
+      lwf: result.lwf.employeeContribution,
+      lop: result.lop.deductionAmount,
+    })),
+  }, 200);
+}
+
 // ── Payroll Lock / Finalize / Disburse Handlers ──────────────────────────────
 
 async function handlePayrollRunStatus(request: Request, env: Env, user: ApiUser): Promise<Response> {
@@ -2812,7 +3367,9 @@ async function handleCreateResignation(request: Request, env: Env, user: ApiUser
         link: "/hrms/resignation",
       }),
     ));
-  } catch { /* notification failure is non-blocking */ }
+  } catch (err) {
+    console.warn("[resignation] Failed to send HR notification (non-blocking):", err instanceof Error ? err.message : String(err));
+  }
 
   return json(request, env, { ok: true, id }, 201);
 }
@@ -2855,7 +3412,9 @@ async function handleResignationDecision(
         link: "/hrms/resignation",
       });
     }
-  } catch { /* non-blocking */ }
+  } catch (err) {
+    console.warn("[resignation] Failed to send employee notification (non-blocking):", err instanceof Error ? err.message : String(err));
+  }
 
   return json(request, env, { ok: true, id: resignId, status: decision });
 }
@@ -2988,6 +3547,335 @@ async function handleCreditLeaveBalances(request: Request, env: Env, user: ApiUs
   return json(request, env, { ok: true, credited, year, leaveType: body.leaveType });
 }
 
+// ── POST /api/leaves/run-accrual ──────────────────────────────────────────────
+// Monthly prorated accrual. Skips employees still in probation.
+// Idempotent: re-running for the same monthKey is safe (skips already-credited rows).
+
+async function handleRunMonthlyAccrual(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ monthKey?: string; dryRun?: boolean }>(request);
+  if (!body?.monthKey || !/^\d{4}-\d{2}$/.test(body.monthKey)) {
+    return json(request, env, { error: "monthKey in YYYY-MM format is required." }, 400);
+  }
+
+  const { monthKey, dryRun = false } = body;
+  const year = Number(monthKey.split("-")[0]);
+  const now = nowIso();
+  const accrualDate = new Date(`${monthKey}-01T00:00:00.000Z`);
+
+  // Fetch all monthly policies + all active employees + existing balances in 3 queries
+  const [policiesResult, employeesResult, existingResult] = await Promise.all([
+    env.HRMS
+      .prepare(
+        `SELECT leave_type, accrual_days, max_balance, probation_lock_months
+         FROM leave_policies WHERE company_id = ? AND accrual_type = 'monthly'`,
+      )
+      .bind(user.tenantId)
+      .all<{ leave_type: string; accrual_days: number; max_balance: number; probation_lock_months: number }>(),
+    env.HRMS
+      .prepare(
+        `SELECT id, joined_on FROM users
+         WHERE COALESCE(company_id, org_id) = ?
+           AND LOWER(COALESCE(status, 'active')) NOT IN ('inactive', 'disabled')`,
+      )
+      .bind(user.tenantId)
+      .all<{ id: string; joined_on: string }>(),
+    env.HRMS
+      .prepare(
+        `SELECT user_id, leave_type, id, total, last_accrual_month
+         FROM leave_balances WHERE COALESCE(company_id, org_id) = ? AND year = ?`,
+      )
+      .bind(user.tenantId, year)
+      .all<{ user_id: string; leave_type: string; id: string; total: number; last_accrual_month: string | null }>(),
+  ]);
+
+  if (policiesResult.results.length === 0) {
+    return json(request, env, {
+      ok: true, monthKey, dryRun, credited: 0,
+      message: "No monthly accrual policies configured.",
+    });
+  }
+
+  // Build lookup: `${userId}:${leaveType}` → balance row
+  const balMap = new Map(
+    existingResult.results.map((b) => [`${b.user_id}:${b.leave_type}`, b]),
+  );
+
+  const statements: D1PreparedStatement[] = [];
+  const logRows: Array<{
+    leaveType: string;
+    credited: number; skippedProbation: number; skippedDuplicate: number; days: number;
+  }> = [];
+
+  for (const policy of policiesResult.results) {
+    const monthlyCredit = Math.round((policy.accrual_days / 12) * 100) / 100;
+    let policyCredited = 0, policySkippedProbation = 0, policySkippedDuplicate = 0, policyDays = 0;
+
+    for (const emp of employeesResult.results) {
+      // ── Probation lock ────────────────────────────────────────────────────
+      if (policy.probation_lock_months > 0 && emp.joined_on) {
+        try {
+          const joinDate = new Date(emp.joined_on);
+          const monthsSince =
+            (accrualDate.getUTCFullYear() - joinDate.getUTCFullYear()) * 12 +
+            (accrualDate.getUTCMonth() - joinDate.getUTCMonth());
+          if (monthsSince < policy.probation_lock_months) {
+            policySkippedProbation++;
+            continue;
+          }
+        } catch { /* unparseable joined_on — skip probation check */ }
+      }
+
+      const key = `${emp.id}:${policy.leave_type}`;
+      const existing = balMap.get(key);
+
+      // ── Idempotency ───────────────────────────────────────────────────────
+      if (existing?.last_accrual_month === monthKey) {
+        policySkippedDuplicate++;
+        continue;
+      }
+
+      // ── Calculate credit (cap at max_balance) ─────────────────────────────
+      const currentTotal = existing?.total ?? 0;
+      const credit = policy.max_balance > 0
+        ? Math.min(monthlyCredit, Math.max(0, policy.max_balance - currentTotal))
+        : monthlyCredit;
+
+      if (credit <= 0) continue;
+
+      if (!dryRun) {
+        if (existing) {
+          statements.push(
+            env.HRMS
+              .prepare(
+                `UPDATE leave_balances
+                 SET total = total + ?, last_accrual_month = ?, updated_at = ?
+                 WHERE id = ?`,
+              )
+              .bind(credit, monthKey, now, existing.id),
+          );
+        } else {
+          statements.push(
+            env.HRMS
+              .prepare(
+                `INSERT INTO leave_balances
+                   (id, company_id, org_id, user_id, leave_type, year, total, used, pending,
+                    last_accrual_month, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
+              )
+              .bind(
+                crypto.randomUUID(),
+                user.tenantId, user.tenantId, emp.id,
+                policy.leave_type, year, credit,
+                monthKey, now, now,
+              ),
+          );
+        }
+      }
+
+      policyCredited++;
+      policyDays += credit;
+    }
+
+    logRows.push({ leaveType: policy.leave_type, credited: policyCredited, skippedProbation: policySkippedProbation, skippedDuplicate: policySkippedDuplicate, days: policyDays });
+  }
+
+  if (!dryRun) {
+    // Audit log entries
+    for (const lr of logRows) {
+      statements.push(
+        env.HRMS
+          .prepare(
+            `INSERT INTO leave_accrual_log
+               (id, company_id, run_month, leave_type, accrual_type,
+                employees_credited, employees_skipped_probation, employees_skipped_duplicate,
+                total_days_credited, dry_run, run_by, run_at)
+             VALUES (?, ?, ?, ?, 'monthly', ?, ?, ?, ?, 0, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(), user.tenantId, monthKey, lr.leaveType,
+            lr.credited, lr.skippedProbation, lr.skippedDuplicate,
+            lr.days, user.userId, now,
+          ),
+      );
+    }
+    // Execute in chunks of 100
+    for (let i = 0; i < statements.length; i += 100) {
+      await env.HRMS.batch(statements.slice(i, i + 100));
+    }
+  }
+
+  const totals = logRows.reduce(
+    (acc, lr) => {
+      acc.credited += lr.credited;
+      acc.days += lr.days;
+      acc.skippedProbation += lr.skippedProbation;
+      acc.skippedDuplicate += lr.skippedDuplicate;
+      return acc;
+    },
+    { credited: 0, days: 0, skippedProbation: 0, skippedDuplicate: 0 },
+  );
+
+  return json(request, env, {
+    ok: true, monthKey, dryRun,
+    policiesProcessed: policiesResult.results.length,
+    credited: totals.credited,
+    totalDaysAccrued: Math.round(totals.days * 100) / 100,
+    skippedProbation: totals.skippedProbation,
+    skippedDuplicate: totals.skippedDuplicate,
+    breakdown: logRows,
+  });
+}
+
+// ── POST /api/leaves/year-end-rollover ────────────────────────────────────────
+// Carry forward min(unused, carry_forward_max) into the next year.
+// Excess days are forfeited (logged for encashment reporting).
+// Idempotent: safe to re-run — existing toYear balances are updated not doubled.
+
+async function handleRunYearEndRollover(request: Request, env: Env, user: ApiUser): Promise<Response> {
+  if (!isHrManager(user.role)) return json(request, env, { error: "Forbidden." }, 403);
+  const body = await readJsonBody<{ fromYear?: number; toYear?: number; dryRun?: boolean }>(request);
+
+  const currentYear = new Date().getUTCFullYear();
+  const fromYear = Number(body?.fromYear ?? currentYear);
+  const toYear = Number(body?.toYear ?? fromYear + 1);
+  const dryRun = body?.dryRun ?? false;
+
+  if (toYear !== fromYear + 1) {
+    return json(request, env, { error: "toYear must be exactly fromYear + 1." }, 400);
+  }
+
+  const now = nowIso();
+
+  // Fetch everything in 4 parallel queries
+  const [policiesResult, employeesResult, fromBalResult, toBalResult] = await Promise.all([
+    env.HRMS
+      .prepare(
+        `SELECT leave_type, carry_forward_max, max_balance
+         FROM leave_policies WHERE company_id = ?`,
+      )
+      .bind(user.tenantId)
+      .all<{ leave_type: string; carry_forward_max: number; max_balance: number }>(),
+    env.HRMS
+      .prepare(
+        `SELECT id FROM users
+         WHERE COALESCE(company_id, org_id) = ?
+           AND LOWER(COALESCE(status, 'active')) NOT IN ('inactive', 'disabled')`,
+      )
+      .bind(user.tenantId)
+      .all<{ id: string }>(),
+    env.HRMS
+      .prepare(
+        `SELECT user_id, leave_type, total, used, pending
+         FROM leave_balances WHERE COALESCE(company_id, org_id) = ? AND year = ?`,
+      )
+      .bind(user.tenantId, fromYear)
+      .all<{ user_id: string; leave_type: string; total: number; used: number; pending: number }>(),
+    env.HRMS
+      .prepare(
+        `SELECT user_id, leave_type, id, total
+         FROM leave_balances WHERE COALESCE(company_id, org_id) = ? AND year = ?`,
+      )
+      .bind(user.tenantId, toYear)
+      .all<{ user_id: string; leave_type: string; id: string; total: number }>(),
+  ]);
+
+  const fromMap = new Map(
+    fromBalResult.results.map((b) => [`${b.user_id}:${b.leave_type}`, b]),
+  );
+  const toMap = new Map(
+    toBalResult.results.map((b) => [`${b.user_id}:${b.leave_type}`, b]),
+  );
+  const policyMap = new Map(
+    policiesResult.results.map((p) => [p.leave_type, p]),
+  );
+  const employeeIds = employeesResult.results.map((e) => e.id);
+
+  const statements: D1PreparedStatement[] = [];
+  let totalCarried = 0, totalForfeited = 0, processed = 0;
+
+  for (const empId of employeeIds) {
+    for (const policy of policiesResult.results) {
+      const fromKey = `${empId}:${policy.leave_type}`;
+      const fromBal = fromMap.get(fromKey);
+      if (!fromBal) continue;
+
+      // unused = total - used  (pending leaves may still resolve; conservative: treat pending as used)
+      const unused = Math.max(0, fromBal.total - fromBal.used - fromBal.pending);
+      const carriedForward = policy.carry_forward_max > 0
+        ? Math.min(unused, policy.carry_forward_max)
+        : 0;
+      const forfeited = unused - carriedForward;
+
+      if (unused <= 0) continue;
+
+      processed++;
+      totalCarried += carriedForward;
+      totalForfeited += forfeited;
+
+      if (!dryRun && carriedForward > 0) {
+        const toBal = toMap.get(fromKey);
+        if (toBal) {
+          // Add carry-forward on top of any already-credited toYear balance, respecting max_balance
+          const newTotal = policy.max_balance > 0
+            ? Math.min(toBal.total + carriedForward, policy.max_balance)
+            : toBal.total + carriedForward;
+          statements.push(
+            env.HRMS
+              .prepare(`UPDATE leave_balances SET total = ?, updated_at = ? WHERE id = ?`)
+              .bind(newTotal, now, toBal.id),
+          );
+        } else {
+          statements.push(
+            env.HRMS
+              .prepare(
+                `INSERT INTO leave_balances
+                   (id, company_id, org_id, user_id, leave_type, year, total, used, pending, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+              )
+              .bind(
+                crypto.randomUUID(),
+                user.tenantId, user.tenantId, empId,
+                policy.leave_type, toYear, carriedForward, now, now,
+              ),
+          );
+        }
+      }
+
+      if (!dryRun) {
+        statements.push(
+          env.HRMS
+            .prepare(
+              `INSERT INTO leave_carry_forward_log
+                 (id, company_id, from_year, to_year, leave_type, user_id,
+                  unused_days, carried_forward, forfeited, run_by, run_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .bind(
+              crypto.randomUUID(), user.tenantId,
+              fromYear, toYear, policy.leave_type, empId,
+              unused, carriedForward, forfeited,
+              user.userId, now,
+            ),
+        );
+      }
+    }
+  }
+
+  if (!dryRun) {
+    for (let i = 0; i < statements.length; i += 100) {
+      await env.HRMS.batch(statements.slice(i, i + 100));
+    }
+  }
+
+  return json(request, env, {
+    ok: true, fromYear, toYear, dryRun,
+    processed,
+    totalCarried: Math.round(totalCarried * 100) / 100,
+    totalForfeited: Math.round(totalForfeited * 100) / 100,
+  });
+}
+
 // ── WFH Request Handlers ──────────────────────────────────────────────────────
 
 async function handleListWfhRequests(request: Request, env: Env, user: ApiUser): Promise<Response> {
@@ -3035,8 +3923,13 @@ async function handleCreateWfhRequest(request: Request, env: Env, user: ApiUser)
       .bind(id, user.tenantId, user.userId, userName?.name ?? user.userId,
         body.wfhDate, body.reason.trim(), now, now)
       .run();
-  } catch {
-    return json(request, env, { error: "A WFH request for that date already exists." }, 409);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("UNIQUE")) {
+      return json(request, env, { error: "A WFH request for that date already exists." }, 409);
+    }
+    console.error("[wfh] Failed to insert WFH request:", msg);
+    return json(request, env, { error: "Failed to submit WFH request." }, 500);
   }
 
   // Notify HR managers
@@ -3334,26 +4227,32 @@ async function handleRecordLoanEmi(loanId: string, request: Request, env: Env, u
 
   const deductAmount = body.emiAmount ?? loan.emi_amount;
   const now = nowIso();
-  try {
-    await env.HRMS
-      .prepare(
-        `INSERT INTO loan_emis (id, loan_id, company_id, user_id, month_key, emi_amount, status, deducted_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'deducted', ?, ?)`,
-      )
-      .bind(crypto.randomUUID(), loanId, user.tenantId, loan.user_id, body.monthKey, deductAmount, now, now)
-      .run();
-  } catch {
-    return json(request, env, { error: "EMI already recorded for this month." }, 409);
-  }
-
   const newOutstanding = Math.max(0, loan.outstanding - deductAmount);
   const newEmisPaid = loan.emis_paid + 1;
   const newStatus = newOutstanding === 0 || newEmisPaid >= loan.emi_months ? "closed" : "active";
 
-  await env.HRMS
-    .prepare(`UPDATE employee_loans SET emis_paid = ?, outstanding = ?, status = ?, updated_at = ? WHERE id = ?`)
-    .bind(newEmisPaid, newOutstanding, newStatus, now, loanId)
-    .run();
+  // Use D1 batch so both the EMI record insert and the loan balance update are atomic.
+  // If either fails, neither change is committed.
+  try {
+    await env.HRMS.batch([
+      env.HRMS
+        .prepare(
+          `INSERT INTO loan_emis (id, loan_id, company_id, user_id, month_key, emi_amount, status, deducted_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'deducted', ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), loanId, user.tenantId, loan.user_id, body.monthKey, deductAmount, now, now),
+      env.HRMS
+        .prepare(`UPDATE employee_loans SET emis_paid = ?, outstanding = ?, status = ?, updated_at = ? WHERE id = ?`)
+        .bind(newEmisPaid, newOutstanding, newStatus, now, loanId),
+    ]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("UNIQUE")) {
+      return json(request, env, { error: "EMI already recorded for this month." }, 409);
+    }
+    console.error("[loans] Failed to record EMI deduction:", msg);
+    return json(request, env, { error: "Failed to record EMI. Please try again." }, 500);
+  }
 
   return json(request, env, { ok: true, outstanding: newOutstanding, status: newStatus, emisPaid: newEmisPaid });
 }
@@ -3996,10 +4895,12 @@ async function handleMyEnrollments(request: Request, env: Env, user: ApiUser): P
   return json(request, env, { enrollments: rows.results });
 }
 
-// ── HRBot AI Chat (OpenRouter / Claude) ───────────────────────────────────────
+// ── HRBot AI Chat (Gemini primary, OpenRouter fallback) ───────────────────────
 async function handleHRBotChat(request: Request, env: Env, user: ApiUser): Promise<Response> {
-  const apiKey = (env as unknown as Record<string, string>).OPENROUTER_API_KEY;
-  if (!apiKey) {
+  const geminiKey = env.GEMINI_API_KEY;
+  const openrouterKey = env.OPENROUTER_API_KEY;
+
+  if (!geminiKey && !openrouterKey) {
     return json(request, env, { error: "AI not configured." }, 503);
   }
 
@@ -4044,7 +4945,102 @@ Company policies:
 
 Answer helpfully and concisely. Use bullet points when listing items. If you don't know specific company-level details, acknowledge it and suggest contacting HR. Always be warm and professional.`;
 
-  const openRouterMessages = [
+  // ── Gemini path ────────────────────────────────────────────────────────────
+  if (geminiKey) {
+    // Gemini uses "user"/"model" roles (not "assistant")
+    const geminiContents = body.messages.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+
+    // Try gemini-2.0-flash first, fall back to gemini-1.5-flash
+    const geminiModels = ["gemini-2.0-flash", "gemini-1.5-flash"];
+    let geminiResponse: Response | null = null;
+
+    for (const model of geminiModels) {
+      const attempt = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${geminiKey}&alt=sse`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents: geminiContents,
+            generationConfig: { maxOutputTokens: 1024 },
+          }),
+        },
+      );
+      if (attempt.ok) {
+        geminiResponse = attempt;
+        break;
+      }
+      // Consume the error body so the connection is released
+      await attempt.text().catch(() => {});
+    }
+
+    // If Gemini failed on all models, fall through to OpenRouter below
+    if (!geminiResponse) {
+      if (!openrouterKey) {
+        return json(request, env, { error: "AI service unavailable. Please try again later." }, 502);
+      }
+      // fall through to OpenRouter section
+    } else {
+      const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+
+    (async () => {
+      try {
+        const reader = geminiResponse.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (!data || data === "[DONE]") continue;
+            try {
+              const parsed = JSON.parse(data);
+              const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (text) {
+                await writer.write(encoder.encode(`data: ${JSON.stringify({ content: text })}\n\n`));
+              }
+            } catch {
+              // skip malformed chunk
+            }
+          }
+        }
+        await writer.write(encoder.encode("data: [DONE]\n\n"));
+      } catch {
+        // stream ended
+      } finally {
+        await writer.close();
+      }
+    })();
+
+    return withCors(
+      new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      }),
+      request,
+      env,
+    );
+    } // end else (geminiResponse ok)
+  } // end if (geminiKey)
+
+  // ── OpenRouter fallback ────────────────────────────────────────────────────
+  const orMessages = [
     { role: "system", content: systemPrompt },
     ...body.messages.map((m) => ({ role: m.role, content: m.content })),
   ];
@@ -4054,14 +5050,14 @@ Answer helpfully and concisely. Use bullet points when listing items. If you don
   const orResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": `Bearer ${openrouterKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": refererBase,
       "X-Title": "JWithKP HRMS HRBot",
     },
     body: JSON.stringify({
       model: "anthropic/claude-3-haiku",
-      messages: openRouterMessages,
+      messages: orMessages,
       stream: true,
       max_tokens: 1024,
     }),
@@ -4072,7 +5068,6 @@ Answer helpfully and concisely. Use bullet points when listing items. If you don
     return json(request, env, { error: `AI service error: ${err.slice(0, 200)}` }, 502);
   }
 
-  // Stream SSE back to client
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -4135,7 +5130,14 @@ async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser
     .prepare(
       `SELECT id, timezone, date_format, currency, office_lat, office_lng,
               geo_fence_radius, office_checkin_required, wfh_enabled,
-              payroll_day, company_logo_url, setup_completed
+              payroll_day, company_logo_url, setup_completed,
+              COALESCE(work_start_time,'09:00') as work_start_time,
+              COALESCE(work_end_time,'18:00') as work_end_time,
+              COALESCE(late_threshold_minutes,15) as late_threshold_minutes,
+              COALESCE(half_day_threshold_hours,4) as half_day_threshold_hours,
+              COALESCE(min_hours_for_present,2) as min_hours_for_present,
+              COALESCE(overtime_threshold_hours,9) as overtime_threshold_hours,
+              COALESCE(attendance_timezone,'Asia/Kolkata') as attendance_timezone
        FROM tenant_settings
        WHERE COALESCE(company_id, org_id) = ?
        LIMIT 1`,
@@ -4154,6 +5156,13 @@ async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser
       payroll_day: number;
       company_logo_url: string | null;
       setup_completed: number;
+      work_start_time: string;
+      work_end_time: string;
+      late_threshold_minutes: number;
+      half_day_threshold_hours: number;
+      min_hours_for_present: number;
+      overtime_threshold_hours: number;
+      attendance_timezone: string;
     }>();
 
   // Fetch company display name with backward-compatible fallback:
@@ -4186,6 +5195,13 @@ async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser
         payrollDay: 1,
         companyLogoUrl: null,
         setupCompleted: false,
+        workStartTime: "09:00",
+        workEndTime: "18:00",
+        lateThresholdMinutes: 15,
+        halfDayThresholdHours: 4,
+        minHoursForPresent: 2,
+        overtimeThresholdHours: 9,
+        attendanceTimezone: "Asia/Kolkata",
       },
     });
   }
@@ -4204,6 +5220,13 @@ async function handleGetTenantSettings(request: Request, env: Env, user: ApiUser
       payrollDay: row.payroll_day,
       companyLogoUrl: row.company_logo_url,
       setupCompleted: Boolean(row.setup_completed),
+      workStartTime: row.work_start_time,
+      workEndTime: row.work_end_time,
+      lateThresholdMinutes: row.late_threshold_minutes,
+      halfDayThresholdHours: row.half_day_threshold_hours,
+      minHoursForPresent: row.min_hours_for_present,
+      overtimeThresholdHours: row.overtime_threshold_hours,
+      attendanceTimezone: row.attendance_timezone,
     },
   });
 }
@@ -4224,6 +5247,14 @@ async function handleSaveTenantSettings(request: Request, env: Env, user: ApiUse
     companyLogoUrl?: string | null;
     setupCompleted?: boolean;
     companyName?: string | null;
+    // Attendance policy
+    workStartTime?: string;
+    workEndTime?: string;
+    lateThresholdMinutes?: number;
+    halfDayThresholdHours?: number;
+    minHoursForPresent?: number;
+    overtimeThresholdHours?: number;
+    attendanceTimezone?: string;
   }>(request);
 
 
@@ -4268,6 +5299,13 @@ async function handleSaveTenantSettings(request: Request, env: Env, user: ApiUse
              payroll_day = COALESCE(?, payroll_day),
              company_logo_url = COALESCE(?, company_logo_url),
              setup_completed = COALESCE(?, setup_completed),
+             work_start_time = COALESCE(?, work_start_time),
+             work_end_time = COALESCE(?, work_end_time),
+             late_threshold_minutes = COALESCE(?, late_threshold_minutes),
+             half_day_threshold_hours = COALESCE(?, half_day_threshold_hours),
+             min_hours_for_present = COALESCE(?, min_hours_for_present),
+             overtime_threshold_hours = COALESCE(?, overtime_threshold_hours),
+             attendance_timezone = COALESCE(?, attendance_timezone),
              updated_at = ?
          WHERE id = ?`,
       )
@@ -4283,6 +5321,13 @@ async function handleSaveTenantSettings(request: Request, env: Env, user: ApiUse
         body.payrollDay ?? null,
         body.companyLogoUrl ?? null,
         body.setupCompleted != null ? (body.setupCompleted ? 1 : 0) : null,
+        body.workStartTime ?? null,
+        body.workEndTime ?? null,
+        body.lateThresholdMinutes ?? null,
+        body.halfDayThresholdHours ?? null,
+        body.minHoursForPresent ?? null,
+        body.overtimeThresholdHours ?? null,
+        body.attendanceTimezone ?? null,
         now,
         id,
       )
@@ -4453,6 +5498,14 @@ async function handleCreateAnnouncement(request: Request, env: Env, user: ApiUse
     return json(request, env, { error: "Title and body are required." }, 400);
   }
 
+  // Sanitize user input to prevent stored XSS — strip HTML tags before persisting.
+  const safeTitle = stripHtml(body.title.trim());
+  const safeBody  = stripHtml(body.body.trim());
+
+  if (!safeTitle || !safeBody) {
+    return json(request, env, { error: "Title and body must contain plain text." }, 400);
+  }
+
   const validPriorities = ["normal", "important", "urgent"];
   const priority = validPriorities.includes(body.priority ?? "") ? (body.priority ?? "normal") : "normal";
 
@@ -4468,8 +5521,8 @@ async function handleCreateAnnouncement(request: Request, env: Env, user: ApiUse
       id,
       user.tenantId,
       user.tenantId,
-      body.title.trim(),
-      body.body.trim(),
+      safeTitle,
+      safeBody,
       priority,
       body.pinned ? 1 : 0,
       user.userId,
@@ -4497,8 +5550,8 @@ async function handleCreateAnnouncement(request: Request, env: Env, user: ApiUse
           emp.id,
           user.tenantId,
           user.tenantId,
-          body.title!.trim(),
-          body.body!.trim().slice(0, 120),
+          safeTitle,
+          safeBody.slice(0, 120),
           now,
         )
     );
@@ -4507,8 +5560,9 @@ async function handleCreateAnnouncement(request: Request, env: Env, user: ApiUse
     if (notifInserts.length > 0) {
       await env.HRMS.batch(notifInserts);
     }
-  } catch {
+  } catch (err) {
     // Notification failure should not block announcement creation
+    console.warn("[announcements] Failed to broadcast notifications (non-blocking):", err instanceof Error ? err.message : String(err));
   }
 
   return json(request, env, { ok: true, id });

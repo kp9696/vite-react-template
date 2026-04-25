@@ -776,8 +776,9 @@ async function handleApiLogin(request: Request, env: Env): Promise<Response> {
 
   try {
     await logAuthEvent(env.HRMS, "login", hrUser.id, ip, userAgent, "User login successful");
-  } catch {
+  } catch (err) {
     // non-critical — don't fail login if audit log insert fails
+    console.warn("[auth] Login audit log failed:", err instanceof Error ? err.message : String(err));
   }
 
   return apiJson(
@@ -1292,6 +1293,14 @@ export default {
     const employeeDeleteMatch = pathname.match(/^\/api\/employees\/([^/]+)$/);
     if (method === "DELETE" && employeeDeleteMatch) {
       return handleApiDeleteEmployee(employeeDeleteMatch[1], request, env);
+    }
+
+    // React Router data requests use *.data endpoints and must be handled
+    // by the React Router request handler, even when the route path is /api/*.
+    if (pathname.endsWith(".data")) {
+      return requestHandler(request, {
+        cloudflare: { env, ctx },
+      });
     }
 
     // R2 upload proxy — handles PUT /api/documents/upload/:token (no auth header needed, token is signed)

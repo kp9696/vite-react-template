@@ -1,14 +1,22 @@
-export function getAllowedOrigin(env: Env): string {
-  return env.CORS_ALLOWED_ORIGIN || env.HRMS_BASE_URL || "";
+// Supports a single origin or a comma-separated list in CORS_ALLOWED_ORIGIN.
+// Falls back to HRMS_BASE_URL when CORS_ALLOWED_ORIGIN is not set.
+function getAllowedOrigins(env: Env): Set<string> {
+  const raw = env.CORS_ALLOWED_ORIGIN || env.HRMS_BASE_URL || "";
+  return new Set(
+    raw
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean),
+  );
 }
 
 export function buildCorsHeaders(request: Request, env: Env): Headers {
   const headers = new Headers();
   const origin = request.headers.get("Origin");
-  const allowedOrigin = getAllowedOrigin(env);
+  const allowed = getAllowedOrigins(env);
 
-  if (origin && allowedOrigin && origin === allowedOrigin) {
-    headers.set("Access-Control-Allow-Origin", allowedOrigin);
+  if (origin && allowed.has(origin)) {
+    headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Vary", "Origin");
     headers.set("Access-Control-Allow-Credentials", "true");
   }

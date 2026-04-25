@@ -366,7 +366,7 @@ export async function runPayrollForMonth(
   const now = new Date().toISOString();
 
   const runRow = await db
-    .prepare(`SELECT id FROM payroll_runs WHERE COALESCE(company_id, org_id) = ? AND month_key = ? LIMIT 1`)
+    .prepare(`SELECT id FROM payroll_runs WHERE company_id = ? AND month_key = ? LIMIT 1`)
     .bind(companyId, monthKey)
     .first<{ id: string }>();
 
@@ -393,8 +393,8 @@ export async function runPayrollForMonth(
               COALESCE(es.annual_ctc, 0) as annual_ctc, COALESCE(u.status, 'Active') as status
        FROM users u
        LEFT JOIN employee_salaries es
-         ON es.user_id = u.id AND COALESCE(es.company_id, es.org_id) = ?
-       WHERE COALESCE(u.company_id, u.org_id) = ?
+         ON es.user_id = u.id AND es.company_id = ?
+       WHERE u.company_id = ?
        ORDER BY u.name ASC`,
     )
     .bind(companyId, companyId)
@@ -569,7 +569,7 @@ export async function getPayrollDashboard(
     .prepare(
       `SELECT month_key
        FROM payroll_runs
-       WHERE COALESCE(company_id, org_id) = ?
+       WHERE company_id = ?
        ORDER BY month_key DESC`,
     )
     .bind(companyId)
@@ -586,12 +586,13 @@ export async function getPayrollDashboard(
   for (const monthKey of monthKeys) {
     const rows = await db
       .prepare(
-        `SELECT employee_id, employee_name, department, basic, hra, conveyance, pf, COALESCE(esi, 0) as esi, tds, pt, gross, deductions, net, status
-         FROM payroll_items
-        WHERE COALESCE(company_id, org_id) = ? AND month_key = ?
-         ORDER BY employee_name ASC`,
+        `SELECT pi.employee_id, pi.employee_name, pi.department, pi.basic, pi.hra, pi.conveyance, pi.pf, COALESCE(pi.esi, 0) as esi, pi.tds, pi.pt, pi.gross, pi.deductions, pi.net, pi.status
+         FROM payroll_items pi
+         INNER JOIN users u ON u.id = pi.employee_id AND u.company_id = ?
+         WHERE pi.company_id = ? AND pi.month_key = ?
+         ORDER BY pi.employee_name ASC`,
       )
-      .bind(companyId, monthKey)
+      .bind(companyId, companyId, monthKey)
       .all<{
         employee_id: string;
         employee_name: string;

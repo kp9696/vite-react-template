@@ -90,9 +90,33 @@ function mapApiLeave(row: ApiLeaveRow): LeaveRequest {
 interface LeaveActionResult {
   ok: boolean;
   message?: string;
-  intent?: "apply" | "decision";
+  intent?: "apply" | "decision" | "save-policy" | "credit-balances" | "run-accrual" | "year-end-rollover";
   id?: string;
   status?: LeaveStatus;
+  credited?: number;
+  // accrual run result
+  accrualResult?: {
+    monthKey: string; dryRun: boolean;
+    policiesProcessed: number; credited: number;
+    totalDaysAccrued: number; skippedProbation: number; skippedDuplicate: number;
+  };
+  // year-end rollover result
+  rolloverResult?: {
+    fromYear: number; toYear: number; dryRun: boolean;
+    processed: number; totalCarried: number; totalForfeited: number;
+  };
+}
+
+interface LeavePolicy {
+  id: string;
+  leave_type: string;
+  accrual_type: string;
+  accrual_days: number;
+  max_balance: number;
+  carry_forward_max: number;
+  encashment_eligible: number;
+  probation_lock_months: number;
+  requires_approval: number;
 }
 
 export function meta() {
@@ -133,10 +157,18 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   ];
   const apiBalances = rawBalances.length > 0 ? rawBalances : DEFAULT_LEAVE_BALANCES;
 
+  const policiesResponse = await callCoreHrmsApi<{ policies?: LeavePolicy[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/leave-policies",
+  });
+
   return {
     currentUser,
     apiRequests,
     apiBalances,
+    apiPolicies: policiesResponse?.policies ?? [],
   };
 }
 
@@ -200,16 +232,103 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Le
     return { ok: true, intent: "decision", id, status: nextStatus as LeaveStatus };
   }
 
+  if (intent === "save-leave-policy") {
+    const leaveType = String(formData.get("leaveType") || "").trim();
+    const accrualType = String(formData.get("accrualType") || "yearly");
+    const accrualDays = Number(formData.get("accrualDays") || 0);
+    const maxBalance = Number(formData.get("maxBalance") || 0);
+    const carryForwardMax = Number(formData.get("carryForwardMax") || 0);
+    const encashmentEligible = formData.get("encashmentEligible") === "1";
+    const probationLockMonths = Number(formData.get("probationLockMonths") || 0);
+
+    if (!leaveType) return { ok: false, message: "Leave type is required." };
+
+    const res = await callCoreHrmsApi<{ ok?: boolean; error?: string }>({
+      request, env: context.cloudflare.env, currentUser,
+      path: "/api/leave-policies",
+      method: "POST",
+      body: { leaveType, accrualType, accrualDays, maxBalance, carryForwardMax, encashmentEligible, probationLockMonths },
+    });
+    if (!res?.ok) return { ok: false, message: res?.error || "Failed to save policy." };
+    return { ok: true, intent: "save-policy" };
+  }
+
+  if (intent === "credit-leave-balances") {
+    const leaveType = String(formData.get("leaveType") || "").trim();
+    const year = Number(formData.get("year") || new Date().getFullYear());
+    const res = await callCoreHrmsApi<{ ok?: boolean; credited?: number; error?: string }>({
+      request, env: context.cloudflare.env, currentUser,
+      path: "/api/leave-policies/credit",
+      method: "POST",
+      body: { leaveType, year },
+    });
+    if (!res?.ok) return { ok: false, message: res?.error || "Failed to credit balances." };
+    return { ok: true, intent: "credit-balances", credited: res.credited };
+  }
+
+  if (intent === "run-monthly-accrual") {
+    const monthKey = String(formData.get("monthKey") || "").trim();
+    const dryRun = formData.get("dryRun") === "1";
+    if (!monthKey) return { ok: false, message: "Month is required." };
+    const res = await callCoreHrmsApi<{
+      ok?: boolean; error?: string;
+      monthKey: string; dryRun: boolean;
+      policiesProcessed: number; credited: number;
+      totalDaysAccrued: number; skippedProbation: number; skippedDuplicate: number;
+    }>({
+      request, env: context.cloudflare.env, currentUser,
+      path: "/api/leaves/run-accrual",
+      method: "POST",
+      body: { monthKey, dryRun },
+    });
+    if (!res?.ok) return { ok: false, message: res?.error || "Accrual run failed." };
+    return { ok: true, intent: "run-accrual", accrualResult: res as NonNullable<LeaveActionResult["accrualResult"]> };
+  }
+
+  if (intent === "year-end-rollover") {
+    const fromYear = Number(formData.get("fromYear") || new Date().getFullYear());
+    const toYear = fromYear + 1;
+    const dryRun = formData.get("dryRun") === "1";
+    const res = await callCoreHrmsApi<{
+      ok?: boolean; error?: string;
+      fromYear: number; toYear: number; dryRun: boolean;
+      processed: number; totalCarried: number; totalForfeited: number;
+    }>({
+      request, env: context.cloudflare.env, currentUser,
+      path: "/api/leaves/year-end-rollover",
+      method: "POST",
+      body: { fromYear, toYear, dryRun },
+    });
+    if (!res?.ok) return { ok: false, message: res?.error || "Year-end rollover failed." };
+    return { ok: true, intent: "year-end-rollover", rolloverResult: res as NonNullable<LeaveActionResult["rolloverResult"]> };
+  }
+
   return { ok: false, message: "Unsupported action." };
 }
 
 export default function Leave() {
-  const { currentUser, apiRequests, apiBalances } = useLoaderData<typeof loader>();
+  const { currentUser, apiRequests, apiBalances, apiPolicies } = useLoaderData<typeof loader>();
   const isAdmin = isAdminRole(currentUser.role);
   const applyFetcher = useFetcher<LeaveActionResult>();
   const decisionFetcher = useFetcher<LeaveActionResult>();
   const balanceFetcher = useFetcher<{ apiBalances?: typeof apiBalances }>();
-  const [tab, setTab] = useState<"requests" | "balance" | "calendar">("requests");
+  const policyFetcher = useFetcher<LeaveActionResult>();
+  const [tab, setTab] = useState<"requests" | "balance" | "calendar" | "policy">("requests");
+  const [policies, setPolicies] = useState<LeavePolicy[]>(apiPolicies);
+  const [policyModal, setPolicyModal] = useState<LeavePolicy | null>(null);
+  const [policyForm, setPolicyForm] = useState({ leaveType: "", accrualType: "yearly", accrualDays: "18", maxBalance: "45", carryForwardMax: "15", encashmentEligible: false, probationLockMonths: "0" });
+  const [creditModal, setCreditModal] = useState<{ leaveType: string } | null>(null);
+  const [accrualModal, setAccrualModal] = useState(false);
+  const [accrualMonthKey, setAccrualMonthKey] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [accrualDryRun, setAccrualDryRun] = useState(false);
+  const [accrualResult, setAccrualResult] = useState<LeaveActionResult["accrualResult"] | null>(null);
+  const [rolloverModal, setRolloverModal] = useState(false);
+  const [rolloverYear, setRolloverYear] = useState(() => new Date().getFullYear());
+  const [rolloverDryRun, setRolloverDryRun] = useState(false);
+  const [rolloverResult, setRolloverResult] = useState<LeaveActionResult["rolloverResult"] | null>(null);
   const [requestFilter, setRequestFilter] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
   const [requests, setRequests] = useState<LeaveRequest[]>(apiRequests);
   const [balances, setBalances] = useState(apiBalances);
@@ -224,6 +343,26 @@ export default function Leave() {
   const [decisionNote, setDecisionNote] = useState("");
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [hoveredDay, setHoveredDay] = useState<number | null>(null);
+
+  // Sync policies after save / accrual run / rollover
+  useEffect(() => {
+    const result = policyFetcher.data;
+    if (!result) return;
+    if (result.ok && result.intent === "save-policy") {
+      setPolicyModal(null);
+      showToast("Policy saved successfully.");
+      balanceFetcher.load(typeof window !== "undefined" ? window.location.pathname : "/hrms/leave");
+    } else if (result.ok && result.intent === "credit-balances") {
+      setCreditModal(null);
+      showToast(`Credited ${result.credited ?? 0} employee(s) successfully.`);
+    } else if (result.ok && result.intent === "run-accrual") {
+      setAccrualResult(result.accrualResult ?? null);
+    } else if (result.ok && result.intent === "year-end-rollover") {
+      setRolloverResult(result.rolloverResult ?? null);
+    } else if (!result.ok) {
+      showToast(result.message || "Error.", false);
+    }
+  }, [policyFetcher.data]);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -534,11 +673,14 @@ export default function Leave() {
 
       {/* Tabs */}
       <div className="tab-bar">
-        {(["requests", "balance", "calendar"] as const).map((t) => (
-          <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
-            {t === "requests" ? `Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` : t === "balance" ? "Balance" : "Calendar"}
-          </button>
-        ))}
+        <button className={`tab-btn ${tab === "requests" ? "active" : ""}`} onClick={() => setTab("requests")}>
+          Requests{pendingCount > 0 ? ` (${pendingCount})` : ""}
+        </button>
+        <button className={`tab-btn ${tab === "balance" ? "active" : ""}`} onClick={() => setTab("balance")}>Balance</button>
+        <button className={`tab-btn ${tab === "calendar" ? "active" : ""}`} onClick={() => setTab("calendar")}>Calendar</button>
+        {isAdmin && (
+          <button className={`tab-btn ${tab === "policy" ? "active" : ""}`} onClick={() => setTab("policy")}>Leave Policy</button>
+        )}
       </div>
 
       {/* Requests tab */}
@@ -877,6 +1019,352 @@ export default function Leave() {
           </div>
         );
       })()}
+      {/* Policy tab (admin only) */}
+      {tab === "policy" && isAdmin && (
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Leave Policy Configuration</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>Configure accrual, carry-forward, and encashment rules per leave type.</div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-outline" style={{ fontSize: 12 }} onClick={() => { setAccrualResult(null); setAccrualModal(true); }}>
+                ▶ Run Monthly Accrual
+              </button>
+              <button className="btn btn-outline" style={{ fontSize: 12 }} onClick={() => { setRolloverResult(null); setRolloverModal(true); }}>
+                🔄 Year-End Rollover
+              </button>
+              <button className="btn btn-primary" onClick={() => {
+                setPolicyForm({ leaveType: "", accrualType: "yearly", accrualDays: "18", maxBalance: "45", carryForwardMax: "15", encashmentEligible: false, probationLockMonths: "0" });
+                setPolicyModal({} as LeavePolicy);
+              }}>+ Add / Edit Policy</button>
+            </div>
+          </div>
+
+          {policies.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "32px 0", color: "var(--ink-3)", fontSize: 13 }}>
+              No leave policies configured yet. Add one to enable accrual and carry-forward rules.
+            </div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Leave Type</th>
+                  <th>Accrual</th>
+                  <th>Max Balance</th>
+                  <th>Carry Forward</th>
+                  <th>Encashable</th>
+                  <th>Probation Lock</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {policies.map((p) => (
+                  <tr key={p.id}>
+                    <td style={{ fontWeight: 700 }}>{p.leave_type}</td>
+                    <td style={{ fontSize: 13 }}>
+                      {p.accrual_days}d / {p.accrual_type}
+                    </td>
+                    <td>{p.max_balance > 0 ? `${p.max_balance}d` : "Unlimited"}</td>
+                    <td>{p.carry_forward_max > 0 ? `Up to ${p.carry_forward_max}d` : "None"}</td>
+                    <td>
+                      <span className={`badge ${p.encashment_eligible ? "badge-green" : "badge-red"}`}>
+                        {p.encashment_eligible ? "Yes" : "No"}
+                      </span>
+                    </td>
+                    <td>{p.probation_lock_months > 0 ? `${p.probation_lock_months} months` : "None"}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button className="btn btn-outline" style={{ fontSize: 12, padding: "4px 10px" }}
+                          onClick={() => {
+                            setPolicyForm({
+                              leaveType: p.leave_type,
+                              accrualType: p.accrual_type,
+                              accrualDays: String(p.accrual_days),
+                              maxBalance: String(p.max_balance),
+                              carryForwardMax: String(p.carry_forward_max),
+                              encashmentEligible: !!p.encashment_eligible,
+                              probationLockMonths: String(p.probation_lock_months),
+                            });
+                            setPolicyModal(p);
+                          }}>Edit</button>
+                        <button className="btn btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
+                          onClick={() => setCreditModal({ leaveType: p.leave_type })}>
+                          Credit Balances
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {/* Policy edit modal */}
+          {policyModal !== null && (
+            <div className="modal-overlay" onClick={() => setPolicyModal(null)}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480 }}>
+                <div className="modal-title">
+                  {policyForm.leaveType ? `Edit Policy: ${policyForm.leaveType}` : "Add Leave Policy"}
+                  <button className="modal-close" onClick={() => setPolicyModal(null)}>✕</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div>
+                    <label style={lblStyle}>Leave Type *</label>
+                    <input style={inpStyle} value={policyForm.leaveType}
+                      onChange={(e) => setPolicyForm((f) => ({ ...f, leaveType: e.target.value }))}
+                      placeholder="e.g. Annual Leave" />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label style={lblStyle}>Accrual Type</label>
+                      <select style={inpStyle} value={policyForm.accrualType}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, accrualType: e.target.value }))}>
+                        <option value="yearly">Yearly</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="on-joining">On Joining</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={lblStyle}>Days per Cycle</label>
+                      <input type="number" min="0" step="0.5" style={inpStyle} value={policyForm.accrualDays}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, accrualDays: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label style={lblStyle}>Max Balance (days, 0=unlimited)</label>
+                      <input type="number" min="0" style={inpStyle} value={policyForm.maxBalance}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, maxBalance: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label style={lblStyle}>Carry Forward Max (0=none)</label>
+                      <input type="number" min="0" style={inpStyle} value={policyForm.carryForwardMax}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, carryForwardMax: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label style={lblStyle}>Probation Lock (months)</label>
+                      <input type="number" min="0" style={inpStyle} value={policyForm.probationLockMonths}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, probationLockMonths: e.target.value }))} />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 22 }}>
+                      <input type="checkbox" id="encash" checked={policyForm.encashmentEligible}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, encashmentEligible: e.target.checked }))} />
+                      <label htmlFor="encash" style={{ fontSize: 13, fontWeight: 600, color: "var(--ink)", cursor: "pointer" }}>Encashment Eligible</label>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                    <button className="btn btn-primary"
+                      disabled={!policyForm.leaveType.trim() || policyFetcher.state !== "idle"}
+                      onClick={() => {
+                        const fd = new FormData();
+                        fd.set("intent", "save-leave-policy");
+                        fd.set("leaveType", policyForm.leaveType.trim());
+                        fd.set("accrualType", policyForm.accrualType);
+                        fd.set("accrualDays", policyForm.accrualDays);
+                        fd.set("maxBalance", policyForm.maxBalance);
+                        fd.set("carryForwardMax", policyForm.carryForwardMax);
+                        fd.set("encashmentEligible", policyForm.encashmentEligible ? "1" : "0");
+                        fd.set("probationLockMonths", policyForm.probationLockMonths);
+                        policyFetcher.submit(fd, { method: "POST" });
+                      }}>
+                      {policyFetcher.state !== "idle" ? "Saving..." : "Save Policy"}
+                    </button>
+                    <button className="btn btn-outline" onClick={() => setPolicyModal(null)}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Run Monthly Accrual modal */}
+          {accrualModal && (
+            <div className="modal-overlay" onClick={() => { setAccrualModal(false); setAccrualResult(null); }}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+                <div className="modal-title">
+                  Run Monthly Leave Accrual
+                  <button className="modal-close" onClick={() => { setAccrualModal(false); setAccrualResult(null); }}>✕</button>
+                </div>
+
+                {accrualResult ? (
+                  /* Result view */
+                  <div>
+                    <div style={{ padding: "12px 14px", background: accrualResult.dryRun ? "#fffbeb" : "#ecfdf5", borderRadius: 10, border: `1px solid ${accrualResult.dryRun ? "#fde68a" : "#a7f3d0"}`, marginBottom: 16 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: accrualResult.dryRun ? "#92400e" : "#065f46", marginBottom: 8 }}>
+                        {accrualResult.dryRun ? "🔍 Dry Run — no changes written" : "✅ Accrual completed"} · {accrualResult.monthKey}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 12 }}>
+                        <div><span style={{ color: "var(--ink-3)" }}>Policies processed:</span> <strong>{accrualResult.policiesProcessed}</strong></div>
+                        <div><span style={{ color: "var(--ink-3)" }}>Employees credited:</span> <strong>{accrualResult.credited}</strong></div>
+                        <div><span style={{ color: "var(--ink-3)" }}>Days accrued:</span> <strong>{accrualResult.totalDaysAccrued}</strong></div>
+                        <div><span style={{ color: "var(--ink-3)" }}>Skipped (probation):</span> <strong>{accrualResult.skippedProbation}</strong></div>
+                        <div><span style={{ color: "var(--ink-3)" }}>Skipped (duplicate):</span> <strong>{accrualResult.skippedDuplicate}</strong></div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {accrualResult.dryRun && (
+                        <button className="btn btn-primary"
+                          disabled={policyFetcher.state !== "idle"}
+                          onClick={() => {
+                            setAccrualResult(null);
+                            const fd = new FormData();
+                            fd.set("intent", "run-monthly-accrual");
+                            fd.set("monthKey", accrualMonthKey);
+                            fd.set("dryRun", "0");
+                            policyFetcher.submit(fd, { method: "POST" });
+                          }}>
+                          Run for Real
+                        </button>
+                      )}
+                      <button className="btn btn-outline" onClick={() => { setAccrualModal(false); setAccrualResult(null); }}>Close</button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Input form */
+                  <div>
+                    <p style={{ fontSize: 13, color: "var(--ink-2)", marginBottom: 16, lineHeight: 1.5 }}>
+                      Credits prorated monthly leave (accrual_days ÷ 12) to all active employees for each <strong>monthly</strong> policy. Employees in probation are skipped automatically.
+                    </p>
+                    <div style={{ marginBottom: 14 }}>
+                      <label style={lblStyle}>Accrual Month</label>
+                      <input type="month" value={accrualMonthKey} onChange={(e) => setAccrualMonthKey(e.target.value)} style={inpStyle} />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                      <input type="checkbox" id="accrualDry" checked={accrualDryRun} onChange={(e) => setAccrualDryRun(e.target.checked)} />
+                      <label htmlFor="accrualDry" style={{ fontSize: 13, color: "var(--ink-2)", cursor: "pointer" }}>
+                        Dry run — preview results without writing
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button className="btn btn-primary"
+                        disabled={!accrualMonthKey || policyFetcher.state !== "idle"}
+                        onClick={() => {
+                          const fd = new FormData();
+                          fd.set("intent", "run-monthly-accrual");
+                          fd.set("monthKey", accrualMonthKey);
+                          fd.set("dryRun", accrualDryRun ? "1" : "0");
+                          policyFetcher.submit(fd, { method: "POST" });
+                        }}>
+                        {policyFetcher.state !== "idle" ? "Running…" : accrualDryRun ? "Preview" : "Run Accrual"}
+                      </button>
+                      <button className="btn btn-outline" onClick={() => setAccrualModal(false)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Year-End Rollover modal */}
+          {rolloverModal && (
+            <div className="modal-overlay" onClick={() => { setRolloverModal(false); setRolloverResult(null); }}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+                <div className="modal-title">
+                  Year-End Leave Rollover
+                  <button className="modal-close" onClick={() => { setRolloverModal(false); setRolloverResult(null); }}>✕</button>
+                </div>
+
+                {rolloverResult ? (
+                  <div>
+                    <div style={{ padding: "12px 14px", background: rolloverResult.dryRun ? "#fffbeb" : "#ecfdf5", borderRadius: 10, border: `1px solid ${rolloverResult.dryRun ? "#fde68a" : "#a7f3d0"}`, marginBottom: 16 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: rolloverResult.dryRun ? "#92400e" : "#065f46", marginBottom: 8 }}>
+                        {rolloverResult.dryRun ? "🔍 Dry Run — no changes written" : "✅ Rollover completed"} · {rolloverResult.fromYear} → {rolloverResult.toYear}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 12 }}>
+                        <div><span style={{ color: "var(--ink-3)" }}>Employee × policy rows:</span> <strong>{rolloverResult.processed}</strong></div>
+                        <div><span style={{ color: "var(--ink-3)" }}>Days carried forward:</span> <strong style={{ color: "var(--green)" }}>{rolloverResult.totalCarried}</strong></div>
+                        <div><span style={{ color: "var(--ink-3)" }}>Days forfeited:</span> <strong style={{ color: "var(--red)" }}>{rolloverResult.totalForfeited}</strong></div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {rolloverResult.dryRun && (
+                        <button className="btn btn-primary"
+                          disabled={policyFetcher.state !== "idle"}
+                          onClick={() => {
+                            setRolloverResult(null);
+                            const fd = new FormData();
+                            fd.set("intent", "year-end-rollover");
+                            fd.set("fromYear", String(rolloverYear));
+                            fd.set("dryRun", "0");
+                            policyFetcher.submit(fd, { method: "POST" });
+                          }}>
+                          Apply Rollover
+                        </button>
+                      )}
+                      <button className="btn btn-outline" onClick={() => { setRolloverModal(false); setRolloverResult(null); }}>Close</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <p style={{ fontSize: 13, color: "var(--ink-2)", marginBottom: 16, lineHeight: 1.5 }}>
+                      Carries unused leave (up to each policy's <strong>carry_forward_max</strong>) into the next year. Excess days are forfeited and logged. Run this at financial year-end.
+                    </p>
+                    <div style={{ marginBottom: 14 }}>
+                      <label style={lblStyle}>Roll over from year</label>
+                      <input type="number" value={rolloverYear} min={2020} max={2100}
+                        onChange={(e) => setRolloverYear(Number(e.target.value))} style={inpStyle} />
+                      <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4 }}>
+                        Will roll unused balances from {rolloverYear} → {rolloverYear + 1}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                      <input type="checkbox" id="rolloverDry" checked={rolloverDryRun} onChange={(e) => setRolloverDryRun(e.target.checked)} />
+                      <label htmlFor="rolloverDry" style={{ fontSize: 13, color: "var(--ink-2)", cursor: "pointer" }}>
+                        Dry run — preview without writing
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button className="btn btn-primary"
+                        disabled={policyFetcher.state !== "idle"}
+                        onClick={() => {
+                          const fd = new FormData();
+                          fd.set("intent", "year-end-rollover");
+                          fd.set("fromYear", String(rolloverYear));
+                          fd.set("dryRun", rolloverDryRun ? "1" : "0");
+                          policyFetcher.submit(fd, { method: "POST" });
+                        }}>
+                        {policyFetcher.state !== "idle" ? "Running…" : rolloverDryRun ? "Preview" : "Run Rollover"}
+                      </button>
+                      <button className="btn btn-outline" onClick={() => setRolloverModal(false)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Credit balances modal */}
+          {creditModal && (
+            <div className="modal-overlay" onClick={() => setCreditModal(null)}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
+                <div className="modal-title">
+                  Credit Leave Balances
+                  <button className="modal-close" onClick={() => setCreditModal(null)}>✕</button>
+                </div>
+                <p style={{ fontSize: 13, color: "var(--ink-2)", marginBottom: 16, lineHeight: 1.5 }}>
+                  This will credit accrual days for <strong>{creditModal.leaveType}</strong> to all active employees for the current year.
+                </p>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button className="btn btn-primary"
+                    disabled={policyFetcher.state !== "idle"}
+                    onClick={() => {
+                      const fd = new FormData();
+                      fd.set("intent", "credit-leave-balances");
+                      fd.set("leaveType", creditModal.leaveType);
+                      fd.set("year", String(new Date().getFullYear()));
+                      policyFetcher.submit(fd, { method: "POST" });
+                    }}>
+                    {policyFetcher.state !== "idle" ? "Processing..." : "Confirm & Credit"}
+                  </button>
+                  <button className="btn btn-outline" onClick={() => setCreditModal(null)}>Cancel</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </HRMSLayout>
   );
 }

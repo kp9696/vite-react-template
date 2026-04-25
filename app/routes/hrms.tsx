@@ -53,17 +53,38 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         saasEmployeeCount = await getSaasEmployeeCount(env.HRMS, company.id);
       }
     }
+    const [adminSummaryRes, pendingExpensesRes, pendingRegRes] = await Promise.all([
+      callCoreHrmsApi<{
+        totalEmployees: number;
+        attendanceSummary: { present: number; date: string };
+        pendingApprovals: number;
+        assignedAssets: number;
+      }>({ request, env, currentUser, path: "/api/dashboard/summary" }),
+      callCoreHrmsApi<{ claims: unknown[] }>({ request, env, currentUser, path: "/api/expenses?status=pending" }),
+      callCoreHrmsApi<{ regularisations: unknown[] }>({ request, env, currentUser, path: "/api/attendance/regularisations?status=pending" }),
+    ]);
     return {
       currentUser, isEmployee: false,
       ...dashboard, company, saasEmployeeCount,
+      adminSummary: adminSummaryRes ?? null,
+      pendingExpenseCount: pendingExpensesRes?.claims?.length ?? 0,
+      pendingRegCount: pendingRegRes?.regularisations?.length ?? 0,
       // employee-only fields
       todayRecord: null, leaveBalances: [], recentExpenses: [],
       pendingExpenses: 0, totalLeaveRemaining: 0,
+      lastPayslip: null as { net: number; gross: number; month_key: string } | null,
+      itDeclStatus: null as { status: string; financial_year: string; tax_regime: string } | null,
+      prevMonthKey: "",
     };
   }
 
   // ── Employee dashboard data ─────────────────────────────────────────────────
-  const [attendanceData, leaveData, expenseData] = await Promise.all([
+  const n = new Date();
+  const prevM = n.getMonth() === 0 ? 12 : n.getMonth();
+  const prevY = n.getMonth() === 0 ? n.getFullYear() - 1 : n.getFullYear();
+  const prevMonthKey = `${prevY}-${String(prevM).padStart(2, "0")}`;
+
+  const [attendanceData, leaveData, expenseData, payslipData, itDeclData] = await Promise.all([
     callCoreHrmsApi<{ records: AttendanceRecord[] }>({
       request, env, currentUser, path: "/api/attendance/my?limit=7",
     }),
@@ -72,6 +93,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     }),
     callCoreHrmsApi<{ claims: ExpenseClaim[] }>({
       request, env, currentUser, path: "/api/expenses",
+    }),
+    callCoreHrmsApi<{ payslip: { net: number; gross: number; month_key: string } | null }>({
+      request, env, currentUser, path: `/api/payslip?monthKey=${prevMonthKey}`,
+    }),
+    callCoreHrmsApi<{ declarations: Array<{ status: string; financial_year: string; tax_regime: string }> }>({
+      request, env, currentUser, path: "/api/it-declarations",
     }),
   ]);
 
@@ -82,13 +109,20 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   const recentExpenses = allExpenses.slice(0, 3);
   const pendingExpenses = allExpenses.filter((c) => c.status === "pending").length;
   const totalLeaveRemaining = leaveBalances.reduce((sum, b) => sum + (b.remaining ?? 0), 0);
+  const lastPayslip = payslipData?.payslip ?? null;
+  const itDecls = itDeclData?.declarations ?? [];
+  const itDeclStatus = itDecls.length > 0 ? itDecls[0] : null;
 
   return {
     currentUser, isEmployee: true,
     todayRecord, leaveBalances, recentExpenses, pendingExpenses, totalLeaveRemaining,
+    lastPayslip, itDeclStatus, prevMonthKey,
     // admin-only fields
     stats: [], recentUsers: [], pendingInvites: [], departmentData: [],
     organization: null, company: null, saasEmployeeCount: 0,
+    adminSummary: null as { totalEmployees: number; attendanceSummary: { present: number; date: string }; pendingApprovals: number; assignedAssets: number } | null,
+    pendingExpenseCount: 0,
+    pendingRegCount: 0,
   };
 }
 
@@ -135,7 +169,7 @@ function expBadge(status: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typeof loader>> }) {
-  const { currentUser, todayRecord, leaveBalances, recentExpenses, pendingExpenses, totalLeaveRemaining } = data;
+  const { currentUser, todayRecord, leaveBalances, recentExpenses, pendingExpenses, totalLeaveRemaining, lastPayslip, itDeclStatus, prevMonthKey } = data;
   const accentColor = avatarColor(currentUser.name);
   const initials = getInitials(currentUser.name);
 
@@ -237,6 +271,50 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
         </div>
       </div>
 
+      {/* ── IT Declaration Banner ────────────────────────────────────────── */}
+      {(itDeclStatus === null || itDeclStatus.status === "draft") && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "12px 20px", borderRadius: 12, marginBottom: 16,
+          background: "#fffbeb", border: "1px solid #fde68a",
+        }}>
+          <div style={{ fontSize: 18, flexShrink: 0 }}>⚠️</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e" }}>
+              {itDeclStatus?.status === "draft"
+                ? `IT Declaration Draft — FY ${itDeclStatus.financial_year}`
+                : "IT Declaration Not Filed"}
+            </div>
+            <div style={{ fontSize: 12, color: "#d97706" }}>
+              Submit your IT declaration to ensure correct TDS computation.
+            </div>
+          </div>
+          <Link to="/hrms/it-declaration" style={{
+            fontSize: 12, fontWeight: 700, padding: "7px 14px", borderRadius: 8,
+            background: "#d97706", color: "white", textDecoration: "none", flexShrink: 0,
+          }}>
+            {itDeclStatus?.status === "draft" ? "Complete & Submit" : "File Now"}
+          </Link>
+        </div>
+      )}
+      {itDeclStatus?.status === "submitted" && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "12px 20px", borderRadius: 12, marginBottom: 16,
+          background: "#eff6ff", border: "1px solid #bfdbfe",
+        }}>
+          <div style={{ fontSize: 18, flexShrink: 0 }}>ℹ️</div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#1d4ed8" }}>
+              IT Declaration Submitted — Awaiting HR Approval
+            </div>
+            <div style={{ fontSize: 12, color: "#3b82f6" }}>
+              Your declaration for FY {itDeclStatus.financial_year} is under review.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Quick Stats ──────────────────────────────────────────────────── */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 }}>
         {[
@@ -268,13 +346,13 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
             to: "/hrms/expenses",
           },
           {
-            label: "Leave Balances",
-            value: `${leaveBalances.length}`,
-            sub: leaveBalances.length > 0 ? "leave types" : "Not set up yet",
+            label: "Last Net Pay",
+            value: lastPayslip ? `₹${Math.round(lastPayslip.net / 1000)}k` : "—",
+            sub: lastPayslip ? `${prevMonthKey} payslip` : "No payslip yet",
             color: "#0ea5e9",
-            icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>,
+            icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>,
             bg: "#eff6ff",
-            to: "/hrms/leave",
+            to: "/hrms/payroll",
           },
         ].map((s) => (
           <Link key={s.label} to={s.to} style={{
@@ -322,6 +400,17 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
         }}>
           <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M12 7v10m-4-5h8"/></svg>
           Submit Expense
+        </Link>
+        <Link to="/hrms/leave" style={{
+          display: "inline-flex", alignItems: "center", gap: 8,
+          padding: "12px 22px", borderRadius: 12,
+          background: "linear-gradient(135deg, #6366f1, #4f46e5)",
+          color: "white", fontWeight: 700, fontSize: 14,
+          textDecoration: "none", boxShadow: "0 4px 16px rgba(99,102,241,0.3)",
+          transition: "transform 0.15s, box-shadow 0.15s",
+        }}>
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          Apply Leave
         </Link>
       </div>
 
@@ -497,86 +586,272 @@ function EmployeeDashboard({ data }: { data: ReturnType<typeof useLoaderData<typ
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Admin Dashboard (unchanged from original)
+// Admin Dashboard
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AdminDashboard({ data }: { data: ReturnType<typeof useLoaderData<typeof loader>> }) {
-  const { company, saasEmployeeCount } = data;
+  const { company, saasEmployeeCount, adminSummary, pendingExpenseCount, pendingRegCount } = data;
   const usedCount = saasEmployeeCount ?? 0;
   const limitCount = company?.employee_limit ?? 5;
   const atLimit = usedCount >= limitCount;
   const usagePct = company ? Math.min(100, Math.round((usedCount / limitCount) * 100)) : 0;
+  const accentColor = avatarColor(data.currentUser.name);
+  const initials = getInitials(data.currentUser.name);
+
+  const totalEmployees = adminSummary?.totalEmployees ?? 0;
+  const presentToday = adminSummary?.attendanceSummary?.present ?? 0;
+  const pendingLeaves = adminSummary?.pendingApprovals ?? 0;
+  const assignedAssets = adminSummary?.assignedAssets ?? 0;
 
   return (
     <>
-      <div className="page-title">Welcome, {data.currentUser.name}</div>
-      <div className="page-sub">
-        {data.organization?.name
-          ? `${data.organization.name} workspace · ${isAdminRole(data.currentUser.role) ? "Admin" : "Employee"} access`
-          : "Your dashboard is powered by live D1 data from Cloudflare."}
+      {/* ── Admin Hero ─────────────────────────────────────────────────────── */}
+      <div style={{
+        background: `linear-gradient(135deg, #0d1117 0%, #1a1f2e 60%, #1e1b4b 100%)`,
+        borderRadius: 18, padding: "28px 32px", marginBottom: 24,
+        display: "flex", alignItems: "center", gap: 24,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+        position: "relative", overflow: "hidden",
+      }}>
+        <div style={{
+          position: "absolute", top: -40, right: -40, width: 200, height: 200,
+          background: `radial-gradient(circle, ${accentColor}33 0%, transparent 70%)`,
+          pointerEvents: "none",
+        }} />
+        <div style={{
+          width: 72, height: 72, borderRadius: "50%",
+          background: `linear-gradient(135deg, ${accentColor}, ${accentColor}cc)`,
+          display: "grid", placeItems: "center",
+          fontSize: 26, fontWeight: 800, color: "white", flexShrink: 0,
+          boxShadow: `0 0 0 4px rgba(255,255,255,0.1), 0 4px 16px ${accentColor}66`,
+        }}>
+          {initials}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+            <span style={{ fontSize: 22, fontWeight: 800, color: "white", letterSpacing: -0.5 }}>
+              {data.currentUser.name}
+            </span>
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+              background: "rgba(99,102,241,0.25)", color: "#a5b4fc",
+              border: "1px solid rgba(99,102,241,0.35)", letterSpacing: 0.5, textTransform: "uppercase",
+            }}>
+              {data.currentUser.role}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)" }}>
+              {data.organization?.name ?? company?.company_name ?? "Your Organisation"}
+            </span>
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)" }}>
+              {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+            </span>
+          </div>
+        </div>
+        <div style={{ textAlign: "center", flexShrink: 0 }}>
+          <div style={{
+            padding: "8px 18px", borderRadius: 12,
+            background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.3)",
+          }}>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 2 }}>TOTAL TEAM</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: "#34d399" }}>{totalEmployees}</div>
+          </div>
+        </div>
       </div>
 
-      {company ? (
-        <div className={`mb-6 rounded-xl bg-white p-4 shadow flex flex-wrap items-center gap-5 border ${atLimit ? "border-red-200 bg-red-50" : "border-slate-200"}`}>
-          <div className="flex-1 min-w-[240px]">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-sm font-bold text-slate-800">{company.company_name}</span>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                company.plan === "free" ? "bg-slate-100 text-slate-600"
-                : company.plan === "pro" ? "bg-violet-100 text-violet-700"
-                : "bg-emerald-100 text-emerald-700"
-              }`}>{company.plan}</span>
-            </div>
-            <div className="text-xs font-semibold text-slate-700 mb-1">Employee Usage</div>
-            <div className="flex items-center gap-3">
-              <div className="w-40 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                <div className={`h-full rounded-full transition-[width] duration-300 ${atLimit ? "bg-orange-500" : usagePct > 70 ? "bg-amber-500" : "bg-indigo-500"}`} style={{ width: `${usagePct}%` }} />
+      {/* ── 4-column Stat Grid ────────────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16, marginBottom: 24 }}>
+        {[
+          {
+            label: "Total Employees", value: `${totalEmployees}`, sub: "active team members",
+            color: "#6366f1", bg: "#eef2ff", to: "/hrms/employees",
+            icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+          },
+          {
+            label: "Present Today", value: `${presentToday}`, sub: "checked in",
+            color: "#10b981", bg: "#ecfdf5", to: "/hrms/attendance",
+            icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>,
+          },
+          {
+            label: "Pending Approvals", value: `${pendingLeaves + pendingExpenseCount + pendingRegCount}`,
+            sub: "awaiting action", color: "#f59e0b", bg: "#fffbeb", to: "/hrms/leave",
+            icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+          },
+          {
+            label: "Assets Assigned", value: `${assignedAssets}`, sub: "in use",
+            color: "#0ea5e9", bg: "#eff6ff", to: "/hrms/assets",
+            icon: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>,
+          },
+        ].map((s) => (
+          <Link key={s.label} to={s.to} style={{
+            background: "white", border: "1px solid #e2e8f0",
+            borderRadius: 14, padding: "18px 20px",
+            display: "flex", flexDirection: "column", gap: 8,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.04)", textDecoration: "none",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.7 }}>
+                {s.label}
               </div>
-              <span className={`text-xs font-semibold ${atLimit ? "text-orange-600" : "text-slate-600"}`}>{usedCount} / {limitCount} employees used</span>
+              <div style={{ color: s.color, background: s.bg, padding: 7, borderRadius: 10 }}>{s.icon}</div>
             </div>
-            {atLimit && <p className="text-red-500 text-sm mt-2">You have reached your employee limit</p>}
-          </div>
-          {atLimit ? (
-            <a href="mailto:info@jwithkp.com?subject=Upgrade HRMS Plan" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-semibold text-xs no-underline">Upgrade Plan</a>
-          ) : (
-            <Link to="/hrms/employees" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-semibold text-xs no-underline">Manage Employees</Link>
-          )}
-        </div>
-      ) : null}
-
-      <div className="stat-grid">
-        {data.stats.map((stat) => (
-          <div className="stat-card" key={stat.label}>
-            <div className="stat-label">{stat.label}</div>
-            <div className="stat-value">{stat.value}</div>
-            <div className={`stat-delta ${stat.tone === "warning" ? "delta-down" : stat.tone === "positive" ? "delta-up" : ""}`}>{stat.delta}</div>
-          </div>
+            <div style={{ fontSize: 30, fontWeight: 800, color: s.color, letterSpacing: -1 }}>{s.value}</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", fontWeight: 500 }}>{s.sub}</div>
+          </Link>
         ))}
       </div>
 
-      <div className="two-col">
-        <div className="card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div className="card-title" style={{ margin: 0 }}>Team Snapshot</div>
-            {isAdminRole(data.currentUser.role) ? (
-              <Link to="/hrms/users" style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}>Manage users →</Link>
-            ) : null}
+      {/* ── Pending Approvals ─────────────────────────────────────────────── */}
+      <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 14, padding: 24, marginBottom: 20, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#0f172a", marginBottom: 16 }}>Pending Approvals</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+          {[
+            { label: "Leave Requests", count: pendingLeaves, color: "#6366f1", bg: "#eef2ff", to: "/hrms/leave" },
+            { label: "Expense Claims", count: pendingExpenseCount, color: "#f59e0b", bg: "#fffbeb", to: "/hrms/expenses" },
+            { label: "Attendance Regularisations", count: pendingRegCount, color: "#10b981", bg: "#ecfdf5", to: "/hrms/attendance" },
+          ].map((item) => (
+            <Link key={item.label} to={item.to} style={{
+              display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
+              borderRadius: 12, background: item.bg,
+              border: `1px solid ${item.color}22`, textDecoration: "none",
+            }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: "50%",
+                background: item.color, color: "white",
+                display: "grid", placeItems: "center",
+                fontSize: 16, fontWeight: 800, flexShrink: 0,
+              }}>
+                {item.count}
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>{item.label}</div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>{item.count === 0 ? "All clear" : "Awaiting action"}</div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Quick Actions ─────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
+        <Link to="/hrms/employees" style={{
+          display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 22px", borderRadius: 12,
+          background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "white", fontWeight: 700, fontSize: 14,
+          textDecoration: "none", boxShadow: "0 4px 16px rgba(99,102,241,0.35)",
+        }}>
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
+          Invite Employee
+        </Link>
+        <Link to="/hrms/payroll" style={{
+          display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 22px", borderRadius: 12,
+          background: "linear-gradient(135deg, #10b981, #059669)", color: "white", fontWeight: 700, fontSize: 14,
+          textDecoration: "none", boxShadow: "0 4px 16px rgba(16,185,129,0.3)",
+        }}>
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+          Run Payroll
+        </Link>
+        <Link to="/hrms/analytics" style={{
+          display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 22px", borderRadius: 12,
+          background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "white", fontWeight: 700, fontSize: 14,
+          textDecoration: "none", boxShadow: "0 4px 16px rgba(245,158,11,0.3)",
+        }}>
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Analytics
+        </Link>
+        <Link to="/hrms/reports" style={{
+          display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 22px", borderRadius: 12,
+          background: "linear-gradient(135deg, #0ea5e9, #0284c7)", color: "white", fontWeight: 700, fontSize: 14,
+          textDecoration: "none", boxShadow: "0 4px 16px rgba(14,165,233,0.3)",
+        }}>
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Reports
+        </Link>
+      </div>
+
+      {/* ── Company Usage Bar ─────────────────────────────────────────────── */}
+      {company && (
+        <div style={{
+          background: "white", border: atLimit ? "1px solid #fecaca" : "1px solid #e2e8f0",
+          borderRadius: 14, padding: 20, marginBottom: 20,
+          boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+          display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap",
+        }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>{company.company_name}</span>
+              <span style={{
+                fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+                textTransform: "uppercase", letterSpacing: 0.5,
+                background: company.plan === "free" ? "#f1f5f9" : company.plan === "pro" ? "#ede9fe" : "#dcfce7",
+                color: company.plan === "free" ? "#64748b" : company.plan === "pro" ? "#7c3aed" : "#15803d",
+              }}>{company.plan}</span>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>Employee Usage</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 160, height: 6, background: "#e2e8f0", borderRadius: 99, overflow: "hidden" }}>
+                <div style={{
+                  width: `${usagePct}%`, height: "100%", borderRadius: 99,
+                  background: atLimit ? "#f97316" : usagePct > 70 ? "#f59e0b" : "#6366f1",
+                  transition: "width 0.3s",
+                }} />
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 600, color: atLimit ? "#ea580c" : "#475569" }}>
+                {usedCount} / {limitCount} employees
+              </span>
+            </div>
+            {atLimit && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 6 }}>Employee limit reached</div>}
           </div>
-          <table className="table">
-            <thead><tr><th>Name</th><th>Role</th><th>Joined</th><th>Status</th></tr></thead>
+          {atLimit ? (
+            <a href="mailto:info@jwithkp.com?subject=Upgrade HRMS Plan" style={{
+              display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 10,
+              background: "#2563eb", color: "white", fontWeight: 700, fontSize: 13, textDecoration: "none",
+            }}>Upgrade Plan</a>
+          ) : (
+            <Link to="/hrms/employees" style={{
+              display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 18px", borderRadius: 10,
+              background: "#6366f1", color: "white", fontWeight: 700, fontSize: 13, textDecoration: "none",
+            }}>Manage Employees</Link>
+          )}
+        </div>
+      )}
+
+      {/* ── Two-column: Team Snapshot + Pending Invites ───────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
+        <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 14, padding: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>Team Snapshot</div>
+            <Link to="/hrms/employees" style={{ fontSize: 12, color: "#6366f1", textDecoration: "none", fontWeight: 600 }}>Manage →</Link>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["Name", "Role", "Joined", "Status"].map((h) => (
+                  <th key={h} style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 0.7, padding: "6px 10px", textAlign: "left", borderBottom: "2px solid #e2e8f0" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
             <tbody>
               {data.recentUsers.length === 0 ? (
-                <tr><td colSpan={4} style={{ color: "var(--ink-3)" }}>No users found in D1 yet.</td></tr>
+                <tr><td colSpan={4} style={{ padding: "16px 10px", fontSize: 13, color: "#94a3b8" }}>No users found yet.</td></tr>
               ) : (
                 data.recentUsers.map((user) => (
                   <tr key={user.id}>
-                    <td>
-                      <div style={{ fontWeight: 600, color: "var(--ink)" }}>{user.name}</div>
-                      <div style={{ fontSize: 11, color: "var(--ink-3)" }}>{user.department}</div>
+                    <td style={{ padding: "10px", borderBottom: "1px solid #f1f5f9" }}>
+                      <Link to={`/hrms/employee/${user.id}`} style={{ textDecoration: "none" }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: "#0f172a" }}>{user.name}</div>
+                        <div style={{ fontSize: 11, color: "#94a3b8" }}>{user.department}</div>
+                      </Link>
                     </td>
-                    <td>{user.role}</td>
-                    <td>{user.joinedOn}</td>
-                    <td><span className={`badge ${user.status === "Active" ? "badge-green" : "badge-amber"}`}>{user.status}</span></td>
+                    <td style={{ padding: "10px", fontSize: 12, color: "#475569", borderBottom: "1px solid #f1f5f9" }}>{user.role}</td>
+                    <td style={{ padding: "10px", fontSize: 12, color: "#475569", borderBottom: "1px solid #f1f5f9" }}>{user.joinedOn}</td>
+                    <td style={{ padding: "10px", borderBottom: "1px solid #f1f5f9" }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20,
+                        background: user.status === "Active" ? "#ecfdf5" : "#fef3c7",
+                        color: user.status === "Active" ? "#059669" : "#d97706",
+                      }}>{user.status}</span>
+                    </td>
                   </tr>
                 ))
               )}
@@ -584,41 +859,51 @@ function AdminDashboard({ data }: { data: ReturnType<typeof useLoaderData<typeof
           </table>
         </div>
 
-        <div className="card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div className="card-title" style={{ margin: 0 }}>Pending Invite Activity</div>
-            <span className="badge badge-red">{data.pendingInvites.length} pending</span>
+        <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 14, padding: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0f172a" }}>Pending Invites</div>
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+              background: data.pendingInvites.length > 0 ? "#fef2f2" : "#ecfdf5",
+              color: data.pendingInvites.length > 0 ? "#dc2626" : "#059669",
+            }}>{data.pendingInvites.length} pending</span>
           </div>
           {data.pendingInvites.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>There are no outstanding invites right now.</div>
+            <div style={{ fontSize: 13, color: "#94a3b8", padding: "16px 0" }}>No outstanding invites.</div>
           ) : (
-            data.pendingInvites.map((invite) => (
-              <div key={invite.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid var(--border)" }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)" }}>{invite.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{invite.role} · {invite.department}</div>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {data.pendingInvites.map((invite) => (
+                <div key={invite.id} style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "12px 0", borderBottom: "1px solid #f1f5f9",
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: "#0f172a" }}>{invite.name}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8" }}>{invite.role} · {invite.department}</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>{invite.detail}</div>
                 </div>
-                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{invite.detail}</div>
-              </div>
-            ))
+              ))}
+            </div>
           )}
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-title">Workforce by Department</div>
+      {/* ── Workforce by Department ───────────────────────────────────────── */}
+      <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 14, padding: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#0f172a", marginBottom: 20 }}>Workforce by Department</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {data.departmentData.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--ink-3)" }}>Department breakdown will appear once users are added.</div>
+            <div style={{ fontSize: 13, color: "#94a3b8" }}>Department breakdown will appear once users are added.</div>
           ) : (
             data.departmentData.map((item, index) => (
               <div key={item.department} style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                <div style={{ width: 140, fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>{item.department}</div>
-                <div style={{ flex: 1, background: "var(--surface)", borderRadius: 99, height: 10, overflow: "hidden" }}>
-                  <div style={{ width: `${item.percent}%`, background: colors[index % colors.length], height: "100%", borderRadius: 99 }} />
+                <div style={{ width: 140, fontSize: 13, fontWeight: 500, color: "#475569" }}>{item.department}</div>
+                <div style={{ flex: 1, background: "#f1f5f9", borderRadius: 99, height: 10, overflow: "hidden" }}>
+                  <div style={{ width: `${item.percent}%`, background: colors[index % colors.length], height: "100%", borderRadius: 99, transition: "width 0.4s" }} />
                 </div>
-                <div style={{ width: 60, fontSize: 13, fontWeight: 700, color: "var(--ink)", textAlign: "right" }}>{item.count}</div>
-                <div style={{ width: 44, fontSize: 12, color: "var(--ink-3)" }}>{item.percent}%</div>
+                <div style={{ width: 60, fontSize: 13, fontWeight: 700, color: "#0f172a", textAlign: "right" }}>{item.count}</div>
+                <div style={{ width: 44, fontSize: 12, color: "#94a3b8" }}>{item.percent}%</div>
               </div>
             ))
           )}

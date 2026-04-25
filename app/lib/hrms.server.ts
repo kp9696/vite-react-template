@@ -397,6 +397,146 @@ export async function deleteUser(
   ]);
 }
 
+// ── Bulk CSV import ──────────────────────────────────────────────────────────
+
+export interface ImportEmployeeRow {
+  name: string;
+  email: string;
+  role?: string;
+  department?: string;
+  designation?: string;
+  phone?: string;
+  gender?: string;
+  dob?: string;
+  employmentType?: string;
+  joinedOn?: string;
+}
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: Array<{ row: number; email: string; error: string }>;
+}
+
+export async function bulkImportEmployees(
+  db: D1Database,
+  companyId: string,
+  rows: ImportEmployeeRow[],
+  skipDuplicates: boolean,
+  seatLimit: number,
+): Promise<ImportResult> {
+  const VALID_ROLES = new Set(["Employee", "Manager", "HR Manager", "HR Admin"]);
+  const errors: ImportResult["errors"] = [];
+  const seenEmails = new Set<string>();
+  const validRows: Array<ImportEmployeeRow & { email: string; role: string }> = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const rowNum = i + 1;
+
+    if (!r.name?.trim()) {
+      errors.push({ row: rowNum, email: r.email || "", error: "Name is required." });
+      continue;
+    }
+    if (!r.email?.trim()) {
+      errors.push({ row: rowNum, email: "", error: "Email is required." });
+      continue;
+    }
+    const email = r.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errors.push({ row: rowNum, email: r.email, error: "Invalid email format." });
+      continue;
+    }
+    if (seenEmails.has(email)) {
+      errors.push({ row: rowNum, email, error: "Duplicate email within the CSV." });
+      continue;
+    }
+    const role = r.role?.trim() || "Employee";
+    if (!VALID_ROLES.has(role)) {
+      errors.push({ row: rowNum, email, error: `Unknown role "${role}". Use: Employee, Manager, HR Manager, HR Admin.` });
+      continue;
+    }
+    seenEmails.add(email);
+    validRows.push({ ...r, email, role });
+  }
+
+  if (validRows.length === 0) {
+    return { imported: 0, skipped: 0, errors };
+  }
+
+  // Find which emails already exist in this tenant
+  const existingResult = await db
+    .prepare(`SELECT lower(email) as email FROM users WHERE COALESCE(company_id, org_id) = ?`)
+    .bind(companyId)
+    .all<{ email: string }>();
+  const existingEmails = new Set(existingResult.results.map((r) => r.email));
+
+  let skipped = 0;
+  const toInsert: typeof validRows = [];
+
+  for (const r of validRows) {
+    if (existingEmails.has(r.email)) {
+      if (skipDuplicates) {
+        skipped++;
+      } else {
+        errors.push({ row: 0, email: r.email, error: "Email already exists in the system." });
+      }
+    } else {
+      toInsert.push(r);
+    }
+  }
+
+  if (toInsert.length === 0) {
+    return { imported: 0, skipped, errors };
+  }
+
+  // Verify seat headroom
+  const currentCount = await db
+    .prepare(`SELECT COUNT(*) as cnt FROM users WHERE COALESCE(company_id, org_id) = ?`)
+    .bind(companyId)
+    .first<{ cnt: number }>();
+  const currentMembers = currentCount?.cnt ?? 0;
+  const slotsAvailable = seatLimit - currentMembers;
+  if (toInsert.length > slotsAvailable) {
+    throw new Error(
+      `Import would exceed seat limit. ${slotsAvailable} slot(s) available, ${toInsert.length} new employee(s) to add.`,
+    );
+  }
+
+  const now = new Date().toISOString();
+  const statements = toInsert.map((r) => {
+    const id = `USR${crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    return db
+      .prepare(
+        `INSERT OR IGNORE INTO users
+           (id, company_id, org_id, name, email, role, department,
+            designation, phone, gender, dob, employment_type,
+            status, joined_on, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Invited', ?, ?, ?)`,
+      )
+      .bind(
+        id, companyId, companyId,
+        r.name.trim(), r.email,
+        r.role,
+        r.department?.trim() || "General",
+        r.designation?.trim() || null,
+        r.phone?.trim() || null,
+        r.gender?.trim() || null,
+        r.dob?.trim() || null,
+        r.employmentType?.trim() || "Full-time",
+        r.joinedOn?.trim() || now,
+        now, now,
+      );
+  });
+
+  // Batch in chunks of 100 (D1 limit)
+  for (let i = 0; i < statements.length; i += 100) {
+    await db.batch(statements.slice(i, i + 100));
+  }
+
+  return { imported: toInsert.length, skipped, errors };
+}
+
 export async function registerOrganization(
   db: D1Database,
   input: RegisterOrganizationInput,

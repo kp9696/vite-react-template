@@ -23,6 +23,8 @@ interface ExpenseClaim {
   reviewed_by?: string | null;
   reviewed_at?: string | null;
   notes?: string | null;
+  payment_ref?: string | null;
+  reimbursed_at?: string | null;
   created_at: string;
 }
 
@@ -31,6 +33,13 @@ interface ActionResult {
   error?: string;
   id?: string;
   status?: string;
+}
+
+interface ExpensePolicy {
+  id: string;
+  category: string;
+  max_amount: number;
+  requires_receipt_above: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -90,7 +99,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     path: "/api/expenses",
   });
 
-  return { currentUser, isManager, claims: res?.claims ?? [] };
+  const policiesRes = await callCoreHrmsApi<{ policies?: ExpensePolicy[] }>({
+    request,
+    env: context.cloudflare.env,
+    currentUser,
+    path: "/api/expense-policies",
+  });
+
+  return { currentUser, isManager, claims: res?.claims ?? [], expensePolicies: policiesRes?.policies ?? [] };
 }
 
 // ── Action ────────────────────────────────────────────────────────────────────
@@ -144,21 +160,61 @@ export async function action({ request, context }: Route.ActionArgs): Promise<Ac
     return { ok: true, id, status };
   }
 
+  if (intent === "reimburse-claim") {
+    const id = String(formData.get("id") || "").trim();
+    const paymentRef = String(formData.get("paymentRef") || "").trim();
+    if (!id) return { error: "Invalid request." };
+    const res = await callCoreHrmsApi<ActionResult>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: `/api/expenses/${encodeURIComponent(id)}/reimburse`,
+      method: "POST",
+      body: { paymentRef: paymentRef || undefined },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to reimburse claim." };
+    return { ok: true, id, status: "reimbursed" };
+  }
+
+  if (intent === "save-expense-policy") {
+    const category = String(formData.get("category") || "").trim();
+    const maxAmount = Number(formData.get("maxAmount") || 0);
+    const requiresReceiptAbove = Number(formData.get("requiresReceiptAbove") || 500);
+    if (!category) return { error: "Category is required." };
+    const res = await callCoreHrmsApi<ActionResult>({
+      request,
+      env: context.cloudflare.env,
+      currentUser,
+      path: "/api/expense-policies",
+      method: "POST",
+      body: { category, maxAmount, requiresReceiptAbove },
+    });
+    if (!res?.ok) return { error: res?.error || "Failed to save policy." };
+    return { ok: true };
+  }
+
   return { error: "Unsupported action." };
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Expenses() {
-  const { currentUser, isManager, claims: initialClaims } = useLoaderData<typeof loader>();
+  const { currentUser, isManager, claims: initialClaims, expensePolicies: initialPolicies } = useLoaderData<typeof loader>();
   const submitFetcher = useFetcher<ActionResult>();
   const decideFetcher = useFetcher<ActionResult>();
+  const reimburseFetcher = useFetcher<ActionResult>();
+  const policyFetcher = useFetcher<ActionResult>();
 
-  const [tab, setTab] = useState<"all" | "pending" | "mine">("all");
+  const [tab, setTab] = useState<"all" | "pending" | "mine" | "policy">("all");
   const [showForm, setShowForm] = useState(false);
   const [claims, setClaims] = useState<ExpenseClaim[]>(initialClaims);
+  const [expensePolicies, setExpensePolicies] = useState<ExpensePolicy[]>(initialPolicies);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [form, setForm] = useState({ category: "Travel", description: "", amount: "", claimDate: "", hasReceipt: false });
+  const [reimburseModal, setReimburseModal] = useState<{ id: string; amount: number; user_name: string } | null>(null);
+  const [paymentRef, setPaymentRef] = useState("");
+  const [policyModal, setPolicyModal] = useState<Partial<ExpensePolicy> | null>(null);
+  const [policyForm, setPolicyForm] = useState({ category: "Travel", maxAmount: "0", requiresReceiptAbove: "500" });
   const pendingSubmit = useRef<ExpenseClaim | null>(null);
   const pendingDecide = useRef<{ id: string; status: string } | null>(null);
 
@@ -195,6 +251,30 @@ export default function Expenses() {
       pendingDecide.current = null;
     }
   }, [decideFetcher.data]);
+
+  // Handle reimburse result
+  useEffect(() => {
+    const data = reimburseFetcher.data;
+    if (!data) return;
+    if (data.error) { setToast({ msg: data.error, ok: false }); return; }
+    if (data.ok && data.id) {
+      setClaims((prev) => prev.map((c) => c.id === data.id ? { ...c, status: "reimbursed", payment_ref: paymentRef || null } : c));
+      setToast({ msg: "✓ Expense reimbursed.", ok: true });
+      setReimburseModal(null);
+      setPaymentRef("");
+    }
+  }, [reimburseFetcher.data]);
+
+  // Handle policy save result
+  useEffect(() => {
+    const data = policyFetcher.data;
+    if (!data) return;
+    if (data.error) { setToast({ msg: data.error, ok: false }); return; }
+    if (data.ok) {
+      setToast({ msg: "Policy saved.", ok: true });
+      setPolicyModal(null);
+    }
+  }, [policyFetcher.data]);
 
   const handleSubmit = () => {
     if (!form.description.trim() || !Number(form.amount)) {
@@ -238,7 +318,7 @@ export default function Expenses() {
     ? claims.filter((c) => c.status === "pending")
     : tab === "mine"
     ? claims.filter((c) => c.user_id === currentUser.id)
-    : claims;
+    : claims.filter((c) => tab === "all" || tab === "policy");
 
   const totalPending    = claims.filter((c) => c.status === "pending").reduce((s, c) => s + c.amount, 0);
   const totalApproved   = claims.filter((c) => c.status === "approved").reduce((s, c) => s + c.amount, 0);
@@ -267,6 +347,41 @@ export default function Expenses() {
       {toast ? (
         <div className={`toast ${toast.ok ? "toast-success" : "toast-error"}`}>{toast.msg}</div>
       ) : null}
+
+      {/* Reimburse modal */}
+      {reimburseModal && (
+        <div className="modal-overlay" onClick={() => { setReimburseModal(null); setPaymentRef(""); }}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
+            <div className="modal-title">
+              Reimburse Claim
+              <button className="modal-close" onClick={() => { setReimburseModal(null); setPaymentRef(""); }}>✕</button>
+            </div>
+            <div style={{ fontSize: 14, color: "var(--ink-2)", marginBottom: 16 }}>
+              {reimburseModal.user_name} · <strong>{fmt(reimburseModal.amount)}</strong>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={lblStyle}>Payment Reference <span style={{ fontWeight: 400, color: "var(--ink-3)" }}>(optional)</span></label>
+              <input style={fldStyle} value={paymentRef}
+                onChange={(e) => setPaymentRef(e.target.value)}
+                placeholder="e.g. TXN123456 or Bank Transfer" />
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="btn btn-success"
+                disabled={reimburseFetcher.state !== "idle"}
+                onClick={() => {
+                  const fd = new FormData();
+                  fd.set("intent", "reimburse-claim");
+                  fd.set("id", reimburseModal.id);
+                  fd.set("paymentRef", paymentRef);
+                  reimburseFetcher.submit(fd, { method: "POST" });
+                }}>
+                {reimburseFetcher.state !== "idle" ? "Processing..." : "Confirm Reimbursement"}
+              </button>
+              <button className="btn btn-outline" onClick={() => { setReimburseModal(null); setPaymentRef(""); }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
@@ -381,11 +496,14 @@ export default function Expenses() {
       {/* Claims table */}
       <div className="card">
         <div className="tab-bar" style={{ marginBottom: 20 }}>
-          {(["all", "pending", "mine"] as const).map((t) => (
-            <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
-              {t === "all" ? "All Claims" : t === "pending" ? `Pending${pendingCount > 0 ? ` (${pendingCount})` : ""}` : "My Claims"}
-            </button>
-          ))}
+          <button className={`tab-btn ${tab === "all" ? "active" : ""}`} onClick={() => setTab("all")}>All Claims</button>
+          <button className={`tab-btn ${tab === "pending" ? "active" : ""}`} onClick={() => setTab("pending")}>
+            Pending{pendingCount > 0 ? ` (${pendingCount})` : ""}
+          </button>
+          <button className={`tab-btn ${tab === "mine" ? "active" : ""}`} onClick={() => setTab("mine")}>My Claims</button>
+          {isManager && (
+            <button className={`tab-btn ${tab === "policy" ? "active" : ""}`} onClick={() => setTab("policy")}>Expense Policy</button>
+          )}
         </div>
 
         {filtered.length === 0 ? (
@@ -451,8 +569,8 @@ export default function Expenses() {
                           <button
                             className="btn btn-outline"
                             style={{ padding: "4px 10px", fontSize: 11 }}
-                            onClick={() => handleDecide(c.id, "reimbursed")}
-                          >💸 Pay</button>
+                            onClick={() => setReimburseModal({ id: c.id, amount: c.amount, user_name: c.user_name })}
+                          >💸 Reimburse</button>
                         ) : null}
                       </div>
                     </td>
@@ -463,6 +581,99 @@ export default function Expenses() {
           </table>
         )}
       </div>
+
+      {/* Expense Policy tab */}
+      {tab === "policy" && isManager && (
+        <div className="card" style={{ marginTop: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>Expense Policies</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>Set per-category spending limits and receipt requirements.</div>
+            </div>
+            <button className="btn btn-primary" onClick={() => {
+              setPolicyForm({ category: "Travel", maxAmount: "0", requiresReceiptAbove: "500" });
+              setPolicyModal({});
+            }}>+ Add / Edit Policy</button>
+          </div>
+          {expensePolicies.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "24px 0", color: "var(--ink-3)", fontSize: 13 }}>No expense policies set. All claims accepted without limits.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Max Claim Amount</th>
+                  <th>Receipt Required Above</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {expensePolicies.map((p) => (
+                  <tr key={p.id}>
+                    <td style={{ fontWeight: 700 }}>{CAT_ICONS[p.category] ?? "🧾"} {p.category}</td>
+                    <td>{p.max_amount > 0 ? fmt(p.max_amount) : <span style={{ color: "var(--ink-3)" }}>No limit</span>}</td>
+                    <td>{p.requires_receipt_above > 0 ? fmt(p.requires_receipt_above) : "Always"}</td>
+                    <td>
+                      <button className="btn btn-outline" style={{ fontSize: 12, padding: "4px 10px" }}
+                        onClick={() => {
+                          setPolicyForm({ category: p.category, maxAmount: String(p.max_amount), requiresReceiptAbove: String(p.requires_receipt_above) });
+                          setPolicyModal(p);
+                        }}>Edit</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {policyModal !== null && (
+            <div className="modal-overlay" onClick={() => setPolicyModal(null)}>
+              <div className="modal-box" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+                <div className="modal-title">
+                  {policyModal.id ? `Edit Policy: ${policyForm.category}` : "Add Expense Policy"}
+                  <button className="modal-close" onClick={() => setPolicyModal(null)}>✕</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div>
+                    <label style={lblStyle}>Category</label>
+                    <select style={fldStyle} value={policyForm.category}
+                      onChange={(e) => setPolicyForm((f) => ({ ...f, category: e.target.value }))}>
+                      {Object.keys(CAT_COLORS).map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <label style={lblStyle}>Max Amount (₹, 0=no limit)</label>
+                      <input type="number" min="0" style={fldStyle} value={policyForm.maxAmount}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, maxAmount: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label style={lblStyle}>Receipt Required Above (₹)</label>
+                      <input type="number" min="0" style={fldStyle} value={policyForm.requiresReceiptAbove}
+                        onChange={(e) => setPolicyForm((f) => ({ ...f, requiresReceiptAbove: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                    <button className="btn btn-primary"
+                      disabled={policyFetcher.state !== "idle"}
+                      onClick={() => {
+                        const fd = new FormData();
+                        fd.set("intent", "save-expense-policy");
+                        fd.set("category", policyForm.category);
+                        fd.set("maxAmount", policyForm.maxAmount);
+                        fd.set("requiresReceiptAbove", policyForm.requiresReceiptAbove);
+                        policyFetcher.submit(fd, { method: "POST" });
+                      }}>
+                      {policyFetcher.state !== "idle" ? "Saving..." : "Save Policy"}
+                    </button>
+                    <button className="btn btn-outline" onClick={() => setPolicyModal(null)}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </HRMSLayout>
   );
 }

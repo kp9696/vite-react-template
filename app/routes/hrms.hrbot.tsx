@@ -3,7 +3,7 @@ import { Link, useLoaderData } from "react-router";
 import type { Route } from "./+types/hrms.hrbot";
 import HRMSLayout from "../components/HRMSLayout";
 import { requireSignedInUser } from "../lib/jwt-auth.server";
-import { callCoreHrmsApi } from "../lib/core-hrms-api.server";
+import { callCoreHrmsApi, signApiToken } from "../lib/core-hrms-api.server";
 
 interface Message {
   role: "user" | "assistant";
@@ -49,8 +49,11 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     .map((row) => `${row.leave_type || "Leave"}: ${Number(row.remaining ?? 0)} left`)
     .join(" | ") || "No leave balances available yet.";
 
+  const apiToken = await signApiToken(currentUser, context.cloudflare.env);
+
   return {
     currentUser,
+    apiToken,
     liveContext: {
       leaveBalanceSummary,
       presentCount: Number(summary?.attendanceSummary?.present ?? 0),
@@ -59,7 +62,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 }
 
 export default function HRBot() {
-  const { currentUser, liveContext } = useLoaderData<typeof loader>();
+  const { currentUser, apiToken, liveContext } = useLoaderData<typeof loader>();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -93,7 +96,10 @@ export default function HRBot() {
 
       const response = await fetch("/api/hrbot/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiToken}`,
+        },
         body: JSON.stringify({ messages: conversationHistory, context: liveContext }),
       });
 
@@ -204,7 +210,7 @@ export default function HRBot() {
   return (
     <HRMSLayout currentUser={currentUser}>
       <div className="page-title">HRBot - Policy Assistant</div>
-      <div className="page-sub">Real AI assistant powered by Claude 3 Haiku — ask anything about HR policies, payroll, or leaves.</div>
+      <div className="page-sub">Real AI assistant powered by Gemini 2.0 Flash — ask anything about HR policies, payroll, or leaves.</div>
 
       <div className="hrbot-grid" style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 20, height: "calc(100vh - 220px)" }}>
         <div style={{ display: "flex", flexDirection: "column", background: "white", border: "1px solid var(--border)", borderRadius: 16, overflow: "hidden" }}>
@@ -212,7 +218,7 @@ export default function HRBot() {
             <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--accent)", display: "grid", placeItems: "center", fontSize: 20 }}>AI</div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 14 }}>HRBot</div>
-              <div style={{ fontSize: 12, color: "var(--green)", fontWeight: 600 }}>Online · AI-powered · Claude 3 Haiku</div>
+              <div style={{ fontSize: 12, color: "var(--green)", fontWeight: 600 }}>Online · AI-powered · Gemini 2.0 Flash</div>
             </div>
           </div>
 
